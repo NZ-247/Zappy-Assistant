@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head><title>Flags</title></head>
+<body>
+  <h1>Feature Flags</h1>
+  <a href="/triggers">Triggers</a> | <a href="/logs">Logs</a>
+  <div>
+    <input id="apiBase" placeholder="API Base" />
+    <input id="token" placeholder="Admin token" />
+    <button onclick="saveSettings()">Save</button>
+  </div>
+  <div>
+    <input id="key" placeholder="key" />
+    <input id="description" placeholder="description" />
+    <select id="scope"><option>GLOBAL</option><option>TENANT</option><option>GROUP</option><option>USER</option></select>
+    <label>enabled <input id="enabled" type="checkbox" /></label>
+    <button onclick="createFlag()">Create</button>
+    <button onclick="loadFlags()">Refresh</button>
+  </div>
+  <pre id="data"></pre>
+  <script src="/app.js"></script>
+</body>
+</html>

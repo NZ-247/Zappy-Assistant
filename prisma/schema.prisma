@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Scope {
+  GLOBAL
+  TENANT
+  GROUP
+  USER
+}
+
+enum MatchType {
+  EXACT
+  CONTAINS
+  REGEX
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  PROCESS
+}
+
+model Tenant {
+  id          String         @id @default(uuid())
+  name        String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  groups      Group[]
+  users       User[]
+  conversations Conversation[]
+  featureFlags FeatureFlag[]
+  triggers    Trigger[]
+  tasks       Task[]
+  reminders   Reminder[]
+
+  @@index([name])
+}
+
+model Group {
+  id          String         @id @default(uuid())
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  waGroupId   String         @unique
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  conversations Conversation[]
+  reminders   Reminder[]
+
+  @@index([tenantId])
+}
+
+model User {
+  id          String         @id @default(uuid())
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  displayName String
+  waUserId    String         @unique
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  messages    Message[]
+  reminders   Reminder[]
+
+  @@index([tenantId])
+}
+
+model Conversation {
+  id          String         @id @default(uuid())
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  groupId     String?
+  group       Group?         @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  subject     String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  messages    Message[]
+
+  @@index([tenantId])
+  @@index([groupId])
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  body           String
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId])
+  @@index([userId])
+}
+
+model FeatureFlag {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  description String?
+  enabled     Boolean  @default(false)
+  scope       Scope    @default(GLOBAL)
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([scope])
+  @@index([tenantId])
+}
+
+model Trigger {
+  id          String    @id @default(uuid())
+  name        String
+  pattern     String
+  matchType   MatchType @default(CONTAINS)
+  enabled     Boolean   @default(true)
+  scope       Scope     @default(GLOBAL)
+  tenantId    String?
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([scope])
+}
+
+model Task {
+  id          String     @id @default(uuid())
+  tenantId    String?
+  tenant      Tenant?    @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  type        String
+  payload     Json
+  status      TaskStatus @default(PENDING)
+  runAt       DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([status, runAt])
+  @@index([tenantId])
+}
+
+model Reminder {
+  id          String    @id @default(uuid())
+  tenantId    String?
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  groupId     String?
+  group       Group?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  message     String
+  remindAt    DateTime
+  createdAt   DateTime  @default(now())
+
+  @@index([remindAt])
+  @@index([tenantId])
+  @@index([groupId])
+  @@index([userId])
+}
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  actor       String
+  action      AuditAction
+  entity      String
+  entityId    String
+  metadata    Json?
+  createdAt   DateTime    @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
