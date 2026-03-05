@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head><title>Triggers</title></head>
+<body>
+  <h1>Triggers</h1>
+  <a href="/">Flags</a> | <a href="/logs">Logs</a>
+  <div>
+    <input id="apiBase" placeholder="API Base" />
+    <input id="token" placeholder="Admin token" />
+    <button onclick="saveSettings()">Save</button>
+  </div>
+  <div>
+    <input id="name" placeholder="name" />
+    <input id="pattern" placeholder="pattern" />
+    <select id="matchType"><option>EXACT</option><option>CONTAINS</option><option>REGEX</option></select>
+    <label>enabled <input id="enabled" type="checkbox" checked /></label>
+    <button onclick="createTrigger()">Create</button>
+    <button onclick="loadTriggers()">Refresh</button>
+  </div>
+  <pre id="data"></pre>
+  <script src="/app.js"></script>
+</body>
+</html>

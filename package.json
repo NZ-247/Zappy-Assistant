@@ -1,0 +1,30 @@
+{
+  "name": "zappy-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n assistant-api,wa-gateway,worker,admin-ui \"npm run dev -w @zappy/assistant-api\" \"npm run dev -w @zappy/wa-gateway\" \"npm run dev -w @zappy/worker\" \"npm run dev -w @zappy/admin-ui\"",
+    "build": "npm run prisma:generate && npm run build --workspaces --if-present",
+    "lint": "npm run typecheck --workspaces --if-present",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "docker:up": "docker compose -f infra/docker-compose.yml up --build -d",
+    "docker:down": "docker compose -f infra/docker-compose.yml down",
+    "typecheck": "tsc --noEmit -p tsconfig.base.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.19",
+    "concurrently": "^9.1.2",
+    "prisma": "^6.4.1",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.4.1",
+    "dotenv": "^16.4.7",
+    "zod": "^3.24.1"
+  }
+}
