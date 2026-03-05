@@ -53,7 +53,7 @@ const worker = new Worker(
       throw error;
     }
   },
-  { connection }
+  { connection: connection as unknown as any }
 );
 
 worker.on("completed", (job) => logger.info({ jobId: job.id }, "job completed"));

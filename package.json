@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "dev": "concurrently -k -n assistant-api,wa-gateway,worker,admin-ui \"npm run dev -w @zappy/assistant-api\" \"npm run dev -w @zappy/wa-gateway\" \"npm run dev -w @zappy/worker\" \"npm run dev -w @zappy/admin-ui\"",
-    "build": "npm run prisma:generate && npm run build --workspaces --if-present",
+    "build": "npm run prisma:generate && npm run build -w @zappy/shared && npm run build -w @zappy/core && npm run build -w @zappy/adapters && npm run build -w @zappy/admin-ui && npm run build -w @zappy/assistant-api && npm run build -w @zappy/wa-gateway && npm run build -w @zappy/worker",
     "lint": "npm run typecheck --workspaces --if-present",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
