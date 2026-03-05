@@ -14,7 +14,8 @@
   "dependencies": {
     "@zappy/adapters": "0.1.0",
     "@zappy/shared": "0.1.0",
-    "fastify": "^5.2.1"
+    "fastify": "^5.2.1",
+    "bullmq": "^5.40.3"
   },
   "devDependencies": {
     "tsx": "^4.19.2"

@@ -15,9 +15,9 @@ enum Scope {
 }
 
 enum MatchType {
-  EXACT
   CONTAINS
   REGEX
+  STARTS_WITH
 }
 
 enum TaskStatus {
@@ -27,6 +27,13 @@ enum TaskStatus {
   FAILED
 }
 
+enum ReminderStatus {
+  SCHEDULED
+  SENT
+  FAILED
+  CANCELED
+}
+
 enum AuditAction {
   CREATE
   UPDATE
@@ -34,135 +41,174 @@ enum AuditAction {
   PROCESS
 }
 
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
 model Tenant {
-  id          String         @id @default(uuid())
-  name        String
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  groups      Group[]
-  users       User[]
+  id            String         @id @default(uuid())
+  name          String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  groups        Group[]
+  users         User[]
   conversations Conversation[]
-  featureFlags FeatureFlag[]
-  triggers    Trigger[]
-  tasks       Task[]
-  reminders   Reminder[]
+  featureFlags  FeatureFlag[]
+  triggers      Trigger[]
+  tasks         Task[]
+  reminders     Reminder[]
+  prompts       Prompt[]
 
   @@index([name])
 }
 
 model Group {
-  id          String         @id @default(uuid())
-  tenantId    String
-  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name        String
-  waGroupId   String         @unique
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  id            String         @id @default(uuid())
+  tenantId      String
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name          String
+  waGroupId     String         @unique
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
   conversations Conversation[]
-  reminders   Reminder[]
+  reminders     Reminder[]
+  featureFlags  FeatureFlag[]
+  triggers      Trigger[]
+  prompts       Prompt[]
 
   @@index([tenantId])
 }
 
 model User {
-  id          String         @id @default(uuid())
+  id          String        @id @default(uuid())
   tenantId    String
-  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   displayName String
-  waUserId    String         @unique
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  waUserId    String        @unique
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
   messages    Message[]
   reminders   Reminder[]
+  featureFlags FeatureFlag[]
+  triggers    Trigger[]
 
   @@index([tenantId])
 }
 
 model Conversation {
-  id          String         @id @default(uuid())
+  id          String       @id @default(uuid())
   tenantId    String
-  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   groupId     String?
-  group       Group?         @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  group       Group?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
   subject     String?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
   messages    Message[]
 
   @@index([tenantId])
   @@index([groupId])
+  @@unique([tenantId, groupId])
 }
 
 model Message {
-  id             String       @id @default(uuid())
+  id             String           @id @default(uuid())
   conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   userId         String?
-  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user           User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenantId       String
   body           String
-  createdAt      DateTime     @default(now())
+  direction      MessageDirection @default(INBOUND)
+  waMessageId    String?
+  waUserId       String?
+  waGroupId      String?
+  rawJson        Json?
+  createdAt      DateTime         @default(now())
 
   @@index([conversationId])
   @@index([userId])
+  @@index([tenantId, createdAt])
 }
 
 model FeatureFlag {
   id          String   @id @default(uuid())
-  key         String   @unique
+  key         String
   description String?
-  enabled     Boolean  @default(false)
+  enabled     Boolean  @default(true)
+  value       String   @default("on")
   scope       Scope    @default(GLOBAL)
   tenantId    String?
   tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  groupId     String?
+  group       Group?   @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([scope])
   @@index([tenantId])
+  @@index([groupId])
+  @@index([userId])
 }
 
 model Trigger {
-  id          String    @id @default(uuid())
-  name        String
-  pattern     String
-  matchType   MatchType @default(CONTAINS)
-  enabled     Boolean   @default(true)
-  scope       Scope     @default(GLOBAL)
-  tenantId    String?
-  tenant      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id               String    @id @default(uuid())
+  name             String
+  pattern          String
+  responseTemplate String
+  matchType        MatchType @default(CONTAINS)
+  enabled          Boolean   @default(true)
+  priority         Int       @default(0)
+  cooldownSeconds  Int       @default(0)
+  scope            Scope     @default(GLOBAL)
+  tenantId         String?
+  tenant           Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  groupId          String?
+  group            Group?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  userId           String?
+  user             User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@index([tenantId])
   @@index([scope])
+  @@index([groupId])
+  @@index([userId])
 }
 
 model Task {
-  id          String     @id @default(uuid())
-  tenantId    String?
-  tenant      Tenant?    @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  type        String
-  payload     Json
-  status      TaskStatus @default(PENDING)
-  runAt       DateTime?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  id        String     @id @default(uuid())
+  tenantId  String?
+  tenant    Tenant?    @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  type      String
+  payload   Json
+  status    TaskStatus @default(PENDING)
+  runAt     DateTime?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 
   @@index([status, runAt])
   @@index([tenantId])
 }
 
 model Reminder {
-  id          String    @id @default(uuid())
-  tenantId    String?
-  tenant      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  groupId     String?
-  group       Group?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  userId      String?
-  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
-  message     String
-  remindAt    DateTime
-  createdAt   DateTime  @default(now())
+  id            String         @id @default(uuid())
+  tenantId      String?
+  tenant        Tenant?        @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  groupId       String?
+  group         Group?         @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  userId        String?
+  user          User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  waUserId      String?
+  waGroupId     String?
+  message       String
+  remindAt      DateTime
+  status        ReminderStatus @default(SCHEDULED)
+  sentMessageId String?
+  createdAt     DateTime       @default(now())
 
   @@index([remindAt])
   @@index([tenantId])
@@ -170,14 +216,28 @@ model Reminder {
   @@index([userId])
 }
 
+model Prompt {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  groupId   String?
+  group     Group?   @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([groupId])
+}
+
 model AuditLog {
-  id          String      @id @default(uuid())
-  actor       String
-  action      AuditAction
-  entity      String
-  entityId    String
-  metadata    Json?
-  createdAt   DateTime    @default(now())
+  id        String      @id @default(uuid())
+  actor     String
+  action    AuditAction
+  entity    String
+  entityId  String
+  metadata  Json?
+  createdAt DateTime    @default(now())
 
   @@index([entity, entityId])
   @@index([createdAt])
