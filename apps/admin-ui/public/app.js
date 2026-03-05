@@ -1,22 +1,22 @@
-const API_BASE = localStorage.getItem('apiBase') || 'http://localhost:3333';
-const tokenInput = document.getElementById('token');
-const apiInput = document.getElementById('apiBase');
-if (tokenInput) tokenInput.value = localStorage.getItem('adminToken') || '';
+const API_BASE = localStorage.getItem("apiBase") || "http://localhost:3333";
+const tokenInput = document.getElementById("token");
+const apiInput = document.getElementById("apiBase");
+if (tokenInput) tokenInput.value = localStorage.getItem("adminToken") || "";
 if (apiInput) apiInput.value = API_BASE;
 
 function saveSettings() {
-  localStorage.setItem('adminToken', tokenInput.value);
-  localStorage.setItem('apiBase', apiInput.value);
-  alert('Saved');
+  localStorage.setItem("adminToken", tokenInput.value);
+  localStorage.setItem("apiBase", apiInput.value);
+  alert("Saved");
 }
 
 async function api(path, opts = {}) {
-  const token = localStorage.getItem('adminToken') || '';
-  const base = localStorage.getItem('apiBase') || API_BASE;
+  const token = localStorage.getItem("adminToken") || "";
+  const base = localStorage.getItem("apiBase") || API_BASE;
   const res = await fetch(`${base}${path}`, {
     ...opts,
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
       ...(opts.headers || {})
     }
@@ -26,39 +26,45 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-async function loadFlags() {
-  const rows = await api('/admin/flags');
-  document.getElementById('data').textContent = JSON.stringify(rows, null, 2);
+function setData(rows) {
+  document.getElementById("data").textContent = JSON.stringify(rows, null, 2);
 }
 
+async function loadFlags() { setData(await api("/admin/flags")); }
 async function createFlag() {
   const payload = {
-    key: document.getElementById('key').value,
-    description: document.getElementById('description').value,
-    enabled: document.getElementById('enabled').checked,
-    scope: document.getElementById('scope').value
+    key: document.getElementById("key").value,
+    description: document.getElementById("description").value,
+    enabled: document.getElementById("enabled").checked,
+    value: document.getElementById("value").value || "on",
+    scope: document.getElementById("scope").value,
+    tenantId: document.getElementById("tenantId").value || undefined,
+    groupId: document.getElementById("groupId").value || undefined,
+    userId: document.getElementById("userId").value || undefined
   };
-  await api('/admin/flags', { method: 'POST', body: JSON.stringify(payload) });
+  await api("/admin/flags", { method: "POST", body: JSON.stringify(payload) });
   await loadFlags();
 }
 
-async function loadTriggers() {
-  const rows = await api('/admin/triggers');
-  document.getElementById('data').textContent = JSON.stringify(rows, null, 2);
-}
-
+async function loadTriggers() { setData(await api("/admin/triggers")); }
 async function createTrigger() {
   const payload = {
-    name: document.getElementById('name').value,
-    pattern: document.getElementById('pattern').value,
-    matchType: document.getElementById('matchType').value,
-    enabled: document.getElementById('enabled').checked
+    name: document.getElementById("name").value,
+    pattern: document.getElementById("pattern").value,
+    responseTemplate: document.getElementById("responseTemplate").value,
+    matchType: document.getElementById("matchType").value,
+    enabled: document.getElementById("enabled").checked,
+    priority: Number(document.getElementById("priority").value || 0),
+    cooldownSeconds: Number(document.getElementById("cooldownSeconds").value || 0),
+    scope: document.getElementById("scope").value,
+    tenantId: document.getElementById("tenantId").value || undefined,
+    groupId: document.getElementById("groupId").value || undefined,
+    userId: document.getElementById("userId").value || undefined
   };
-  await api('/admin/triggers', { method: 'POST', body: JSON.stringify(payload) });
+  await api("/admin/triggers", { method: "POST", body: JSON.stringify(payload) });
   await loadTriggers();
 }
 
-async function loadLogs() {
-  const rows = await api('/admin/logs?limit=100');
-  document.getElementById('data').textContent = JSON.stringify(rows, null, 2);
-}
+async function loadLogs() { setData(await api("/admin/logs?limit=100")); }
+async function loadStatus() { setData(await api("/admin/status")); }
+async function loadMessages() { setData(await api("/admin/messages?limit=50")); }

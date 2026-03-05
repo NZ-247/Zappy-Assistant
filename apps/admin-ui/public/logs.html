@@ -1,16 +1,6 @@
-<!doctype html>
-<html>
-<head><title>Logs</title></head>
-<body>
-  <h1>Audit Logs</h1>
-  <a href="/">Flags</a> | <a href="/triggers">Triggers</a>
-  <div>
-    <input id="apiBase" placeholder="API Base" />
-    <input id="token" placeholder="Admin token" />
-    <button onclick="saveSettings()">Save</button>
-    <button onclick="loadLogs()">Refresh</button>
-  </div>
-  <pre id="data"></pre>
-  <script src="/app.js"></script>
-</body>
-</html>
+<!doctype html><html><head><title>Status</title></head><body>
+<h1>Status / Logs / Messages</h1>
+<a href="/">Flags</a> | <a href="/triggers">Triggers</a>
+<div><input id="apiBase" placeholder="API Base" /><input id="token" placeholder="Admin token" /><button onclick="saveSettings()">Save</button>
+<button onclick="loadStatus()">Status</button><button onclick="loadMessages()">Messages</button><button onclick="loadLogs()">Audit Logs</button></div>
+<pre id="data"></pre><script src="/app.js"></script></body></html>

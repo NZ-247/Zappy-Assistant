@@ -1,76 +1,41 @@
-# Zappy Assistant (Bootstrap)
+# Zappy Assistant
 
-Monorepo foundation for Zappy Assistant using Node.js 20, TypeScript, Fastify, Prisma/PostgreSQL, Redis/BullMQ, and Docker Compose.
-
-## Prerequisites
-
-- Node.js 20+
-- npm 10+
-- Docker + Docker Compose
+Monorepo WhatsApp assistant using Hexagonal architecture.
 
 ## Setup
 
-1. Copy environment file:
-   ```bash
-   cp .env.example .env
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-## Run with Docker Compose
-
 ```bash
-npm run docker:up
+cp .env.example .env
+npm install
+npm run prisma:generate
 ```
 
-Services:
-- Assistant API: http://localhost:3333
-- Admin UI: http://localhost:8080
-- PostgreSQL: localhost:5432
-- Redis: localhost:6379
-
-Stop:
-```bash
-npm run docker:down
-```
-
-## Run locally
+## Run
 
 ```bash
 npm run dev
 ```
 
-## Prisma
+## Pairing WhatsApp (wa-gateway)
 
-Generate client:
-```bash
-npm run prisma:generate
-```
+1. Set `WA_PAIRING_PHONE` with country code (e.g. `5511999999999`) and start gateway.
+2. Gateway logs a pairing code (`pairing code`) for multi-device login.
+3. In WhatsApp: Linked devices -> Link with phone number -> enter code.
+4. Session credentials persist in `WA_SESSION_PATH` (default `.wa_auth`).
 
-Run dev migrations:
-```bash
-npm run prisma:migrate
-```
+If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-registers groups/users under a default tenant.
 
-## Admin UI + API
+## Features
 
-- Open `http://localhost:8080`
-- Enter API base URL (default `http://localhost:3333`) and `ADMIN_API_TOKEN` from `.env`
-- Manage:
-  - `/` feature flags
-  - `/triggers` triggers
-  - `/logs` audit logs
+- Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
+- Commands: `/help`, `/task add/list/done`, `/reminder in/at`.
+- Trigger priority, cooldown, template variables.
+- Reminder jobs via BullMQ with idempotent worker.
+- Admin API + UI for flags, triggers, status, logs, and message feed.
 
-## Workspace layout
+## Admin
 
-- `apps/assistant-api` Fastify admin/public API
-- `apps/wa-gateway` WhatsApp gateway process stub
-- `apps/worker` BullMQ worker skeleton
-- `apps/admin-ui` static admin frontend served by Fastify
-- `packages/shared` env/types/schemas/logger utilities
-- `packages/core` interfaces/ports
-- `packages/adapters` Prisma/Redis/BullMQ adapters + repositories
-- `prisma/schema.prisma` data model
-- `infra/docker-compose.yml` local infrastructure
+- API: `http://localhost:3333`
+- UI: `http://localhost:8080`
+- Use `Authorization: Bearer <ADMIN_API_TOKEN>` for `/admin/*`.
+
