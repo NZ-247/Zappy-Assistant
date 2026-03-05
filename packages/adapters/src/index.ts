@@ -9,14 +9,15 @@ import {
   type Prisma
 } from "@prisma/client";
 import { Queue } from "bullmq";
-import IORedis from "ioredis";
+import { Redis } from "ioredis";
 import OpenAI from "openai";
 import type { ConversationMessage, InboundMessageEvent, LlmPort, ReminderCreateInput } from "@zappy/core";
 import type { FeatureFlagInput, TriggerInput } from "@zappy/shared";
 
 export const prisma = new PrismaClient();
-export const createRedisConnection = (redisUrl: string) => new IORedis(redisUrl, { maxRetriesPerRequest: null });
-export const createQueue = (queueName: string, redisUrl: string) => new Queue(queueName, { connection: createRedisConnection(redisUrl) });
+export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
+export const createQueue = (queueName: string, redisUrl: string) =>
+  new Queue(queueName, { connection: createRedisConnection(redisUrl) as unknown as any });
 
 const scopeOrder: Scope[] = [Scope.USER, Scope.GROUP, Scope.TENANT, Scope.GLOBAL];
 
@@ -52,11 +53,11 @@ export const ensureTenantContext = async (input: {
 };
 
 export const persistInboundMessage = async (input: InboundMessageEvent & { userId: string; groupId?: string; rawJson: unknown }) => {
-  const conversation = await prisma.conversation.upsert({
-    where: { tenantId_groupId: { tenantId: input.tenantId, groupId: input.groupId ?? null } },
-    create: { tenantId: input.tenantId, groupId: input.groupId ?? null, subject: input.groupId ?? input.waUserId },
-    update: {}
-  });
+  const conversation =
+    (await prisma.conversation.findFirst({ where: { tenantId: input.tenantId, groupId: input.groupId ?? null } })) ??
+    (await prisma.conversation.create({
+      data: { tenantId: input.tenantId, groupId: input.groupId ?? null, subject: input.groupId ?? input.waUserId }
+    }));
   return prisma.message.create({
     data: {
       conversationId: conversation.id,
@@ -82,11 +83,11 @@ export const persistOutboundMessage = async (input: {
   waMessageId?: string;
   rawJson?: unknown;
 }) => {
-  const conversation = await prisma.conversation.upsert({
-    where: { tenantId_groupId: { tenantId: input.tenantId, groupId: input.groupId ?? null } },
-    create: { tenantId: input.tenantId, groupId: input.groupId ?? null, subject: input.groupId ?? input.waUserId },
-    update: {}
-  });
+  const conversation =
+    (await prisma.conversation.findFirst({ where: { tenantId: input.tenantId, groupId: input.groupId ?? null } })) ??
+    (await prisma.conversation.create({
+      data: { tenantId: input.tenantId, groupId: input.groupId ?? null, subject: input.groupId ?? input.waUserId }
+    }));
   return prisma.message.create({
     data: {
       conversationId: conversation.id,
@@ -302,7 +303,7 @@ export const promptsRepository = {
   }
 };
 
-export const createCooldownAdapter = (redis: IORedis) => ({
+export const createCooldownAdapter = (redis: Redis) => ({
   canFire: async (key: string, ttlSeconds: number) => {
     if (ttlSeconds <= 0) return true;
     const set = await redis.set(key, "1", "EX", ttlSeconds, "NX");
@@ -310,7 +311,7 @@ export const createCooldownAdapter = (redis: IORedis) => ({
   }
 });
 
-export const createRateLimitAdapter = (redis: IORedis) => ({
+export const createRateLimitAdapter = (redis: Redis) => ({
   allow: async (key: string, max: number, windowSeconds: number) => {
     const count = await redis.incr(key);
     if (count === 1) await redis.expire(key, windowSeconds);
@@ -329,7 +330,7 @@ export const createQueueAdapter = (queue: Queue) => ({
 export const createOpenAiAdapter = (apiKey: string | undefined, model: string): LlmPort => {
   const client = apiKey ? new OpenAI({ apiKey }) : null;
   return {
-    chat: async (input) => {
+    chat: async (input: { system: string; messages: ConversationMessage[] }) => {
       if (!client) return "Assistant is not configured.";
       const completion = await client.chat.completions.create({
         model,
@@ -340,11 +341,11 @@ export const createOpenAiAdapter = (apiKey: string | undefined, model: string): 
   };
 };
 
-export const markGatewayHeartbeat = async (redis: IORedis, isConnected: boolean) => {
+export const markGatewayHeartbeat = async (redis: Redis, isConnected: boolean) => {
   await redis.set("gateway:heartbeat", JSON.stringify({ isConnected, at: new Date().toISOString() }), "EX", 30);
 };
 
-export const getGatewayHeartbeat = async (redis: IORedis) => {
+export const getGatewayHeartbeat = async (redis: Redis) => {
   const raw = await redis.get("gateway:heartbeat");
   return raw ? (JSON.parse(raw) as { isConnected: boolean; at: string }) : { isConnected: false, at: null };
 };

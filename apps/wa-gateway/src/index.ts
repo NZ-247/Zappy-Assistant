@@ -59,7 +59,7 @@ const connect = async () => {
 
   socket.ev.on("creds.update", saveCreds);
 
-  socket.ev.on("connection.update", async (update) => {
+  socket.ev.on("connection.update", async (update: { connection?: "close" | "open"; lastDisconnect?: { error?: unknown }; qr?: string; isNewLogin?: boolean; pairingCode?: string }) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) logger.info({ qr }, "scan QR to pair");
     if (update.isNewLogin === false && update.pairingCode === undefined && process.env.WA_PAIRING_PHONE) {
@@ -76,7 +76,7 @@ const connect = async () => {
     }
   });
 
-  socket.ev.on("messages.upsert", async ({ messages, type }) => {
+  socket.ev.on("messages.upsert", async ({ messages, type }: { messages: Array<{ key: { fromMe?: boolean; remoteJid?: string; participant?: string; id?: string }; message?: { conversation?: string; extendedTextMessage?: { text?: string }; imageMessage?: { caption?: string } }; messageTimestamp?: number | { toString: () => string } }>; type: string }) => {
     if (type !== "notify" || !socket) return;
 
     for (const message of messages) {
