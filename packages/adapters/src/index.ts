@@ -11,7 +11,7 @@ import {
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import OpenAI from "openai";
-import type { ConversationMessage, InboundMessageEvent, LlmPort, ReminderCreateInput } from "@zappy/core";
+import { LlmError, type ConversationMessage, type InboundMessageEvent, type LlmErrorReason, type LlmPort, type ReminderCreateInput } from "@zappy/core";
 import type { FeatureFlagInput, TriggerInput } from "@zappy/shared";
 
 export const prisma = new PrismaClient();
@@ -327,16 +327,36 @@ export const createQueueAdapter = (queue: Queue) => ({
   }
 });
 
+const classifyOpenAiError = (error: unknown): { reason: LlmErrorReason; status?: number; code?: string } => {
+  const asAny = error as { status?: unknown; code?: unknown; type?: unknown };
+  const status = typeof asAny?.status === "number" ? asAny.status : undefined;
+  const code = typeof asAny?.code === "string" ? asAny.code : undefined;
+  const type = typeof asAny?.type === "string" ? asAny.type : undefined;
+
+  if (code === "insufficient_quota" || type === "insufficient_quota") return { reason: "insufficient_quota", status, code };
+  if (status === 429 || code === "rate_limit_exceeded" || type === "rate_limit_exceeded") return { reason: "rate_limit", status, code };
+  if (status === 408 || code === "ETIMEDOUT" || code === "ETIMEOUT") return { reason: "timeout", status, code };
+  if (code && ["ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH"].includes(code)) return { reason: "network", status, code };
+  if (status && status >= 500) return { reason: "network", status, code };
+
+  return { reason: "unknown", status, code };
+};
+
 export const createOpenAiAdapter = (apiKey: string | undefined, model: string): LlmPort => {
   const client = apiKey ? new OpenAI({ apiKey }) : null;
   return {
     chat: async (input: { system: string; messages: ConversationMessage[] }) => {
       if (!client) return "Assistant is not configured.";
-      const completion = await client.chat.completions.create({
-        model,
-        messages: [{ role: "system", content: input.system }, ...input.messages]
-      });
-      return completion.choices[0]?.message?.content ?? "";
+      try {
+        const completion = await client.chat.completions.create({
+          model,
+          messages: [{ role: "system", content: input.system }, ...input.messages]
+        });
+        return completion.choices[0]?.message?.content ?? "";
+      } catch (error) {
+        const { reason, status, code } = classifyOpenAiError(error);
+        throw new LlmError(reason, "LLM request failed", { status, code, cause: error });
+      }
     }
   };
 };

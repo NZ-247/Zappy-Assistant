@@ -12,6 +12,8 @@ const envSchema = z.object({
   QUEUE_NAME: z.string().default("reminders"),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
+  LLM_ENABLED: z.coerce.boolean().default(true),
+  BOT_TIMEZONE: z.string().default("America/Cuiaba"),
   WA_SESSION_PATH: z.string().default(".wa_auth"),
   ONLY_GROUP_ID: z.string().optional(),
   DEFAULT_TENANT_NAME: z.string().default("Default Tenant"),

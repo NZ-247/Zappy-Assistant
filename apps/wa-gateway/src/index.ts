@@ -21,6 +21,7 @@ import {
   prisma
 } from "@zappy/adapters";
 import { createLogger, loadEnv } from "@zappy/shared";
+import qrcodeTerminal from "qrcode-terminal";
 
 const env = loadEnv();
 const logger = createLogger("wa-gateway");
@@ -45,7 +46,10 @@ const orchestrator = new Orchestrator({
   llm: createOpenAiAdapter(env.OPENAI_API_KEY, env.OPENAI_MODEL),
   botName: env.DEFAULT_BOT_NAME,
   defaultAssistantMode: env.ASSISTANT_MODE_DEFAULT,
-  defaultFunMode: env.FUN_MODE_DEFAULT
+  defaultFunMode: env.FUN_MODE_DEFAULT,
+  llmEnabled: env.LLM_ENABLED,
+  logger,
+  timezone: env.BOT_TIMEZONE
 });
 
 const getText = (message: any): string =>
@@ -61,7 +65,10 @@ const connect = async () => {
 
   socket.ev.on("connection.update", async (update: { connection?: "close" | "open"; lastDisconnect?: { error?: unknown }; qr?: string; isNewLogin?: boolean; pairingCode?: string }) => {
     const { connection, lastDisconnect, qr } = update;
-    if (qr) logger.info({ qr }, "scan QR to pair");
+    if (qr) {
+      logger.info({ qr }, "scan QR to pair");
+      qrcodeTerminal.generate(qr, { small: true });
+    }
     if (update.isNewLogin === false && update.pairingCode === undefined && process.env.WA_PAIRING_PHONE) {
       const code = await socket?.requestPairingCode(process.env.WA_PAIRING_PHONE);
       logger.info({ code }, "pairing code");
@@ -146,5 +153,11 @@ const shutdown = async () => {
 
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "unhandled rejection");
+});
+process.on("uncaughtException", (error) => {
+  logger.error({ err: error }, "uncaught exception");
+});
 
 void connect();

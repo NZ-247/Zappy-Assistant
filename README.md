@@ -10,6 +10,9 @@ npm install
 npm run prisma:generate
 ```
 
+- `LLM_ENABLED=false` skips the LLM fallback and keeps commands/triggers active.
+- `BOT_TIMEZONE` (default `America/Cuiaba`) controls all reminder parsing/formatting.
+
 ## Run
 
 ```bash
@@ -29,6 +32,9 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
 - Commands: `/help`, `/task add/list/done`, `/reminder in/at`.
+- Reminders:
+  - `/reminder in <duration> <message>` where duration accepts `1`, `10m`, `1h40m30s`, `2d`.
+  - `/reminder at <DD-MM[-YYYY]> [HH:MM] <message>` uses `BOT_TIMEZONE` and defaults time to `08:00`.
 - Trigger priority, cooldown, template variables.
 - Reminder jobs via BullMQ with idempotent worker.
 - Admin API + UI for flags, triggers, status, logs, and message feed.
@@ -38,4 +44,3 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - API: `http://localhost:3333`
 - UI: `http://localhost:8080`
 - Use `Authorization: Bearer <ADMIN_API_TOKEN>` for `/admin/*`.
-

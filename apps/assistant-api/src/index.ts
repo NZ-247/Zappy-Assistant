@@ -15,7 +15,7 @@ const env = loadEnv();
 const logger = createLogger("assistant-api");
 const redis = createRedisConnection(env.REDIS_URL);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
-const app = Fastify({ logger });
+const app = Fastify({ loggerInstance: logger });
 
 app.get("/health", async () => {
   let db = "ok";

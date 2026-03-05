@@ -69,5 +69,11 @@ const shutdown = async () => {
 
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "unhandled rejection");
+});
+process.on("uncaughtException", (error) => {
+  logger.error({ err: error }, "uncaught exception");
+});
 
 logger.info({ queue: env.QUEUE_NAME }, "worker started");
