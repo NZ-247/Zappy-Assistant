@@ -23,9 +23,11 @@ import {
   tasksRepository,
   timersRepository,
   createMuteAdapter,
-  createOpenAiAdapter
+  createOpenAiAdapter,
+  createConversationStateAdapter,
+  conversationMemoryRepository
 } from "@zappy/adapters";
-import { buildBaseSystemPrompt } from "@zappy/ai";
+import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
 import { createLogger, loadEnv } from "@zappy/shared";
 import qrcodeTerminal from "qrcode-terminal";
 
@@ -35,13 +37,21 @@ const redis = createRedisConnection(env.REDIS_URL);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const queueAdapter = createQueueAdapter(queue);
 const llmConfigured = Boolean(env.OPENAI_API_KEY);
+const llmModel = env.LLM_MODEL ?? env.OPENAI_MODEL;
 const baseSystemPrompt = buildBaseSystemPrompt({
+  personaId: env.LLM_PERSONA,
   settings: { timezone: env.BOT_TIMEZONE },
   policyNotes: ["Priorize o contexto do chat atual."]
 });
-const llmAdapter = createOpenAiAdapter(env.OPENAI_API_KEY, env.OPENAI_MODEL);
+const llmAdapter = createOpenAiAdapter(env.OPENAI_API_KEY, llmModel);
 const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
 const muteAdapter = createMuteAdapter(redis);
+const aiService = new AiService({
+  llm: llmAdapter,
+  memory: conversationMemoryRepository as any,
+  config: { enabled: env.LLM_ENABLED, personaId: env.LLM_PERSONA, memoryWindow: env.LLM_MEMORY_MESSAGES },
+  logger
+});
 
 let socket: ReturnType<typeof makeWASocket> | null = null;
 const heartbeat = setInterval(() => {
@@ -56,6 +66,8 @@ const orchestrator = new Orchestrator({
   notesRepository,
   timersRepository,
   messagesRepository,
+  conversationMemory: conversationMemoryRepository,
+  aiAssistant: aiService,
   prompt: promptsRepository,
   cooldown: createCooldownAdapter(redis),
   rateLimit: createRateLimitAdapter(redis),
@@ -64,17 +76,29 @@ const orchestrator = new Orchestrator({
   mute: muteAdapter,
   identity: identityRepository,
   status: statusPort,
+  conversationState: createConversationStateAdapter(redis),
   botName: env.DEFAULT_BOT_NAME,
   defaultAssistantMode: env.ASSISTANT_MODE_DEFAULT,
   defaultFunMode: env.FUN_MODE_DEFAULT,
   llmEnabled: env.LLM_ENABLED,
   logger,
   timezone: env.BOT_TIMEZONE,
-  baseSystemPrompt
+  baseSystemPrompt,
+  llmMemoryMessages: env.LLM_MEMORY_MESSAGES
 });
 
 const getText = (message: any): string =>
   message?.conversation ?? message?.extendedTextMessage?.text ?? message?.imageMessage?.caption ?? "";
+
+const hasMedia = (message: any): boolean =>
+  Boolean(
+    message?.imageMessage ||
+      message?.videoMessage ||
+      message?.audioMessage ||
+      message?.documentMessage ||
+      message?.stickerMessage ||
+      message?.documentWithCaptionMessage
+  );
 
 const connect = async () => {
   const { state, saveCreds } = await useMultiFileAuthState(env.WA_SESSION_PATH);
@@ -115,8 +139,10 @@ const connect = async () => {
       if (env.ONLY_GROUP_ID && (!isGroup || remoteJid !== env.ONLY_GROUP_ID)) continue;
 
       const waUserId = isGroup ? message.key.participant ?? "unknown" : remoteJid;
-      const text = getText(message.message).trim();
-      if (!text) continue;
+      const rawText = getText(message.message);
+      const text = rawText.trim();
+      const mediaPresent = hasMedia(message.message);
+      if (!text && !mediaPresent) continue;
 
       const context = await ensureTenantContext({
         waGroupId: isGroup ? remoteJid : undefined,
@@ -127,38 +153,97 @@ const connect = async () => {
 
       const event: InboundMessageEvent = {
         tenantId: context.tenant.id,
+        conversationId: undefined,
         waGroupId: isGroup ? remoteJid : undefined,
         waUserId,
         text,
         waMessageId: message.key.id ?? `${Date.now()}`,
         timestamp: new Date((message.messageTimestamp ? Number(message.messageTimestamp) : Date.now() / 1000) * 1000),
-        isGroup
+        isGroup,
+        remoteJid,
+        isStatusBroadcast: remoteJid === "status@broadcast",
+        isFromBot: Boolean(message.key.fromMe),
+        hasMedia: mediaPresent,
+        kind: text ? "text" : mediaPresent ? "media" : "unknown",
+        rawMessageType: Object.keys(message.message ?? {})[0] ?? "unknown"
       };
 
-      await persistInboundMessage({ ...event, userId: context.user.id, groupId: context.group?.id, rawJson: message });
+      const persisted = await persistInboundMessage({
+        ...event,
+        userId: context.user.id,
+        groupId: context.group?.id,
+        rawJson: message
+      });
+      event.conversationId = persisted.conversationId;
       logger.info({ tenantId: event.tenantId, waUserId, waGroupId: event.waGroupId, messageId: event.waMessageId }, "inbound message");
 
       const actions = await orchestrator.handleInboundMessage(event);
       for (const action of actions) {
-        if (action.type === "enqueue_reminder") {
-          await queueAdapter.enqueueReminder(action.reminderId, action.remindAt);
+        if (action.kind === "enqueue_job") {
+          const runAt = action.payload.runAt ? new Date(action.payload.runAt) : new Date();
+          if (action.jobType === "reminder") {
+            await queueAdapter.enqueueReminder(String(action.payload.id), runAt);
+          } else if (action.jobType === "timer") {
+            await queueAdapter.enqueueTimer(String(action.payload.id), runAt);
+          } else {
+            logger.warn({ jobType: action.jobType, payload: action.payload }, "unknown enqueue_job action");
+          }
           continue;
         }
-        if (action.type === "enqueue_timer") {
-          await queueAdapter.enqueueTimer(action.timerId, action.fireAt);
+        if (action.kind === "noop") {
           continue;
         }
-        if (action.type !== "reply") continue;
+        if (action.kind === "handoff") {
+          const note = action.note ?? "Handoff solicitado.";
+          const to = isGroup ? remoteJid : waUserId;
+          const sent = await socket.sendMessage(to, { text: note });
+          await persistOutboundMessage({
+            tenantId: context.tenant.id,
+            userId: context.user.id,
+            groupId: context.group?.id,
+            waUserId,
+            waGroupId: event.waGroupId,
+            text: note,
+            waMessageId: sent.key.id,
+            rawJson: sent
+          });
+          continue;
+        }
+        if (action.kind === "ai_tool_suggestion") {
+          const to = isGroup ? remoteJid : waUserId;
+          const textToSend =
+            action.text ??
+            `Posso executar: ${action.tool.action}. Diga 'ok' para confirmar ou detalhe o que precisa.`;
+          const sent = await socket.sendMessage(to, { text: textToSend });
+          await persistOutboundMessage({
+            tenantId: context.tenant.id,
+            userId: context.user.id,
+            groupId: context.group?.id,
+            waUserId,
+            waGroupId: event.waGroupId,
+            text: textToSend,
+            waMessageId: sent.key.id,
+            rawJson: sent
+          });
+          continue;
+        }
+        if (action.kind !== "reply_text" && action.kind !== "reply_list") continue;
 
         const to = isGroup ? remoteJid : waUserId;
-        const sent = await socket.sendMessage(to, { text: action.text });
+        const textToSend =
+          action.kind === "reply_text"
+            ? action.text
+            : [action.header, ...action.items.map((item) => `• ${item.title}${item.description ? ` — ${item.description}` : ""}`), action.footer]
+                .filter(Boolean)
+                .join("\n");
+        const sent = await socket.sendMessage(to, { text: textToSend });
         await persistOutboundMessage({
           tenantId: context.tenant.id,
           userId: context.user.id,
           groupId: context.group?.id,
           waUserId,
           waGroupId: event.waGroupId,
-          text: action.text,
+          text: textToSend,
           waMessageId: sent.key.id,
           rawJson: sent
         });

@@ -48,6 +48,13 @@ enum AuditAction {
   PROCESS
 }
 
+enum MemoryRole {
+  system
+  user
+  assistant
+  tool
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -122,6 +129,7 @@ model Conversation {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   messages    Message[]
+  memories    ConversationMemory[]
 
   @@index([tenantId])
   @@index([groupId])
@@ -299,6 +307,21 @@ model Prompt {
 
   @@index([tenantId])
   @@index([groupId])
+}
+
+model ConversationMemory {
+  id             String     @id @default(uuid())
+  tenantId       String
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  waUserId       String?
+  role           MemoryRole
+  content        String
+  metadataJson   Json?
+  createdAt      DateTime   @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([tenantId, createdAt])
 }
 
 model AuditLog {

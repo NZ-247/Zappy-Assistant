@@ -1,8 +1,14 @@
-import type { ConversationMessage } from "@zappy/core";
+import type {
+  ConversationMessage,
+  AiAssistantInput,
+  AiResponse,
+  ToolAction,
+  ToolIntent
+} from "@zappy/core";
 
 export type PersonaId = "secretary_default" | string;
 export type ChatScope = "group" | "direct";
-export type UserRole = "ROOT" | "DONO" | "ADMIN" | "MEMBER";
+export type UserRole = "ROOT" | "DONO" | "GROUP_ADMIN" | "ADMIN" | "MEMBER";
 export type FormalityLevel = "formal" | "neutral" | "casual";
 
 export interface PersonaBehavior {
@@ -26,6 +32,11 @@ export interface PersonaDefinition {
   role: string;
   behavior: PersonaBehavior;
   tone: PersonaTone;
+  examples?: {
+    directAssistant?: string;
+    businessClient?: string;
+    operationalSummary?: string;
+  };
 }
 
 export interface EffectiveSettings {
@@ -63,8 +74,12 @@ export interface PromptBuilderInput {
   settings?: EffectiveSettings;
   chatScope: ChatScope;
   userRole: UserRole;
+  modulesEnabled?: string[];
+  availableTools?: ToolAction[];
+  currentState?: string;
+  handoffActive?: boolean;
+  memoryLimit?: number;
   recentMemory?: MemoryEntry[];
-  activeTools?: ToolAction[];
   now: Date;
   policyNotes?: string[];
 }
@@ -73,43 +88,10 @@ export interface PromptBuilderOutput {
   systemPrompt: string;
   contextMessages: ConversationMessage[];
   policyNotes?: string[];
+  toolHints?: string[];
 }
 
-export type ToolAction =
-  | "create_task"
-  | "list_tasks"
-  | "create_reminder"
-  | "list_reminders"
-  | "add_note"
-  | "list_notes"
-  | "get_time"
-  | "get_settings";
-
-export interface ToolIntent {
-  action: ToolAction;
-  payload?: Record<string, unknown>;
-  confidence?: number;
-  reason?: string;
-}
-
-export type AiResponse =
-  | { kind: "text"; text: string; meta?: Record<string, unknown> }
-  | { kind: "tool_suggestion"; tool: ToolIntent; text?: string; meta?: Record<string, unknown> };
-
-export interface AiGenerateInput {
-  tenantId: string;
-  conversationId: string;
-  waUserId: string;
-  waGroupId?: string;
-  userText: string;
-  settings?: EffectiveSettings;
-  chatScope: ChatScope;
-  userRole: UserRole;
-  activeTools?: ToolAction[];
-  now: Date;
-  llmEnabled?: boolean;
-  personaId?: PersonaId;
-}
+export type AiGenerateInput = AiAssistantInput;
 
 export interface AiServiceConfig {
   enabled: boolean;

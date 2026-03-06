@@ -19,7 +19,8 @@ import {
   type LlmErrorReason,
   type LlmPort,
   type ReminderCreateInput,
-  type TimerCreateInput
+  type TimerCreateInput,
+  type ConversationState
 } from "@zappy/core";
 import type { FeatureFlagInput, TriggerInput } from "@zappy/shared";
 
@@ -450,6 +451,85 @@ export const promptsRepository = {
   }
 };
 
+export const conversationMemoryRepository = {
+  appendMemory: async (input: {
+    tenantId: string;
+    conversationId: string;
+    waUserId?: string;
+    role: "system" | "user" | "assistant" | "tool";
+    content: string;
+    metadataJson?: unknown;
+    keepLatest?: number;
+  }): Promise<void> => {
+    const content = input.content?.trim();
+    if (!content) return;
+    await prisma.conversationMemory.create({
+      data: {
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        waUserId: input.waUserId ?? null,
+        role: input.role as any,
+        content,
+        metadataJson: (input.metadataJson as Prisma.InputJsonValue) ?? undefined
+      }
+    });
+    if (input.keepLatest && input.keepLatest > 0) {
+      await conversationMemoryRepository.trimOldMemory(input.conversationId, input.keepLatest);
+    }
+  },
+
+  listRecentMemory: async (input: { conversationId: string; limit: number }) => {
+    const rows = await prisma.conversationMemory.findMany({
+      where: { conversationId: input.conversationId },
+      orderBy: { createdAt: "desc" },
+      take: input.limit
+    });
+    return rows.reverse();
+  },
+
+  trimOldMemory: async (conversationId: string, keepLatestN: number) => {
+    if (keepLatestN <= 0) {
+      await prisma.conversationMemory.deleteMany({ where: { conversationId } });
+      return;
+    }
+    const stale = await prisma.conversationMemory.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: "desc" },
+      skip: keepLatestN,
+      select: { id: true }
+    });
+    if (stale.length === 0) return;
+    await prisma.conversationMemory.deleteMany({ where: { id: { in: stale.map((s) => s.id) } } });
+  },
+
+  clearMemory: async (conversationId: string) => {
+    await prisma.conversationMemory.deleteMany({ where: { conversationId } });
+  }
+};
+
+// Aliases to satisfy ConversationMemoryPort shape used by @zappy/ai
+(conversationMemoryRepository as any).loadRecent = (input: { tenantId: string; conversationId: string; limit: number }) =>
+  conversationMemoryRepository.listRecentMemory({ conversationId: input.conversationId, limit: input.limit });
+(conversationMemoryRepository as any).append = (entry: {
+  tenantId: string;
+  conversationId: string;
+  waUserId?: string;
+  waGroupId?: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  metadataJson?: unknown;
+  keep?: number;
+}) =>
+  conversationMemoryRepository.appendMemory({
+    tenantId: entry.tenantId,
+    conversationId: entry.conversationId,
+    waUserId: entry.waUserId,
+    role: entry.role,
+    content: entry.content,
+    metadataJson: entry.metadataJson,
+    keepLatest: entry.keep
+  });
+
 export const createCooldownAdapter = (redis: Redis) => ({
   canFire: async (key: string, ttlSeconds: number) => {
     if (ttlSeconds <= 0) return true;
@@ -575,6 +655,45 @@ export const createMuteAdapter = (redis: Redis) => ({
     await redis.del(key);
   }
 });
+
+export const createConversationStateAdapter = (redis: Redis) => {
+  const keyFor = (input: { tenantId: string; waGroupId?: string; waUserId: string }) =>
+    `cstate:${input.tenantId}:${input.waGroupId ?? "direct"}:${input.waUserId}`;
+
+  return {
+    getState: async (input: { tenantId: string; waGroupId?: string; waUserId: string }) => {
+      const key = keyFor(input);
+      const raw = await redis.get(key);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as { state?: ConversationState; context?: Record<string, unknown>; updatedAt?: string; expiresAt?: string | null };
+        return {
+          state: parsed.state ?? "NONE",
+          context: parsed.context,
+          updatedAt: parsed.updatedAt ? new Date(parsed.updatedAt) : new Date(),
+          expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null
+        };
+      } catch {
+        return null;
+      }
+    },
+    setState: async (input: { tenantId: string; waGroupId?: string; waUserId: string; state: ConversationState; context?: Record<string, unknown>; expiresAt?: Date | null }) => {
+      const key = keyFor(input);
+      const ttlSeconds = input.expiresAt ? Math.max(1, Math.round((input.expiresAt.getTime() - Date.now()) / 1000)) : 3600;
+      const payload = {
+        state: input.state,
+        context: input.context ?? {},
+        updatedAt: new Date().toISOString(),
+        expiresAt: input.expiresAt ? input.expiresAt.toISOString() : null
+      };
+      await redis.set(key, JSON.stringify(payload), "EX", ttlSeconds);
+    },
+    clearState: async (input: { tenantId: string; waGroupId?: string; waUserId: string }) => {
+      const key = keyFor(input);
+      await redis.del(key);
+    }
+  };
+};
 
 export const identityRepository = {
   getIdentity: async (input: { tenantId: string; waUserId: string; waGroupId?: string }) => {

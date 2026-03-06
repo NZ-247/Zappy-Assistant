@@ -53,6 +53,15 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 
 ## AI module
 
-- `packages/ai` centralizes persona, prompt builder, OpenAI adapter, and a thin `AiService`.
-- Default persona: Zappy, a concise secretary assistant (Portuguese/Brazil).
-- LLM remains optional via `LLM_ENABLED`; gateway sets a base prompt from the AI package and the core falls back gracefully when disabled.
+- `packages/ai` centralizes persona and prompt builder; OpenAI access stays in adapters.
+- Persona `secretary_default`: Alan's digital secretary (friendly, polite, slightly formal, organized, concise, proactive, calm).
+- Prompt builder assembles identity, role, tone, operational policies (tool-first, no hallucination), context (scope + role + handoff), tools/modules, datetime/timezone, and output expectations. Memory is included only up to the provided limit.
+- LLM is optional (`LLM_ENABLED=false` keeps commands/triggers only). See `packages/ai/README.md` for examples of direct vs group prompts.
+- AI memory: `ConversationMemory` stores trimmed, AI-relevant turns (default window `LLM_MEMORY_MESSAGES=10`) separate from raw `Message` logs; older items are trimmed automatically.
+- AI responses: `AiTextReply`, `AiToolIntent` (suggested tool actions: create/list task/reminder, add/list note, get_time, get_settings), `AiFallback`. Orchestrator receives tool suggestions but decides whether to execute or just reply.
+
+### Manual AI smoke checklist
+- LLM disabled: `LLM_ENABLED=false`, ask a question → graceful fallback text.
+- LLM enabled text: ask a general question → text reply.
+- Intent: “Me lembre de pagar o boleto amanhã” → tool intent `create_reminder` suggested.
+- Group chat: ask a short question → concise reply with context.

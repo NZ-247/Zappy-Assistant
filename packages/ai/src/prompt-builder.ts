@@ -3,6 +3,12 @@ import type { EffectiveSettings, PromptBuilderInput, PromptBuilderOutput, Person
 
 const DEFAULT_CONTEXT: EffectiveSettings = { formality: "neutral" };
 
+const limitMemory = (input?: { items?: PromptBuilderInput["recentMemory"]; limit?: number }) => {
+  if (!input?.items?.length) return [];
+  if (!input.limit || input.limit <= 0) return input.items;
+  return input.items.slice(-input.limit);
+};
+
 const convertMemoryToMessages = (input: PromptBuilderInput["recentMemory"]): PromptBuilderOutput["contextMessages"] => {
   if (!input?.length) return [];
   return input
@@ -14,23 +20,89 @@ const convertMemoryToMessages = (input: PromptBuilderInput["recentMemory"]): Pro
     .filter(Boolean) as PromptBuilderOutput["contextMessages"];
 };
 
+const buildToneBlock = (input: PromptBuilderInput, languageHint?: string): string => {
+  const { persona, chatScope, userRole } = input;
+  const toneLines: string[] = [];
+
+  toneLines.push(`Style: ${persona.traits.join(", ")}.`);
+  toneLines.push(`Tone for clients/third parties: ${persona.tone.client}.`);
+  toneLines.push(`Tone for owner/root: ${persona.tone.owner}.`);
+  toneLines.push(`Conversation scope: ${chatScope === "direct" ? "Direct chat — be a personal assistant." : "Group chat — be concise and contextual."}`);
+  toneLines.push(`User role: ${userRole}. ${["ROOT", "DONO"].includes(userRole) ? "Can be more direct and operational." : "Keep professional clarity."}`);
+  if (languageHint) toneLines.push(`Language preference: ${languageHint}.`);
+  return toneLines.join(" ");
+};
+
+const buildOperationalPolicies = (input: PromptBuilderInput): string[] => {
+  const policies: string[] = [
+    "Prefer clarity over verbosity; keep replies actionable and concise.",
+    "Avoid overexplaining and do not invent facts.",
+    "If information depends on tools or data you do not have, say so and suggest the relevant command or data needed.",
+    "If a command/tool can solve the request, suggest or invoke it; otherwise provide a concise answer.",
+    "Use current timezone and local date/time in replies when relevant.",
+    "If LLM cannot fulfill a request, redirect to available commands gracefully."
+  ];
+
+  if (input.handoffActive) policies.push("Handoff is active; stay silent unless explicitly mentioned by name.");
+  if (input.chatScope === "group") policies.push("In groups, keep messages short and clearly reference context.");
+  if (input.chatScope === "direct") policies.push("In direct chats, be slightly warmer and offer to organize next steps.");
+
+  return policies;
+};
+
+const buildToolHints = (input: PromptBuilderInput): string[] => {
+  const hints: string[] = [];
+  if (input.modulesEnabled?.length) hints.push(`Modules enabled: ${input.modulesEnabled.join(", ")}.`);
+  if (input.availableTools?.length)
+    hints.push(`Tools available: ${input.availableTools.join(", ")}. Prefer suggesting them when they address the request.`);
+  return hints;
+};
+
 export const buildPrompt = (input: PromptBuilderInput): PromptBuilderOutput => {
   const settings = { ...DEFAULT_CONTEXT, ...input.settings };
-  const lines: string[] = [];
+  const memory = limitMemory({ items: input.recentMemory, limit: input.memoryLimit });
+  const contextMessages = convertMemoryToMessages(memory);
+  const systemLines: string[] = [];
 
-  lines.push(input.persona.description ?? `You are ${input.persona.name}.`);
-  lines.push(`Role: ${input.persona.role}`);
-  lines.push(`Chat scope: ${input.chatScope}. User role: ${input.userRole}.`);
-  lines.push(`Now: ${input.now.toISOString()}.`);
-  if (settings.timezone) lines.push(`Timezone: ${settings.timezone}.`);
-  if (settings.language) lines.push(`Preferred language: ${settings.language}.`);
-  if (settings.formality) lines.push(`Formality: ${settings.formality}.`);
-  if (input.policyNotes?.length) lines.push(...input.policyNotes);
+  // 1) Identity / persona
+  systemLines.push(input.persona.description ?? `You are ${input.persona.name} (persona id: ${input.persona.id}).`);
 
-  const systemPrompt = lines.join("\n");
-  const contextMessages = convertMemoryToMessages(input.recentMemory);
+  // 2) Role & responsibilities
+  systemLines.push(`Role: ${input.persona.role}`);
 
-  return { systemPrompt, contextMessages, policyNotes: input.policyNotes };
+  // 3) Tone / style
+  systemLines.push(buildToneBlock(input, settings.language));
+
+  // 4) Operational policies
+  systemLines.push(buildOperationalPolicies(input).join(" "));
+
+  // 5) Conversation context
+  const contextBits: string[] = [];
+  if (input.currentState) contextBits.push(`Conversation state: ${input.currentState}.`);
+  if (input.chatScope === "group") contextBits.push("Respond to the sender; avoid noisy replies.");
+  if (contextBits.length) systemLines.push(contextBits.join(" "));
+
+  // 6) Tools / modules
+  const toolHints = buildToolHints(input);
+  if (toolHints.length) systemLines.push(toolHints.join(" "));
+
+  // 7) Current date/time/timezone
+  systemLines.push(
+    `Current datetime: ${input.now.toISOString()}. Timezone: ${settings.timezone ?? "unspecified"}.${
+      settings.formality ? ` Formality: ${settings.formality}.` : ""
+    }`
+  );
+
+  // 8) Output behavior expectations
+  systemLines.push(
+    "Output expectations: be concise, structured, and actionable. If uncertain, say so briefly. When proposing steps, list them in 1-3 bullets."
+  );
+
+  if (input.policyNotes?.length) systemLines.push(input.policyNotes.join(" "));
+
+  const systemPrompt = systemLines.join("\n");
+
+  return { systemPrompt, contextMessages, policyNotes: input.policyNotes, toolHints };
 };
 
 export const buildBaseSystemPrompt = (input?: {
@@ -47,7 +119,7 @@ export const buildBaseSystemPrompt = (input?: {
     userRole: "MEMBER",
     now: input?.now ?? new Date(),
     recentMemory: [],
-    activeTools: [],
+    availableTools: [],
     policyNotes: input?.policyNotes ?? []
   });
   return prompt.systemPrompt;

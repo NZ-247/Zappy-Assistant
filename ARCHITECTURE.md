@@ -71,6 +71,40 @@ Zappy-Assistant is a scalable WhatsApp assistant focused on atendimento, agendam
 
 ---
 
+### 2.2 Core inbound execution stages (normalized pipeline)
+Every inbound message now runs through explicit, small stages inside core:
+
+1. normalize event  
+2. authenticate / identify sender  
+3. resolve tenant / group / user  
+4. resolve roles and permissions  
+5. resolve flags / settings / modules  
+6. classify message (system | ignored | command | trigger candidate | AI candidate | tool follow-up)  
+7. apply mute / handoff policies  
+8. trigger engine  
+9. command router  
+10. AI fallback  
+11. response formatting (ReplyText / ReplyList → text)  
+12. persistence / logging (performed in adapters/apps)
+
+Pipeline sketch:
+```
+incoming WA event
+  ↓ (status/broadcast + media guard)
+normalize → identify → scope → permissions → flags → classify
+          → mute/handoff → trigger → command → AI fallback
+          → format responses → persist/log
+```
+
+Classification & protections:
+- Status/broadcast (`status@broadcast`), bot-echo, duplicate messages, and media-only events (when downloads are off) are ignored safely.
+- Conversation state (`NONE | WAITING_CONFIRMATION | WAITING_TASK_DETAILS | WAITING_REMINDER_DETAILS | HANDOFF_ACTIVE`) is loaded via a port to support multi-step flows.
+
+Response actions (normalized contract):
+- `ReplyTextAction`, `ReplyListAction` (formatted to text), `EnqueueJobAction` (reminder/timer), `NoopAction`, `ErrorAction` (becomes text), `HandoffAction`.
+
+---
+
 ## 3) Orchestrator flow (decision order)
 
 Orchestrator is the central decision-maker. It must remain deterministic and side-effect free except through ports.
@@ -189,6 +223,8 @@ Adapter responsibilities:
 - Apply rate limit per user/group/tenant in Redis.
 - Add a circuit-breaker behavior:
   - If LLM fails: reply with a safe fallback (“Posso ajudar com /task e /reminder…”)
+- Short-term AI memory is stored separately from raw Message logs in `ConversationMemory` (trimmed turns only). Default window: `LLM_MEMORY_MESSAGES=10`; older entries are pruned after each append.
+- AI assistant can return text or a tool suggestion (create/list task, create/list reminder, add/list note, get_time, get_settings); orchestrator decides execution vs reply.
 
 ---
 
