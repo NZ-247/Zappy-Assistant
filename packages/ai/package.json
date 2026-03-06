@@ -1,5 +1,5 @@
 {
-  "name": "@zappy/core",
+  "name": "@zappy/ai",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,11 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@zappy/shared": "0.1.0",
-    "luxon": "^3.7.2",
-    "expr-eval": "^2.0.2"
-  },
-  "devDependencies": {
-    "@types/luxon": "^3.7.1"
+    "@zappy/core": "0.1.0",
+    "openai": "^4.86.1"
   }
 }

@@ -124,3 +124,10 @@ export const normalizeTimezone = (zone?: string): string => {
   const dt = DateTime.now().setZone(candidate);
   return dt.isValid ? dt.zoneName : DEFAULT_TIMEZONE;
 };
+
+export const getDayRange = (input: { date?: Date; timezone?: string }): { start: Date; end: Date; label: string } => {
+  const timezone = input.timezone ?? DEFAULT_TIMEZONE;
+  const reference = input.date ? DateTime.fromJSDate(input.date) : DateTime.now();
+  const dt = reference.setZone(timezone);
+  return { start: dt.startOf("day").toJSDate(), end: dt.endOf("day").toJSDate(), label: dt.toFormat("dd/LL/yyyy") };
+};

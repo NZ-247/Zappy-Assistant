@@ -5,6 +5,7 @@ import {
   createRedisConnection,
   featureFlagRepository,
   getGatewayHeartbeat,
+  getWorkerHeartbeat,
   getRecentMessages,
   prisma,
   triggerRepository
@@ -67,8 +68,9 @@ app.get("/admin/messages", async (request) => {
 
 app.get("/admin/status", async () => {
   const heartbeat = await getGatewayHeartbeat(redis);
-  const [waiting, active, failed] = await Promise.all([queue.getWaitingCount(), queue.getActiveCount(), queue.getFailedCount()]);
-  return { gateway: heartbeat, queue: { waiting, active, failed } };
+  const worker = await getWorkerHeartbeat(redis);
+  const [waiting, active, failed, delayed] = await Promise.all([queue.getWaitingCount(), queue.getActiveCount(), queue.getFailedCount(), queue.getDelayedCount()]);
+  return { gateway: heartbeat, worker, queue: { waiting, active, failed, delayed } };
 });
 
 const start = async () => {

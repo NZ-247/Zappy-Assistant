@@ -5,13 +5,22 @@ import {
   ReminderStatus,
   Scope,
   TaskStatus,
+  TimerStatus,
   type MessageDirection,
   type Prisma
 } from "@prisma/client";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import OpenAI from "openai";
-import { LlmError, type ConversationMessage, type InboundMessageEvent, type LlmErrorReason, type LlmPort, type ReminderCreateInput } from "@zappy/core";
+import {
+  LlmError,
+  type ConversationMessage,
+  type InboundMessageEvent,
+  type LlmErrorReason,
+  type LlmPort,
+  type ReminderCreateInput,
+  type TimerCreateInput
+} from "@zappy/core";
 import type { FeatureFlagInput, TriggerInput } from "@zappy/shared";
 
 export const prisma = new PrismaClient();
@@ -47,7 +56,7 @@ export const ensureTenantContext = async (input: {
 
   const user =
     (await prisma.user.findUnique({ where: { waUserId: input.waUserId } })) ??
-    (await prisma.user.create({ data: { tenantId: tenant.id, waUserId: input.waUserId, displayName: input.waUserId } }));
+    (await prisma.user.create({ data: { tenantId: tenant.id, waUserId: input.waUserId, displayName: input.waUserId, role: "member" } }));
 
   return { tenant, group, user };
 };
@@ -240,19 +249,63 @@ export const coreTriggersRepository = {
 };
 
 export const tasksRepository = {
-  addTask: async (input: { tenantId: string; title: string; createdByWaUserId: string }) => {
-    const row = await prisma.task.create({ data: { tenantId: input.tenantId, type: "TASK", payload: { title: input.title, createdByWaUserId: input.createdByWaUserId }, status: TaskStatus.PENDING } });
+  addTask: async (input: { tenantId: string; title: string; createdByWaUserId: string; waGroupId?: string; runAt?: Date | null }) => {
+    const user = await prisma.user.findUnique({ where: { waUserId: input.createdByWaUserId } });
+    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const row = await prisma.task.create({
+      data: {
+        tenantId: input.tenantId,
+        groupId: group?.id,
+        userId: user?.id,
+        waGroupId: input.waGroupId,
+        waUserId: input.createdByWaUserId,
+        type: "TASK",
+        payload: { title: input.title, createdByWaUserId: input.createdByWaUserId },
+        status: TaskStatus.PENDING,
+        runAt: input.runAt ?? null
+      }
+    });
     return { id: row.id, title: input.title };
   },
-  listTasks: async (input: { tenantId: string }) => {
-    const rows = await prisma.task.findMany({ where: { tenantId: input.tenantId, type: "TASK" }, orderBy: { createdAt: "desc" }, take: 20 });
-    return rows.map((row) => ({ id: row.id, title: String((row.payload as Prisma.JsonObject).title ?? "untitled"), done: row.status === TaskStatus.DONE }));
+  listTasks: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
+    const where: Prisma.TaskWhereInput = {
+      tenantId: input.tenantId,
+      type: "TASK",
+      waGroupId: input.waGroupId ?? undefined,
+      waUserId: input.waGroupId ? undefined : input.waUserId
+    };
+    const rows = await prisma.task.findMany({ where, orderBy: { createdAt: "desc" }, take: 20 });
+    return rows.map((row) => ({ id: row.id, title: String((row.payload as Prisma.JsonObject).title ?? "untitled"), done: row.status === TaskStatus.DONE, runAt: row.runAt }));
   },
-  markDone: async (input: { tenantId: string; taskId: string }) => {
-    const row = await prisma.task.findFirst({ where: { id: input.taskId, tenantId: input.tenantId, type: "TASK" } });
+  listTasksForDay: async (input: { tenantId: string; waGroupId?: string; waUserId?: string; dayStart: Date; dayEnd: Date }) => {
+    const where: Prisma.TaskWhereInput = {
+      tenantId: input.tenantId,
+      type: "TASK",
+      waGroupId: input.waGroupId ?? undefined,
+      waUserId: input.waGroupId ? undefined : input.waUserId,
+      OR: [
+        { runAt: { gte: input.dayStart, lte: input.dayEnd } },
+        { AND: [{ runAt: null }, { createdAt: { gte: input.dayStart, lte: input.dayEnd } }] }
+      ]
+    };
+    const rows = await prisma.task.findMany({ where, orderBy: { createdAt: "asc" }, take: 50 });
+    return rows.map((row) => ({ id: row.id, title: String((row.payload as Prisma.JsonObject).title ?? "untitled"), done: row.status === TaskStatus.DONE, runAt: row.runAt }));
+  },
+  markDone: async (input: { tenantId: string; taskId: string; waGroupId?: string; waUserId?: string }) => {
+    const row = await prisma.task.findFirst({ where: { id: input.taskId, tenantId: input.tenantId, type: "TASK", waGroupId: input.waGroupId ?? undefined, waUserId: input.waGroupId ? undefined : input.waUserId } });
     if (!row) return false;
     await prisma.task.update({ where: { id: row.id }, data: { status: TaskStatus.DONE } });
     return true;
+  },
+  countOpen: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
+    const where: Prisma.TaskWhereInput = {
+      tenantId: input.tenantId,
+      type: "TASK",
+      waGroupId: input.waGroupId ?? undefined,
+      waUserId: input.waGroupId ? undefined : input.waUserId,
+      status: { not: TaskStatus.DONE }
+    };
+    return prisma.task.count({ where });
   }
 };
 
@@ -273,6 +326,102 @@ export const remindersRepository = {
       },
       select: { id: true, status: true }
     });
+  },
+  listForDay: async (input: { tenantId: string; waGroupId?: string; waUserId: string; dayStart: Date; dayEnd: Date }) => {
+    const where: Prisma.ReminderWhereInput = {
+      tenantId: input.tenantId,
+      waGroupId: input.waGroupId ?? undefined,
+      waUserId: input.waGroupId ? undefined : input.waUserId,
+      remindAt: { gte: input.dayStart, lte: input.dayEnd },
+      status: ReminderStatus.SCHEDULED
+    };
+    const rows = await prisma.reminder.findMany({ where, orderBy: { remindAt: "asc" } });
+    return rows.map((row) => ({ id: row.id, status: row.status, remindAt: row.remindAt, message: row.message }));
+  },
+  countScheduled: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
+    const where: Prisma.ReminderWhereInput = {
+      tenantId: input.tenantId,
+      status: ReminderStatus.SCHEDULED,
+      waGroupId: input.waGroupId ?? undefined,
+      waUserId: input.waGroupId ? undefined : input.waUserId
+    };
+    return prisma.reminder.count({ where });
+  }
+};
+
+export const notesRepository = {
+  addNote: async (input: { tenantId: string; waGroupId?: string; waUserId: string; text: string; scope: Scope }) => {
+    const user = await prisma.user.findUnique({ where: { waUserId: input.waUserId } });
+    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const last = await prisma.note.findFirst({
+      where: { tenantId: input.tenantId, scope: input.scope, groupId: group?.id ?? null, userId: user?.id ?? null },
+      orderBy: { sequence: "desc" }
+    });
+    const nextSeq = (last?.sequence ?? 0) + 1;
+    const publicId = `N${String(nextSeq).padStart(3, "0")}`;
+    const row = await prisma.note.create({
+      data: {
+        tenantId: input.tenantId,
+        groupId: group?.id,
+        userId: user?.id,
+        waGroupId: input.waGroupId,
+        waUserId: input.waUserId,
+        scope: input.scope,
+        text: input.text,
+        sequence: nextSeq,
+        publicId
+      }
+    });
+    return { id: row.id, publicId: row.publicId, text: row.text, createdAt: row.createdAt, scope: row.scope as Scope };
+  },
+  listNotes: async (input: { tenantId: string; waGroupId?: string; waUserId: string; scope: Scope; limit?: number }) => {
+    const user = await prisma.user.findUnique({ where: { waUserId: input.waUserId } });
+    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const rows = await prisma.note.findMany({
+      where: { tenantId: input.tenantId, scope: input.scope, groupId: group?.id ?? null, userId: user?.id ?? null },
+      orderBy: { createdAt: "desc" },
+      take: input.limit ?? 10
+    });
+    return rows.map((row) => ({ id: row.id, publicId: row.publicId, text: row.text, createdAt: row.createdAt, scope: row.scope as Scope }));
+  },
+  removeNote: async (input: { tenantId: string; waGroupId?: string; waUserId: string; publicId: string }) => {
+    const user = await prisma.user.findUnique({ where: { waUserId: input.waUserId } });
+    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const note = await prisma.note.findFirst({ where: { tenantId: input.tenantId, publicId: input.publicId, groupId: group?.id ?? null, userId: user?.id ?? null } });
+    if (!note) return false;
+    await prisma.note.delete({ where: { id: note.id } });
+    return true;
+  }
+};
+
+export const timersRepository = {
+  createTimer: async (input: TimerCreateInput) => {
+    const user = await prisma.user.findUnique({ where: { waUserId: input.waUserId } });
+    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const row = await prisma.timer.create({
+      data: {
+        tenantId: input.tenantId,
+        groupId: group?.id,
+        userId: user?.id,
+        waUserId: input.waUserId,
+        waGroupId: input.waGroupId,
+        fireAt: input.fireAt,
+        durationMs: input.durationMs,
+        label: input.label,
+        status: TimerStatus.SCHEDULED
+      }
+    });
+    return { id: row.id, status: row.status, fireAt: row.fireAt };
+  },
+  getTimerById: async (id: string) => prisma.timer.findUnique({ where: { id } }),
+  countScheduled: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
+    const where: Prisma.TimerWhereInput = {
+      tenantId: input.tenantId,
+      status: TimerStatus.SCHEDULED,
+      waGroupId: input.waGroupId ?? undefined,
+      waUserId: input.waGroupId ? undefined : input.waUserId
+    };
+    return prisma.timer.count({ where });
   }
 };
 
@@ -283,9 +432,7 @@ export const messagesRepository = {
       orderBy: { createdAt: "desc" },
       take: input.limit
     });
-    return rows
-      .reverse()
-      .map((row) => ({ role: row.direction === "INBOUND" ? "user" : "assistant", content: row.body }));
+    return rows.reverse().map((row) => ({ role: row.direction === "INBOUND" ? "user" : "assistant", content: row.body }));
   }
 };
 
@@ -323,6 +470,11 @@ export const createQueueAdapter = (queue: Queue) => ({
   enqueueReminder: async (reminderId: string, runAt: Date) => {
     const delay = Math.max(0, runAt.getTime() - Date.now());
     const job = await queue.add("send-reminder", { reminderId }, { jobId: reminderId, delay });
+    return { jobId: String(job.id) };
+  },
+  enqueueTimer: async (timerId: string, runAt: Date) => {
+    const delay = Math.max(0, runAt.getTime() - Date.now());
+    const job = await queue.add("fire-timer", { timerId }, { jobId: timerId, delay });
     return { jobId: String(job.id) };
   }
 });
@@ -370,14 +522,106 @@ export const getGatewayHeartbeat = async (redis: Redis) => {
   return raw ? (JSON.parse(raw) as { isConnected: boolean; at: string }) : { isConnected: false, at: null };
 };
 
+export const markWorkerHeartbeat = async (redis: Redis) => {
+  await redis.set("worker:heartbeat", JSON.stringify({ ok: true, at: new Date().toISOString() }), "EX", 30);
+};
+
+export const getWorkerHeartbeat = async (redis: Redis) => {
+  const raw = await redis.get("worker:heartbeat");
+  return raw ? (JSON.parse(raw) as { ok: boolean; at: string }) : { ok: false, at: null };
+};
+
 export const getRecentMessages = (limit: number) =>
   prisma.message.findMany({ orderBy: { createdAt: "desc" }, take: limit, select: { id: true, body: true, createdAt: true, waUserId: true, waGroupId: true, direction: true } });
 
 export const getReminderById = (id: string) => prisma.reminder.findUnique({ where: { id } });
 export const updateReminderStatus = (id: string, status: ReminderStatus) => prisma.reminder.update({ where: { id }, data: { status } });
 
+export const getTimerById = (id: string) => prisma.timer.findUnique({ where: { id } });
+export const updateTimerStatus = (id: string, status: TimerStatus) => prisma.timer.update({ where: { id }, data: { status } });
+
 export type WhatsAppSender = (to: string, text: string) => Promise<{ messageId?: string; raw?: unknown }>;
 
 export const markReminderMessage = async (input: { reminderId: string; messageId?: string }) => {
   await prisma.reminder.update({ where: { id: input.reminderId }, data: { sentMessageId: input.messageId } });
 };
+
+export const markTimerMessage = async (input: { timerId: string; messageId?: string }) => {
+  await prisma.timer.update({ where: { id: input.timerId }, data: { sentMessageId: input.messageId } });
+};
+
+export const createMuteAdapter = (redis: Redis) => ({
+  getMuteState: async (input: { tenantId: string; scope: Scope; scopeId: string }) => {
+    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}`;
+    const raw = await redis.get(key);
+    if (!raw) return null;
+    const until = new Date(raw);
+    if (Number.isNaN(until.getTime())) return null;
+    if (until.getTime() <= Date.now()) {
+      await redis.del(key);
+      return null;
+    }
+    return { until };
+  },
+  mute: async (input: { tenantId: string; scope: Scope; scopeId: string; durationMs: number; now: Date }) => {
+    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}`;
+    const until = new Date(input.now.getTime() + input.durationMs);
+    const ttlSeconds = Math.max(1, Math.round(input.durationMs / 1000));
+    await redis.set(key, until.toISOString(), "EX", ttlSeconds);
+    return { until };
+  },
+  unmute: async (input: { tenantId: string; scope: Scope; scopeId: string }) => {
+    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}`;
+    await redis.del(key);
+  }
+});
+
+export const identityRepository = {
+  getIdentity: async (input: { tenantId: string; waUserId: string; waGroupId?: string }) => {
+    const user = await prisma.user.findUnique({ where: { waUserId: input.waUserId } });
+    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const role = user?.role ?? "member";
+    const basePermissions = ["task", "reminder", "note", "agenda", "calc", "timer", "status"];
+    const adminPermissions = ["admin:flags", "admin:triggers", "admin:status"];
+    const permissions = role === "admin" ? [...basePermissions, ...adminPermissions] : basePermissions;
+    return { displayName: user?.displayName ?? input.waUserId, role, permissions, groupName: group?.name };
+  }
+};
+
+export const createStatusPort = (deps: {
+  redis: Redis;
+  queue: Queue;
+  llmEnabled: boolean;
+  llmConfigured: boolean;
+}) => ({
+  getStatus: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
+    const [dbOk, redisOk, gateway, worker, waiting, active, delayed, tasksOpen, remindersScheduled, timersScheduled] = await Promise.all([
+      prisma
+        .$queryRaw`SELECT 1`
+        .then(() => true)
+        .catch(() => false),
+      deps.redis
+        .ping()
+        .then(() => true)
+        .catch(() => false),
+      getGatewayHeartbeat(deps.redis),
+      getWorkerHeartbeat(deps.redis),
+      deps.queue.getWaitingCount(),
+      deps.queue.getActiveCount(),
+      deps.queue.getDelayedCount(),
+      tasksRepository.countOpen({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId }),
+      remindersRepository.countScheduled({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId }),
+      timersRepository.countScheduled({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId })
+    ]);
+
+    return {
+      gateway: { ok: gateway.isConnected, at: gateway.at },
+      worker: { ok: worker.ok, at: worker.at },
+      db: { ok: dbOk },
+      redis: { ok: redisOk },
+      llm: { enabled: deps.llmEnabled, ok: deps.llmEnabled ? deps.llmConfigured : false, reason: deps.llmEnabled && !deps.llmConfigured ? "missing-key" : undefined },
+      counts: { tasksOpen, remindersScheduled, timersScheduled },
+      queue: { waiting, active, delayed }
+    };
+  }
+});

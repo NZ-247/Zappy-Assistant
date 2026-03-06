@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
+    "@zappy/ai": "0.1.0",
     "@zappy/adapters": "0.1.0",
     "@zappy/core": "0.1.0",
     "@zappy/shared": "0.1.0",

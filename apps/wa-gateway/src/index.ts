@@ -5,21 +5,26 @@ import {
   coreFlagsRepository,
   coreTriggersRepository,
   createCooldownAdapter,
-  createOpenAiAdapter,
   createQueue,
   createQueueAdapter,
   createRateLimitAdapter,
   createRedisConnection,
+  createStatusPort,
   ensureTenantContext,
+  identityRepository,
+  markGatewayHeartbeat,
   messagesRepository,
+  notesRepository,
   persistInboundMessage,
   persistOutboundMessage,
+  prisma,
   promptsRepository,
   remindersRepository,
   tasksRepository,
-  markGatewayHeartbeat,
-  prisma
+  timersRepository,
+  createMuteAdapter
 } from "@zappy/adapters";
+import { buildSystemPrompt, createOpenAiChatAdapter, zappyPersona } from "@zappy/ai";
 import { createLogger, loadEnv } from "@zappy/shared";
 import qrcodeTerminal from "qrcode-terminal";
 
@@ -27,6 +32,17 @@ const env = loadEnv();
 const logger = createLogger("wa-gateway");
 const redis = createRedisConnection(env.REDIS_URL);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
+const queueAdapter = createQueueAdapter(queue);
+const llmConfigured = Boolean(env.OPENAI_API_KEY);
+const promptMode = env.ASSISTANT_MODE_DEFAULT === "off" ? "professional" : env.ASSISTANT_MODE_DEFAULT;
+const baseSystemPrompt = buildSystemPrompt({
+  mode: promptMode as "professional" | "fun" | "mixed",
+  timezone: env.BOT_TIMEZONE,
+  extras: ["Priorize o contexto do chat atual."]
+});
+const llmAdapter = createOpenAiChatAdapter({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL });
+const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
+const muteAdapter = createMuteAdapter(redis);
 
 let socket: ReturnType<typeof makeWASocket> | null = null;
 const heartbeat = setInterval(() => {
@@ -38,18 +54,24 @@ const orchestrator = new Orchestrator({
   triggersRepository: coreTriggersRepository,
   tasksRepository,
   remindersRepository,
+  notesRepository,
+  timersRepository,
   messagesRepository,
   prompt: promptsRepository,
   cooldown: createCooldownAdapter(redis),
   rateLimit: createRateLimitAdapter(redis),
-  queue: createQueueAdapter(queue),
-  llm: createOpenAiAdapter(env.OPENAI_API_KEY, env.OPENAI_MODEL),
+  queue: queueAdapter,
+  llm: llmAdapter,
+  mute: muteAdapter,
+  identity: identityRepository,
+  status: statusPort,
   botName: env.DEFAULT_BOT_NAME,
   defaultAssistantMode: env.ASSISTANT_MODE_DEFAULT,
   defaultFunMode: env.FUN_MODE_DEFAULT,
   llmEnabled: env.LLM_ENABLED,
   logger,
-  timezone: env.BOT_TIMEZONE
+  timezone: env.BOT_TIMEZONE,
+  baseSystemPrompt
 });
 
 const getText = (message: any): string =>
@@ -120,7 +142,11 @@ const connect = async () => {
       const actions = await orchestrator.handleInboundMessage(event);
       for (const action of actions) {
         if (action.type === "enqueue_reminder") {
-          await createQueueAdapter(queue).enqueueReminder(action.reminderId, action.remindAt);
+          await queueAdapter.enqueueReminder(action.reminderId, action.remindAt);
+          continue;
+        }
+        if (action.type === "enqueue_timer") {
+          await queueAdapter.enqueueTimer(action.timerId, action.fireAt);
           continue;
         }
         if (action.type !== "reply") continue;
