@@ -28,7 +28,7 @@ import {
   conversationMemoryRepository
 } from "@zappy/adapters";
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
-import { createLogger, loadEnv } from "@zappy/shared";
+import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
 import qrcodeTerminal from "qrcode-terminal";
 
 const env = loadEnv();
@@ -53,6 +53,32 @@ const aiService = new AiService({
   logger
 });
 
+const adminApiUrl = `http://localhost:${env.ADMIN_API_PORT}`;
+const adminUiUrl = `http://localhost:${env.ADMIN_UI_PORT}`;
+printStartupBanner(logger, {
+  app: "WA Gateway",
+  environment: env.NODE_ENV,
+  timezone: env.BOT_TIMEZONE,
+  llmEnabled: env.LLM_ENABLED && llmConfigured,
+  model: llmModel,
+  adminApiUrl,
+  adminUiUrl,
+  queueName: env.QUEUE_NAME
+});
+
+const reportStartupStatus = async () => {
+  const dbOk = await prisma
+    .$queryRaw`SELECT 1`
+    .then(() => true)
+    .catch(() => false);
+  const redisOk = await redis
+    .ping()
+    .then(() => true)
+    .catch(() => false);
+  logger.info(withCategory("DB", { status: dbOk ? "OK" : "FAIL" }), `DB ${dbOk ? "OK" : "FAIL"}`);
+  logger.info(withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }), `Redis ${redisOk ? "OK" : "FAIL"}`);
+};
+
 let socket: ReturnType<typeof makeWASocket> | null = null;
 const heartbeat = setInterval(() => {
   void markGatewayHeartbeat(redis, Boolean(socket?.user));
@@ -73,6 +99,7 @@ const orchestrator = new Orchestrator({
   rateLimit: createRateLimitAdapter(redis),
   queue: queueAdapter,
   llm: llmAdapter,
+  llmModel,
   mute: muteAdapter,
   identity: identityRepository,
   status: statusPort,
@@ -101,6 +128,7 @@ const hasMedia = (message: any): boolean =>
   );
 
 const connect = async () => {
+  logger.info(withCategory("SYSTEM", { status: "WhatsApp CONNECTING" }), "WhatsApp CONNECTING");
   const { state, saveCreds } = await useMultiFileAuthState(env.WA_SESSION_PATH);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -111,24 +139,37 @@ const connect = async () => {
   socket.ev.on("connection.update", async (update: { connection?: "close" | "open"; lastDisconnect?: { error?: unknown }; qr?: string; isNewLogin?: boolean; pairingCode?: string }) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      logger.info({ qr }, "scan QR to pair");
+      logger.info(withCategory("SYSTEM", { status: "WhatsApp QR", qr }), "scan QR to pair");
       qrcodeTerminal.generate(qr, { small: true });
     }
     if (update.isNewLogin === false && update.pairingCode === undefined && process.env.WA_PAIRING_PHONE) {
       const code = await socket?.requestPairingCode(process.env.WA_PAIRING_PHONE);
-      logger.info({ code }, "pairing code");
+      logger.info(withCategory("SYSTEM", { status: "WhatsApp PAIRING", code }), "pairing code");
     }
     if (connection === "close") {
       const shouldReconnect = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode !== DisconnectReason.loggedOut;
-      logger.warn({ shouldReconnect }, "connection closed");
+      logger.warn(withCategory("WARN", { status: "WhatsApp DISCONNECTED", shouldReconnect }), "WhatsApp DISCONNECTED");
       if (shouldReconnect) void connect();
     } else if (connection === "open") {
-      logger.info({ user: socket?.user?.id }, "connected");
+      logger.info(withCategory("SYSTEM", { status: "WhatsApp CONNECTED", user: socket?.user?.id }), "WhatsApp CONNECTED");
       await markGatewayHeartbeat(redis, true);
     }
   });
 
-  socket.ev.on("messages.upsert", async ({ messages, type }: { messages: Array<{ key: { fromMe?: boolean; remoteJid?: string; participant?: string; id?: string }; message?: { conversation?: string; extendedTextMessage?: { text?: string }; imageMessage?: { caption?: string } }; messageTimestamp?: number | { toString: () => string } }>; type: string }) => {
+  socket.ev.on(
+    "messages.upsert",
+    async ({
+      messages,
+      type
+    }: {
+      messages: Array<{
+        key: { fromMe?: boolean; remoteJid?: string; participant?: string; id?: string };
+        message?: { conversation?: string; extendedTextMessage?: { text?: string }; imageMessage?: { caption?: string } };
+        messageTimestamp?: number | { toString: () => string };
+        pushName?: string;
+      }>;
+      type: string;
+    }) => {
     if (type !== "notify" || !socket) return;
 
     for (const message of messages) {
@@ -148,7 +189,9 @@ const connect = async () => {
         waGroupId: isGroup ? remoteJid : undefined,
         waUserId,
         defaultTenantName: env.DEFAULT_TENANT_NAME,
-        onlyGroupId: env.ONLY_GROUP_ID
+        onlyGroupId: env.ONLY_GROUP_ID,
+        remoteJid,
+        userName: message.pushName ?? null
       });
 
       const event: InboundMessageEvent = {
@@ -175,7 +218,27 @@ const connect = async () => {
         rawJson: message
       });
       event.conversationId = persisted.conversationId;
-      logger.info({ tenantId: event.tenantId, waUserId, waGroupId: event.waGroupId, messageId: event.waMessageId }, "inbound message");
+      const canonical = context.canonicalIdentity;
+      const relationshipProfile = context.relationshipProfile ?? canonical?.relationshipProfile;
+      const permissionRole = context.user.permissionRole ?? canonical?.permissionRole ?? context.user.role;
+      logger.info(
+        withCategory("WA-IN", {
+          tenantId: event.tenantId,
+          scope: isGroup ? "group" : "direct",
+          waUserId,
+          phoneNumber: canonical?.phoneNumber,
+          lidJid: canonical?.lidJid,
+          pnJid: canonical?.pnJid,
+          relationshipProfile,
+          permissionRole,
+          waMessageId: event.waMessageId,
+          waGroupId: event.waGroupId,
+          textPreview: text.slice(0, 80),
+          hasMedia: event.hasMedia,
+          messageType: event.rawMessageType
+        }),
+        "inbound message"
+      );
 
       const actions = await orchestrator.handleInboundMessage(event);
       for (const action of actions) {
@@ -207,6 +270,21 @@ const connect = async () => {
             waMessageId: sent.key.id,
             rawJson: sent
           });
+          logger.info(
+            withCategory("WA-OUT", {
+              tenantId: event.tenantId,
+              scope: isGroup ? "group" : "direct",
+              waUserId,
+              phoneNumber: canonical?.phoneNumber,
+              permissionRole,
+              relationshipProfile,
+              waGroupId: event.waGroupId,
+              waMessageId: sent.key.id,
+              action: "handoff",
+              textPreview: note.slice(0, 80)
+            }),
+            "outbound message"
+          );
           continue;
         }
         if (action.kind === "ai_tool_suggestion") {
@@ -225,6 +303,21 @@ const connect = async () => {
             waMessageId: sent.key.id,
             rawJson: sent
           });
+          logger.info(
+            withCategory("WA-OUT", {
+              tenantId: event.tenantId,
+              scope: isGroup ? "group" : "direct",
+              waUserId,
+              phoneNumber: canonical?.phoneNumber,
+              permissionRole,
+              relationshipProfile,
+              waGroupId: event.waGroupId,
+              waMessageId: sent.key.id,
+              action: "ai_tool_suggestion",
+              textPreview: textToSend.slice(0, 80)
+            }),
+            "outbound message"
+          );
           continue;
         }
         if (action.kind !== "reply_text" && action.kind !== "reply_list") continue;
@@ -247,6 +340,21 @@ const connect = async () => {
           waMessageId: sent.key.id,
           rawJson: sent
         });
+        logger.info(
+            withCategory("WA-OUT", {
+              tenantId: event.tenantId,
+              scope: isGroup ? "group" : "direct",
+              waUserId,
+              phoneNumber: canonical?.phoneNumber,
+              permissionRole,
+              relationshipProfile,
+              waGroupId: event.waGroupId,
+              waMessageId: sent.key.id,
+              action: action.kind,
+              textPreview: textToSend.slice(0, 80)
+          }),
+          "outbound message"
+        );
       }
     }
   });
@@ -264,10 +372,11 @@ const shutdown = async () => {
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 process.on("unhandledRejection", (reason) => {
-  logger.error({ err: reason }, "unhandled rejection");
+  logger.error(withCategory("ERROR", { err: reason }), "unhandled rejection");
 });
 process.on("uncaughtException", (error) => {
-  logger.error({ err: error }, "uncaught exception");
+  logger.error(withCategory("ERROR", { err: error }), "uncaught exception");
 });
 
+void reportStartupStatus();
 void connect();

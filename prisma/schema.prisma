@@ -100,21 +100,27 @@ model Group {
 }
 
 model User {
-  id          String        @id @default(uuid())
-  tenantId    String
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  displayName String
-  waUserId    String        @unique
-  role        String        @default("member")
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  messages    Message[]
-  reminders   Reminder[]
-  featureFlags FeatureFlag[]
-  triggers    Trigger[]
-  tasks       Task[]
-  notes       Note[]
-  timers      Timer[]
+  id                 String        @id @default(uuid())
+  tenantId           String
+  tenant             Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  displayName        String?
+  waUserId           String        @unique
+  phoneNumber        String?       @unique
+  lidJid             String?       @unique
+  pnJid              String?       @unique
+  aliases            String[]      @default([])
+  role               String        @default("member")
+  permissionRole     String?
+  relationshipProfile String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  messages           Message[]
+  reminders          Reminder[]
+  featureFlags       FeatureFlag[]
+  triggers           Trigger[]
+  tasks              Task[]
+  notes              Note[]
+  timers             Timer[]
 
   @@index([tenantId])
 }

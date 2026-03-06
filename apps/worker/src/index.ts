@@ -12,7 +12,7 @@ import {
   updateTimerStatus
 } from "@zappy/adapters";
 import { ReminderStatus, TimerStatus } from "@prisma/client";
-import { createLogger, loadEnv } from "@zappy/shared";
+import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
 
 const env = loadEnv();
 const logger = createLogger("worker");
@@ -20,10 +20,42 @@ const connection = createRedisConnection(env.REDIS_URL);
 const heartbeat = setInterval(() => void markWorkerHeartbeat(connection), 10_000);
 void markWorkerHeartbeat(connection);
 
+printStartupBanner(logger, {
+  app: "Worker",
+  environment: env.NODE_ENV,
+  timezone: env.BOT_TIMEZONE,
+  llmEnabled: env.LLM_ENABLED,
+  model: env.LLM_MODEL,
+  adminApiUrl: `http://localhost:${env.ADMIN_API_PORT}`,
+  adminUiUrl: `http://localhost:${env.ADMIN_UI_PORT}`,
+  queueName: env.QUEUE_NAME
+});
+
+const reportStartupStatus = async () => {
+  const dbOk = await prisma
+    .$queryRaw`SELECT 1`
+    .then(() => true)
+    .catch(() => false);
+  const redisOk = await connection
+    .ping()
+    .then(() => true)
+    .catch(() => false);
+  logger.info(withCategory("DB", { status: dbOk ? "OK" : "FAIL" }), `DB ${dbOk ? "OK" : "FAIL"}`);
+  logger.info(withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }), `Redis ${redisOk ? "OK" : "FAIL"}`);
+};
+
 const sendViaGatewayApi = async (to: string, text: string): Promise<{ id?: string; raw?: unknown }> => {
-  logger.info({ to, text }, "send reminder via placeholder sender");
+  logger.info(
+    withCategory("WA-OUT", {
+      to,
+      textPreview: text.slice(0, 80)
+    }),
+    "send reminder via placeholder sender"
+  );
   return { id: `local-${Date.now()}`, raw: { to, text } };
 };
+
+void reportStartupStatus();
 
 const worker = new Worker(
   env.QUEUE_NAME,
@@ -95,8 +127,8 @@ const worker = new Worker(
   { connection: connection as unknown as any }
 );
 
-worker.on("completed", (job) => logger.info({ jobId: job.id }, "job completed"));
-worker.on("failed", (job, error) => logger.error({ jobId: job?.id, error }, "job failed"));
+worker.on("completed", (job) => logger.info(withCategory("QUEUE", { jobId: job.id }), "job completed"));
+worker.on("failed", (job, error) => logger.error(withCategory("ERROR", { jobId: job?.id, error }), "job failed"));
 
 const shutdown = async () => {
   logger.info("shutting down worker");
@@ -110,10 +142,10 @@ const shutdown = async () => {
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 process.on("unhandledRejection", (reason) => {
-  logger.error({ err: reason }, "unhandled rejection");
+  logger.error(withCategory("ERROR", { err: reason }), "unhandled rejection");
 });
 process.on("uncaughtException", (error) => {
-  logger.error({ err: error }, "uncaught exception");
+  logger.error(withCategory("ERROR", { err: error }), "uncaught exception");
 });
 
-logger.info({ queue: env.QUEUE_NAME }, "worker started");
+logger.info(withCategory("QUEUE", { queue: env.QUEUE_NAME, status: "Worker OK" }), "worker started");

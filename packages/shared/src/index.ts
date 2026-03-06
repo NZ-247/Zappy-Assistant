@@ -32,12 +32,55 @@ export const loadEnv = (): AppEnv => {
   return envSchema.parse(process.env);
 };
 
+export type LogCategory = "SYSTEM" | "WA-IN" | "WA-OUT" | "AI" | "HTTP" | "QUEUE" | "DB" | "WARN" | "ERROR";
+
 export const createLogger = (name: string, options?: LoggerOptions) =>
   pino({
     name,
     level: process.env.NODE_ENV === "production" ? "info" : "debug",
+    timestamp: pino.stdTimeFunctions.isoTime,
     ...options
   });
+
+export const withCategory = (category: LogCategory, payload?: Record<string, unknown>) => ({
+  category,
+  ...(payload ?? {})
+});
+
+export const printStartupBanner = (
+  logger: { info: (obj: unknown, msg?: string) => void },
+  input: {
+    app: string;
+    environment: string;
+    timezone?: string;
+    llmEnabled?: boolean;
+    model?: string;
+    adminApiUrl?: string;
+    adminUiUrl?: string;
+    queueName?: string;
+    extras?: Record<string, string | number | boolean | null | undefined>;
+  }
+) => {
+  if (process.env.NODE_ENV === "production") return;
+  const lines = [
+    `🟢 ${input.app} — Zappy Assistant`,
+    `Env: ${input.environment}`,
+    input.timezone ? `Timezone: ${input.timezone}` : null,
+    `LLM: ${input.llmEnabled ? "ENABLED" : "DISABLED"}${input.model ? ` (${input.model})` : ""}`,
+    input.adminApiUrl ? `Admin API: ${input.adminApiUrl}` : null,
+    input.adminUiUrl ? `Admin UI: ${input.adminUiUrl}` : null,
+    input.queueName ? `Queue: ${input.queueName}` : null
+  ]
+    .concat(
+      Object.entries(input.extras ?? {})
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${k}: ${v}`)
+    )
+    .filter(Boolean);
+
+  const banner = ["======================================", ...lines, "======================================"].join("\\n");
+  logger.info(withCategory("SYSTEM", { banner, ...input }), banner);
+};
 
 export const idSchema = z.object({ id: z.string().uuid() });
 

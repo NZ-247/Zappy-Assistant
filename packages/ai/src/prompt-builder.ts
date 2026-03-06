@@ -21,16 +21,38 @@ const convertMemoryToMessages = (input: PromptBuilderInput["recentMemory"]): Pro
 };
 
 const buildToneBlock = (input: PromptBuilderInput, languageHint?: string): string => {
-  const { persona, chatScope, userRole } = input;
+  const { persona, chatScope, userRole, relationshipProfile, profileModifier } = input;
   const toneLines: string[] = [];
 
   toneLines.push(`Style: ${persona.traits.join(", ")}.`);
   toneLines.push(`Tone for clients/third parties: ${persona.tone.client}.`);
   toneLines.push(`Tone for owner/root: ${persona.tone.owner}.`);
-  toneLines.push(`Conversation scope: ${chatScope === "direct" ? "Direct chat — be a personal assistant." : "Group chat — be concise and contextual."}`);
-  toneLines.push(`User role: ${userRole}. ${["ROOT", "DONO"].includes(userRole) ? "Can be more direct and operational." : "Keep professional clarity."}`);
+  if (relationshipProfile) {
+    toneLines.push(
+      `Relationship profile: ${relationshipProfile}${profileModifier?.summary ? ` — ${profileModifier.summary}` : ""}.`
+    );
+  }
+  if (profileModifier?.affectionateForms?.length) {
+    toneLines.push(`Allowed soft forms of address (use sparingly): ${profileModifier.affectionateForms.join(", ")}.`);
+  }
+  toneLines.push(
+    `Conversation scope: ${chatScope === "direct" ? "Direct chat — be a personal assistant." : "Group chat — be concise and contextual."}`
+  );
+  toneLines.push(
+    `User role: ${userRole}. ${["ROOT", "DONO"].includes(userRole) ? "Can be more direct and operational." : "Keep professional clarity."}`
+  );
   if (languageHint) toneLines.push(`Language preference: ${languageHint}.`);
   return toneLines.join(" ");
+};
+
+const buildBehaviorBlock = (input: PromptBuilderInput): string | null => {
+  const behavior = input.persona.behavior;
+  const parts: string[] = [];
+  if (behavior.initiativeLevel) parts.push(`Initiative: ${behavior.initiativeLevel}.`);
+  if (behavior.creativityLevel) parts.push(`Creativity: ${behavior.creativityLevel}.`);
+  if (behavior.suggestionTone) parts.push(`Suggestions: ${behavior.suggestionTone}.`);
+  if (behavior.uncertaintyPolicy) parts.push(`Uncertainty: ${behavior.uncertaintyPolicy}`);
+  return parts.length ? parts.join(" ") : null;
 };
 
 const buildOperationalPolicies = (input: PromptBuilderInput): string[] => {
@@ -72,6 +94,9 @@ export const buildPrompt = (input: PromptBuilderInput): PromptBuilderOutput => {
 
   // 3) Tone / style
   systemLines.push(buildToneBlock(input, settings.language));
+  const behaviorBlock = buildBehaviorBlock(input);
+  if (behaviorBlock) systemLines.push(behaviorBlock);
+  if (input.profileModifier?.promptAdditions?.length) systemLines.push(input.profileModifier.promptAdditions.join(" "));
 
   // 4) Operational policies
   systemLines.push(buildOperationalPolicies(input).join(" "));
@@ -102,7 +127,13 @@ export const buildPrompt = (input: PromptBuilderInput): PromptBuilderOutput => {
 
   const systemPrompt = systemLines.join("\n");
 
-  return { systemPrompt, contextMessages, policyNotes: input.policyNotes, toolHints };
+  return {
+    systemPrompt,
+    contextMessages,
+    policyNotes: input.policyNotes,
+    toolHints,
+    profileSummary: input.profileModifier?.summary
+  };
 };
 
 export const buildBaseSystemPrompt = (input?: {
@@ -117,6 +148,7 @@ export const buildBaseSystemPrompt = (input?: {
     settings: { ...DEFAULT_CONTEXT, ...input?.settings },
     chatScope: "direct",
     userRole: "MEMBER",
+    relationshipProfile: undefined,
     now: input?.now ?? new Date(),
     recentMemory: [],
     availableTools: [],

@@ -3,7 +3,8 @@ import type {
   AiAssistantInput,
   AiResponse,
   ToolAction,
-  ToolIntent
+  ToolIntent,
+  RelationshipProfile
 } from "@zappy/core";
 
 export type PersonaId = "secretary_default" | string;
@@ -17,11 +18,15 @@ export interface PersonaBehavior {
   askForMissingDetails: boolean;
   preferStructuredAnswers: boolean;
   uncertaintyPolicy?: string;
+  initiativeLevel?: "low" | "medium" | "high";
+  creativityLevel?: "low" | "medium" | "high";
+  suggestionTone?: string;
 }
 
 export interface PersonaTone {
   client: string;
   owner: string;
+  profileNote?: string;
 }
 
 export interface PersonaDefinition {
@@ -32,11 +37,25 @@ export interface PersonaDefinition {
   role: string;
   behavior: PersonaBehavior;
   tone: PersonaTone;
+  profileModifiers?: Record<RelationshipProfile, PersonaProfileModifier>;
   examples?: {
     directAssistant?: string;
     businessClient?: string;
     operationalSummary?: string;
   };
+}
+
+export interface PersonaProfileModifier {
+  id: RelationshipProfile;
+  label: string;
+  summary: string;
+  traitsAdd?: string[];
+  toneOverrides?: Partial<PersonaTone>;
+  behaviorOverrides?: Partial<PersonaBehavior>;
+  policyNotes?: string[];
+  promptAdditions?: string[];
+  affectionateForms?: string[];
+  memoryWindowOverride?: number;
 }
 
 export interface EffectiveSettings {
@@ -74,6 +93,8 @@ export interface PromptBuilderInput {
   settings?: EffectiveSettings;
   chatScope: ChatScope;
   userRole: UserRole;
+  relationshipProfile?: RelationshipProfile;
+  profileModifier?: PersonaProfileModifier;
   modulesEnabled?: string[];
   availableTools?: ToolAction[];
   currentState?: string;
@@ -89,6 +110,7 @@ export interface PromptBuilderOutput {
   contextMessages: ConversationMessage[];
   policyNotes?: string[];
   toolHints?: string[];
+  profileSummary?: string;
 }
 
 export type AiGenerateInput = AiAssistantInput;

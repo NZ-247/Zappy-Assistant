@@ -226,6 +226,20 @@ Adapter responsibilities:
 - Short-term AI memory is stored separately from raw Message logs in `ConversationMemory` (trimmed turns only). Default window: `LLM_MEMORY_MESSAGES=10`; older entries are pruned after each append.
 - AI assistant can return text or a tool suggestion (create/list task, create/list reminder, add/list note, get_time, get_settings); orchestrator decides execution vs reply.
 
+### 6.1 Relationship-aware persona system
+- Resolver maps WhatsApp numbers to relationship profiles: `556699064658 → creator_root`, `556692283438 → mother_privileged`; others fall back to delegated_owner/admin/member/external_contact by role.
+- Profiles influence prompt tone, initiative, creativity, and memory window (creator_root: 24; mother_privileged: 18; default: 10).
+- Persona modifiers add strategic/proactive flavor for creator_root and gentle/affectionate-but-respectful tone for mother_privileged. Guardrail: privileged tone only applies to those numbers and must not be mentioned to others.
+
+### 6.2 Natural-language tools & slot filling
+- New pipeline stage (before AI fallback) executes tools from natural language: create/update/complete/delete tasks, create/update/delete reminders, add/list notes, get_time, get_settings.
+- Slot filling keeps conversation state (`WAITING_TOOL_DETAILS` / `WAITING_TOOL_CONFIRMATION`) with ~10 min TTL, asks targeted follow-ups for missing fields, supports cancel keywords, and requests confirmation for destructive actions.
+- Reminder reschedule updates BullMQ job when time changes.
+
+### 6.3 Memory strategy by profile
+- Default AI memory window: 10 turns; creator_root: 24; mother_privileged: 18.
+- Profile summary is injected into the system prompt to guide style without growing transcripts.
+
 ---
 
 ## 7) Worker & jobs (BullMQ)

@@ -11,6 +11,12 @@ This package hosts the AI-facing building blocks for Zappy: persona definitions,
   - Business/client: “Boa tarde! Posso confirmar o horário das 15h (GMT-3) para a reunião. Caso prefira outro horário, me avise e ajusto.”
   - Operational summary: “Resumo rápido: 3 tarefas abertas para hoje, 1 lembrete às 17:30, nenhuma pendência crítica. Posso priorizar algo?”
 
+### Relationship profiles & modifiers
+- Resolver maps numbers → profiles: `556699064658 → creator_root`, `556692283438 → mother_privileged`; others fall back to delegated_owner/admin/member/external_contact based on role.
+- `creator_root`: higher initiative/creativity, proactive/strategic suggestions, occasionally playful; memory window 24.
+- `mother_privileged`: gentle, admiring, tasteful soft address (Srta. Leidy/Kitty/Gatinha), never romantic; memory window 18.
+- Guardrail: privileged tone only for those numbers; prompt includes a profile summary instead of long transcripts.
+
 ## Prompt builder (structure)
 Inputs include: persona, current datetime/timezone/language/formality, conversationScope (direct|group), userRole (ROOT|DONO|GROUP_ADMIN|ADMIN|MEMBER), modules enabled, available tools, conversation state, handoff flag, recent memory (already trimmed), policy notes.
 

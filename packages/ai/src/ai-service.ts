@@ -1,6 +1,6 @@
 import type { ConversationMessage, LlmPort, AiResponse, ToolIntent, ToolAction, AiAssistantInput } from "@zappy/core";
 import { buildPrompt } from "./prompt-builder.js";
-import { DEFAULT_PERSONA_ID, getPersona } from "./persona.js";
+import { DEFAULT_PERSONA_ID, getPersonaWithProfile } from "./persona.js";
 import { NoopConversationMemory } from "./memory.js";
 import type { AiServiceConfig, ConversationMemoryPort, LoggerLike, PromptBuilderOutput } from "./types.js";
 
@@ -12,8 +12,13 @@ const DEFAULT_CONFIG: AiServiceConfig = {
 
 const TOOL_INTENT_HINTS: Array<{ action: ToolAction; patterns: RegExp[]; reason: string }> = [
   { action: "create_task", patterns: [/tarefa/i, /\btask\b/i, /to[- ]do/i], reason: "User asked to create or note a task" },
+  { action: "update_task", patterns: [/edita.*tarefa/i, /atualiza.*tarefa/i], reason: "User asked to update a task" },
+  { action: "complete_task", patterns: [/conclu[ií]d.*tarefa/i, /marca.*tarefa.*feito/i], reason: "User wants to complete a task" },
+  { action: "delete_task", patterns: [/remove.*tarefa/i, /apaga.*tarefa/i], reason: "User wants to delete a task" },
   { action: "list_tasks", patterns: [/listar.*tarefas/i, /tasks?\b.*list/i], reason: "User wants to see tasks" },
   { action: "create_reminder", patterns: [/lembrete/i, /remind/i, /\blembrar\b/i], reason: "User wants a reminder" },
+  { action: "update_reminder", patterns: [/edita.*lembrete/i, /atualiza.*lembrete/i], reason: "User wants to update a reminder" },
+  { action: "delete_reminder", patterns: [/cancela.*lembrete/i, /apaga.*lembrete/i], reason: "User wants to delete a reminder" },
   { action: "list_reminders", patterns: [/listar.*lembretes/i, /reminders?\b.*list/i], reason: "User wants to see reminders" },
   { action: "add_note", patterns: [/anot(a|e)/i, /\bnota\b/i, /\bnote\b/i], reason: "User wants to add a note" },
   { action: "list_notes", patterns: [/listar.*notas/i, /notes?\b.*list/i], reason: "User wants to see notes" },
@@ -50,8 +55,12 @@ export class AiService {
     if (!this.config.enabled || input.llmEnabled === false) return { kind: "text", text: this.unavailableText };
     if (!this.llm) return { kind: "text", text: this.unavailableText };
 
-    const persona = getPersona(input.personaId ?? this.config.personaId);
-    const memoryLimit = this.config.memoryWindow;
+    const { persona, modifier } = getPersonaWithProfile({
+      personaId: input.personaId ?? this.config.personaId,
+      relationshipProfile: input.relationshipProfile
+    });
+    const memoryLimit = modifier?.memoryWindowOverride ?? this.config.memoryWindow;
+    const policyNotes = [...(modifier?.policyNotes ?? [])];
     const recentMemory =
       memoryLimit > 0 && input.conversationId
         ? await this.memory.loadRecent({
@@ -66,6 +75,8 @@ export class AiService {
       settings: input.settings,
       chatScope: input.chatScope,
       userRole: input.userRole,
+      relationshipProfile: input.relationshipProfile,
+      profileModifier: modifier,
       modulesEnabled: input.modulesEnabled,
       availableTools: input.availableTools,
       currentState: input.conversationState,
@@ -73,13 +84,13 @@ export class AiService {
       memoryLimit,
       recentMemory,
       now: input.now,
-      policyNotes: []
+      policyNotes
     });
 
     const toolIntent = detectToolIntent(input.userText, input.availableTools);
     const messages = this.toConversationMessages(prompt, input.userText);
     const text = await this.llm.chat({ system: prompt.systemPrompt, messages });
-    if (text) await this.appendMemory(input, text);
+    if (text) await this.appendMemory(input, text, memoryLimit);
     if (toolIntent) return { kind: "tool_suggestion", tool: toolIntent, text };
     return { kind: "text", text };
   }
@@ -89,10 +100,10 @@ export class AiService {
     return [...base, { role: "user", content: userText }];
   }
 
-  private async appendMemory(input: AiAssistantInput, assistantText: string) {
+  private async appendMemory(input: AiAssistantInput, assistantText: string, keepOverride?: number) {
     if (!this.config.enabled) return;
     if (!this.memory || !input.conversationId) return;
-    const keep = this.config.memoryWindow;
+    const keep = keepOverride ?? this.config.memoryWindow;
     const base = {
       tenantId: input.tenantId,
       conversationId: input.conversationId,

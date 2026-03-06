@@ -10,13 +10,37 @@ import {
   prisma,
   triggerRepository
 } from "@zappy/adapters";
-import { createLogger, featureFlagSchema, loadEnv, triggerSchema } from "@zappy/shared";
+import { createLogger, featureFlagSchema, loadEnv, printStartupBanner, triggerSchema, withCategory } from "@zappy/shared";
 
 const env = loadEnv();
 const logger = createLogger("assistant-api");
 const redis = createRedisConnection(env.REDIS_URL);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const app = Fastify({ loggerInstance: logger });
+
+printStartupBanner(logger, {
+  app: "Assistant API",
+  environment: env.NODE_ENV,
+  timezone: env.BOT_TIMEZONE,
+  llmEnabled: env.LLM_ENABLED,
+  model: env.LLM_MODEL,
+  adminApiUrl: `http://localhost:${env.ADMIN_API_PORT}`,
+  adminUiUrl: `http://localhost:${env.ADMIN_UI_PORT}`,
+  queueName: env.QUEUE_NAME
+});
+
+const reportStartupStatus = async () => {
+  const dbOk = await prisma
+    .$queryRaw`SELECT 1`
+    .then(() => true)
+    .catch(() => false);
+  const redisOk = await redis
+    .ping()
+    .then(() => true)
+    .catch(() => false);
+  logger.info(withCategory("DB", { status: dbOk ? "OK" : "FAIL" }), `DB ${dbOk ? "OK" : "FAIL"}`);
+  logger.info(withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }), `Redis ${redisOk ? "OK" : "FAIL"}`);
+};
 
 app.get("/health", async () => {
   let db = "ok";
@@ -75,10 +99,11 @@ app.get("/admin/status", async () => {
 
 const start = async () => {
   try {
+    await reportStartupStatus();
     await app.listen({ port: env.ADMIN_API_PORT, host: "0.0.0.0" });
-    logger.info({ port: env.ADMIN_API_PORT }, "assistant-api started");
+    logger.info(withCategory("HTTP", { port: env.ADMIN_API_PORT }), "assistant-api started");
   } catch (error) {
-    logger.error(error, "assistant-api failed");
+    logger.error(withCategory("ERROR", { err: error }), "assistant-api failed");
     process.exit(1);
   }
 };
