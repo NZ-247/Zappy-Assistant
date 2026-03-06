@@ -11,7 +11,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@zappy/core": "0.1.0",
-    "openai": "^4.86.1"
+    "@zappy/core": "0.1.0"
   }
 }

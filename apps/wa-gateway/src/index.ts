@@ -22,9 +22,10 @@ import {
   remindersRepository,
   tasksRepository,
   timersRepository,
-  createMuteAdapter
+  createMuteAdapter,
+  createOpenAiAdapter
 } from "@zappy/adapters";
-import { buildSystemPrompt, createOpenAiChatAdapter, zappyPersona } from "@zappy/ai";
+import { buildBaseSystemPrompt } from "@zappy/ai";
 import { createLogger, loadEnv } from "@zappy/shared";
 import qrcodeTerminal from "qrcode-terminal";
 
@@ -34,13 +35,11 @@ const redis = createRedisConnection(env.REDIS_URL);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const queueAdapter = createQueueAdapter(queue);
 const llmConfigured = Boolean(env.OPENAI_API_KEY);
-const promptMode = env.ASSISTANT_MODE_DEFAULT === "off" ? "professional" : env.ASSISTANT_MODE_DEFAULT;
-const baseSystemPrompt = buildSystemPrompt({
-  mode: promptMode as "professional" | "fun" | "mixed",
-  timezone: env.BOT_TIMEZONE,
-  extras: ["Priorize o contexto do chat atual."]
+const baseSystemPrompt = buildBaseSystemPrompt({
+  settings: { timezone: env.BOT_TIMEZONE },
+  policyNotes: ["Priorize o contexto do chat atual."]
 });
-const llmAdapter = createOpenAiChatAdapter({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL });
+const llmAdapter = createOpenAiAdapter(env.OPENAI_API_KEY, env.OPENAI_MODEL);
 const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
 const muteAdapter = createMuteAdapter(redis);
 
