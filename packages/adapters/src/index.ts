@@ -27,6 +27,7 @@ import {
   type RelationshipProfile
 } from "@zappy/core";
 import type { FeatureFlagInput, TriggerInput } from "@zappy/shared";
+import { createLogger } from "@zappy/shared";
 
 export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -96,6 +97,8 @@ const aliasSeeds: Array<{ lidJid: string; phoneNumber: string; label: string }> 
   { lidJid: "70029643092123@lid", phoneNumber: "556699064658", label: "creator_root" },
   { lidJid: "151608402911288@lid", phoneNumber: "556692283438", label: "mother_privileged" }
 ];
+
+const identityLogger = createLogger("identity-resolver");
 
 const applyAliasSeed = (derived: DerivedIdentity): { applied: boolean; seedLabel?: string } => {
   if (derived.phoneNumber) return { applied: false };
@@ -220,7 +223,15 @@ export const resolveCanonicalUserIdentity = async (input: {
   displayName?: string | null;
   aliases?: string[];
   allowCreate?: boolean;
-}): Promise<{ user: User | null; canonical: CanonicalIdentity; created: boolean; updatedFields: string[]; relationship?: RelationshipProfile }> => {
+}): Promise<{
+  user: User | null;
+  canonical: CanonicalIdentity;
+  created: boolean;
+  updatedFields: string[];
+  relationship?: RelationshipProfile;
+  relationshipReason?: string;
+  permissionRoleSource?: string;
+}> => {
   const derived = extractIdentityParts(input.waUserId, input.remoteJid);
   applyAliasSeed(derived);
   const aliasCandidates = collectAliases(
@@ -274,23 +285,25 @@ export const resolveCanonicalUserIdentity = async (input: {
   user = mergeResult.user;
 
   const canonical = buildCanonicalIdentity(user, derived, aliasCandidates);
+  const storedRelationshipProfile = toRelationshipProfile(user.relationshipProfile);
+  const storedPermissionRole = user.permissionRole ?? null;
   const relationship = resolveRelationshipProfile({
     waUserId: canonical.waUserId,
     phoneNumber: canonical.phoneNumber,
     pnJid: canonical.pnJid,
     lidJid: canonical.lidJid,
     aliases: canonical.aliases,
-    storedProfile: toRelationshipProfile(user.relationshipProfile),
+    storedProfile: storedRelationshipProfile,
     identityRole: user.permissionRole ?? user.role
   });
 
-  const inferredPermissionRole =
-    user.permissionRole ??
-    (relationship.profile === "creator_root"
+  const privilegedPermissionRole =
+    relationship.profile === "creator_root"
       ? "ROOT"
       : relationship.profile === "mother_privileged"
         ? "PRIVILEGED"
-        : null);
+        : null;
+  const permissionRoleTarget = privilegedPermissionRole ?? storedPermissionRole ?? null;
 
   const updates: Prisma.UserUpdateInput = {};
   const updatedFields = [...mergeResult.updatedFields];
@@ -300,20 +313,35 @@ export const resolveCanonicalUserIdentity = async (input: {
     updates.relationshipProfile = relationship.profile;
     canonical.relationshipProfile = relationship.profile;
   } else {
-    canonical.relationshipProfile = toRelationshipProfile(user.relationshipProfile) ?? relationship.profile;
+    canonical.relationshipProfile = storedRelationshipProfile ?? relationship.profile;
   }
-  if (inferredPermissionRole && user.permissionRole !== inferredPermissionRole) {
-    updates.permissionRole = inferredPermissionRole;
-    canonical.permissionRole = inferredPermissionRole;
+  const shouldUpdatePermission = permissionRoleTarget !== null && permissionRoleTarget !== storedPermissionRole;
+  if (shouldUpdatePermission) {
+    updates.permissionRole = permissionRoleTarget;
+    canonical.permissionRole = permissionRoleTarget;
   }
   if (Object.keys(updates).length > 0) {
     user = await prisma.user.update({ where: { id: user.id }, data: updates });
     updatedFields.push(...Object.keys(updates));
   } else if (!canonical.permissionRole) {
-    canonical.permissionRole = user.permissionRole ?? null;
+    canonical.permissionRole = storedPermissionRole;
   }
 
-  return { user, canonical, created, updatedFields, relationship: relationship.profile };
+  return {
+    user,
+    canonical,
+    created,
+    updatedFields,
+    relationship: relationship.profile,
+    relationshipReason: relationship.reason,
+    permissionRoleSource: shouldUpdatePermission
+      ? "privileged_override"
+      : storedPermissionRole
+        ? "stored_permission_role"
+        : permissionRoleTarget
+          ? "inferred_from_privileged_profile"
+          : "none"
+  };
 };
 
 export const ensureTenantContext = async (input: {
@@ -356,7 +384,48 @@ export const ensureTenantContext = async (input: {
       }
     }));
 
-  return { tenant, group, user, canonicalIdentity: resolvedIdentity.canonical, relationshipProfile: resolvedIdentity.relationship };
+  if (process.env.NODE_ENV !== "production") {
+    const relationshipSource =
+      resolvedIdentity.relationshipReason?.startsWith("match:")
+        ? "privileged_override"
+        : resolvedIdentity.relationshipReason === "stored_profile"
+          ? "db"
+          : resolvedIdentity.relationshipReason?.startsWith("role:")
+            ? "role"
+            : "default";
+    const permissionRoleSource = resolvedIdentity.permissionRoleSource ?? (resolvedIdentity.canonical.permissionRole ? "db" : "none");
+    const permissionRole = resolvedIdentity.canonical.permissionRole ?? user.permissionRole ?? user.role;
+    const relationshipProfile = resolvedIdentity.relationship ?? resolvedIdentity.canonical.relationshipProfile ?? null;
+    identityLogger.debug(
+      {
+        stage: "ensureTenantContext",
+        tenantId: tenant.id,
+        waUserId: input.waUserId,
+        phoneNumber: resolvedIdentity.canonical.phoneNumber,
+        pnJid: resolvedIdentity.canonical.pnJid,
+        lidJid: resolvedIdentity.canonical.lidJid,
+        relationshipProfile,
+        relationshipReason: resolvedIdentity.relationshipReason,
+        relationshipSource,
+        permissionRole,
+        permissionRoleSource,
+        matchedPrivilegedRule: resolvedIdentity.relationshipReason?.startsWith("match:") ?? false,
+        updatedFields: resolvedIdentity.updatedFields,
+        created: resolvedIdentity.created
+      },
+      "identity resolved"
+    );
+  }
+
+  return {
+    tenant,
+    group,
+    user,
+    canonicalIdentity: resolvedIdentity.canonical,
+    relationshipProfile: resolvedIdentity.relationship,
+    relationshipReason: resolvedIdentity.relationshipReason,
+    permissionRoleSource: resolvedIdentity.permissionRoleSource
+  };
 };
 
 export const persistInboundMessage = async (input: InboundMessageEvent & { userId: string; groupId?: string; rawJson: unknown }) => {
@@ -1057,22 +1126,56 @@ export const identityRepository = {
     const user = resolved.user;
     const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
     const role = user?.role ?? "member";
-    const permissionRole = user?.permissionRole ?? null;
+    const permissionRole = resolved.canonical.permissionRole ?? user?.permissionRole ?? null;
     const basePermissions = ["task", "reminder", "note", "agenda", "calc", "timer", "status"];
     const adminPermissions = ["admin:flags", "admin:triggers", "admin:status"];
     const effectiveRole = (permissionRole ?? role)?.toLowerCase?.() ?? "member";
     const elevated = ["admin", "root", "owner"].includes(effectiveRole);
     const permissions = elevated ? [...basePermissions, ...adminPermissions] : basePermissions;
     const canonical = resolved.canonical;
-    const relationship = resolveRelationshipProfile({
-      waUserId: canonical.waUserId,
-      phoneNumber: canonical.phoneNumber,
-      pnJid: canonical.pnJid,
-      lidJid: canonical.lidJid,
-      aliases: canonical.aliases,
-      storedProfile: canonical.relationshipProfile ?? null,
-      identityRole: permissionRole ?? role
-    });
+    const relationship =
+      resolved.relationship && resolved.relationshipReason
+        ? { profile: resolved.relationship, reason: resolved.relationshipReason }
+        : resolveRelationshipProfile({
+            waUserId: canonical.waUserId,
+            phoneNumber: canonical.phoneNumber,
+            pnJid: canonical.pnJid,
+            lidJid: canonical.lidJid,
+            aliases: canonical.aliases,
+            storedProfile: canonical.relationshipProfile ?? null,
+            identityRole: permissionRole ?? role
+          });
+
+    if (process.env.NODE_ENV !== "production") {
+      const relationshipSource =
+        relationship.reason?.startsWith("match:")
+          ? "privileged_override"
+          : relationship.reason === "stored_profile"
+            ? "db"
+            : relationship.reason?.startsWith("role:")
+              ? "role"
+              : "default";
+      const permissionRoleSource = resolved.permissionRoleSource ?? (permissionRole ? "db" : "none");
+      identityLogger.debug(
+        {
+          stage: "identityRepository.getIdentity",
+          tenantId: input.tenantId,
+          waUserId: input.waUserId,
+          phoneNumber: canonical.phoneNumber,
+          pnJid: canonical.pnJid,
+          lidJid: canonical.lidJid,
+          relationshipProfile: relationship.profile,
+          relationshipReason: relationship.reason,
+          relationshipSource,
+          permissionRole,
+          permissionRoleSource,
+          matchedPrivilegedRule: relationship.reason?.startsWith("match:") ?? false,
+          updatedFields: resolved.updatedFields,
+          created: resolved.created
+        },
+        "identity resolved"
+      );
+    }
 
     return {
       displayName: user?.displayName ?? canonical.displayName ?? canonical.phoneNumber ?? canonical.waUserId,
@@ -1140,19 +1243,19 @@ export const identityRepository = {
       storedProfile: toRelationshipProfile(targetUser.relationshipProfile),
       identityRole: targetUser.permissionRole ?? targetUser.role
     });
-    const inferredPermissionRole =
-      targetUser.permissionRole ??
-      (relationship.profile === "creator_root"
+    const privilegedPermissionRole =
+      relationship.profile === "creator_root"
         ? "ROOT"
         : relationship.profile === "mother_privileged"
           ? "PRIVILEGED"
-          : null);
+          : null;
+    const permissionRoleTarget = privilegedPermissionRole ?? targetUser.permissionRole ?? null;
 
     if (!targetUser.relationshipProfile || toRelationshipProfile(targetUser.relationshipProfile) !== relationship.profile) {
       updates.relationshipProfile = relationship.profile;
     }
-    if (inferredPermissionRole && targetUser.permissionRole !== inferredPermissionRole) {
-      updates.permissionRole = inferredPermissionRole;
+    if (permissionRoleTarget && targetUser.permissionRole !== permissionRoleTarget) {
+      updates.permissionRole = permissionRoleTarget;
     }
 
     const updatedUser =
@@ -1172,7 +1275,7 @@ export const identityRepository = {
       user: updatedUser,
       canonicalIdentity: canonical,
       relationshipProfile: canonical.relationshipProfile ?? relationship.profile,
-      permissionRole: canonical.permissionRole ?? inferredPermissionRole ?? null
+      permissionRole: canonical.permissionRole ?? permissionRoleTarget ?? null
     };
   }
 };

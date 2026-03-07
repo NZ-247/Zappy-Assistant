@@ -59,11 +59,16 @@ export const resolveRelationshipProfile = (input: {
   profile: RelationshipProfile;
   reason: string;
 } => {
-  if (input.storedProfile) return { profile: input.storedProfile, reason: "stored_profile" };
-
   const candidates = [input.phoneNumber, input.pnJid, input.lidJid, input.waUserId, ...(input.aliases ?? [])].filter(Boolean) as string[];
   const privileged = matchPrivilegedNumber(candidates);
-  if (privileged) return privileged;
+  if (privileged) {
+    if (input.storedProfile && input.storedProfile !== privileged.profile) {
+      return { profile: privileged.profile, reason: `${privileged.reason}_override_stored` };
+    }
+    return privileged;
+  }
+
+  if (input.storedProfile) return { profile: input.storedProfile, reason: "stored_profile" };
 
   const role = input.identityRole?.toUpperCase?.();
   if (role === "ROOT" || role === "DONO") return { profile: "delegated_owner", reason: "role:owner" };
