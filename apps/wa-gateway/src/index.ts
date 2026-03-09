@@ -33,6 +33,7 @@ import qrcodeTerminal from "qrcode-terminal";
 
 const env = loadEnv();
 const logger = createLogger("wa-gateway");
+const baileysLogger = logger.child({ name: "baileys", module: "baileys" }, { level: process.env.DEBUG === "trace" ? "debug" : "warn" });
 const redis = createRedisConnection(env.REDIS_URL);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const queueAdapter = createQueueAdapter(queue);
@@ -143,7 +144,7 @@ const connect = async () => {
   const { state, saveCreds } = await useMultiFileAuthState(env.WA_SESSION_PATH);
   const { version } = await fetchLatestBaileysVersion();
 
-  socket = makeWASocket({ auth: state, version, printQRInTerminal: false });
+  socket = makeWASocket({ auth: state, version, printQRInTerminal: false, logger: baileysLogger });
 
   socket.ev.on("creds.update", saveCreds);
 

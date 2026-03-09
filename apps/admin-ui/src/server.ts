@@ -23,6 +23,11 @@ await app.register(fastifyStatic, {
 app.get("/", (_, reply) => reply.sendFile("index.html"));
 app.get("/triggers", (_, reply) => reply.sendFile("triggers.html"));
 app.get("/logs", (_, reply) => reply.sendFile("logs.html"));
+app.post(
+  "/inform",
+  { logLevel: "silent" },
+  async (_request, reply) => reply.status(204).send()
+);
 
 const start = async () => {
   await app.listen({ port: env.ADMIN_UI_PORT, host: "0.0.0.0" });

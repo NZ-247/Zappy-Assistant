@@ -1,3 +1,5 @@
+import type { Logger } from "pino";
+
 declare module "@hapi/boom" {
   export class Boom {
     output?: { statusCode?: number };
@@ -43,5 +45,12 @@ declare module "baileys" {
     };
   }
 
-  export default function makeWASocket(config: { auth: unknown; version: [number, number, number]; printQRInTerminal: boolean }): BaileysSocket;
+  export interface BaileysConfig {
+    auth: unknown;
+    version: [number, number, number];
+    printQRInTerminal: boolean;
+    logger?: Logger;
+  }
+
+  export default function makeWASocket(config: BaileysConfig): BaileysSocket;
 }

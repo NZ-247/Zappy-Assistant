@@ -115,26 +115,76 @@ const normalizeNumber = (value?: string | null): string | undefined => {
 const truncate = (text: string, max = 90): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
 
 const isBaileysNoise = (obj: any): boolean => {
-  const msg: string = obj?.msg ?? "";
-  const tag: string = obj?.tag ?? "";
-  const noisyTokens = ["regular_low", "retry receipt", "recv receipt", "sync response", "processing sync", "resync"];
-  return noisyTokens.some((t) => msg.includes(t) || tag.includes(t));
+  const level = Number(obj?.level ?? 30);
+  if (level >= 40) return false;
+
+  const text = String(obj?.msg ?? obj?.message ?? obj?.event ?? "");
+  const tag = String(obj?.tag ?? "");
+  const lowerText = text.toLowerCase();
+  const lowerTag = tag.toLowerCase();
+
+  const noisyTokens = [
+    "regular_low",
+    "retry receipt",
+    "recv receipt",
+    "sync response",
+    "processing sync",
+    "resync",
+    "app state sync",
+    "connection state",
+    "signal store",
+    "sessionentry",
+    "closing session",
+    "opening session",
+    "session sync",
+    "sync timeout",
+    "pre-key"
+  ];
+
+  if (noisyTokens.some((token) => lowerText.includes(token) || lowerTag.includes(token))) return true;
+
+  const hasSessionDump =
+    lowerText.includes("session") &&
+    (obj.session !== undefined || obj.sessions !== undefined || obj.creds !== undefined || obj.credsUpdate !== undefined);
+
+  return hasSessionDump;
 };
 
-  const dedupe = () => {
-    const seen = new Map<string, number>();
-    const limit = 500;
-    return (key: string | null): boolean => {
-      if (!key) return false;
-      if (seen.has(key)) return true;
-      seen.set(key, Date.now());
-      if (seen.size > limit) {
-        const first = seen.keys().next().value as string | undefined;
-        if (first) seen.delete(first);
-      }
-      return false;
-    };
+const sanitizeBaileysLog = (obj: any) => {
+  if (!obj || typeof obj !== "object" || process.env.DEBUG === "trace") return obj;
+  const heavyKeys = [
+    "session",
+    "sessions",
+    "creds",
+    "credsUpdate",
+    "signalIdentities",
+    "preKeys",
+    "appStateSyncKey",
+    "node"
+  ];
+  const copy: Record<string, unknown> = { ...obj };
+  for (const key of heavyKeys) {
+    if (copy[key] !== undefined) {
+      copy[key] = "[hidden]";
+    }
+  }
+  return copy;
+};
+
+const dedupe = () => {
+  const seen = new Map<string, number>();
+  const limit = 500;
+  return (key: string | null): boolean => {
+    if (!key) return false;
+    if (seen.has(key)) return true;
+    seen.set(key, Date.now());
+    if (seen.size > limit) {
+      const first = seen.keys().next().value as string | undefined;
+      if (first) seen.delete(first);
+    }
+    return false;
   };
+};
 
 const formatWaLine = (obj: any, tz?: string): string => {
   const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
@@ -199,7 +249,8 @@ const createPrettyStream = (ctx: PrettyContext) => {
   return new Writable({
     write(chunk, _enc, cb) {
       try {
-        const obj = JSON.parse(chunk.toString());
+        const parsed = JSON.parse(chunk.toString());
+        const obj = sanitizeBaileysLog(parsed);
         if (silenceNoise && isBaileysNoise(obj) && process.env.DEBUG !== "trace") return cb();
         const key = obj.category?.startsWith("WA-") && obj.waMessageId ? `${obj.category}:${obj.waMessageId}` : null;
         if (dedupSeen(key)) return cb();
