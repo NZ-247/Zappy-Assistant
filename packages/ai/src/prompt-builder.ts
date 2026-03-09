@@ -3,6 +3,13 @@ import type { EffectiveSettings, PromptBuilderInput, PromptBuilderOutput, Person
 
 const DEFAULT_CONTEXT: EffectiveSettings = { formality: "neutral" };
 
+const HARD_FACTS_GLOBAL = [
+  "Your name is Zappy, the digital assistant created for this system. If asked your name, answer \"Zappy\" and never claim to lack a name.",
+  "Phone number 556699064658 is the creator/root (also known as NZ_DEV). When recognized, treat this user as creator_root and ROOT; never describe them as a standard member/user.",
+  "Phone number 556692283438 is mother_privileged. Treat her with a respectful, warm, affectionate tone.",
+  "When permissionRole/userRole is ROOT you must acknowledge full privileges and never invent lower permissions."
+];
+
 const limitMemory = (input?: { items?: PromptBuilderInput["recentMemory"]; limit?: number }) => {
   if (!input?.items?.length) return [];
   if (!input.limit || input.limit <= 0) return input.items;
@@ -34,6 +41,16 @@ const buildToneBlock = (input: PromptBuilderInput, languageHint?: string): strin
   }
   if (profileModifier?.affectionateForms?.length) {
     toneLines.push(`Allowed soft forms of address (use sparingly): ${profileModifier.affectionateForms.join(", ")}.`);
+  }
+  if (relationshipProfile === "creator_root") {
+    toneLines.push(
+      "Creator/root detected (NZ_DEV). Be strategic, proactive, slightly playful, and complementary like a smart child helping a father figure; volunteer helpful ideas."
+    );
+  }
+  if (relationshipProfile === "mother_privileged") {
+    toneLines.push(
+      "Mother_privileged detected. Keep replies sweet, respectful, warm, and gently admiring; affectionate but never romantic. Soft nicknames allowed sparingly."
+    );
   }
   toneLines.push(
     `Conversation scope: ${chatScope === "direct" ? "Direct chat — be a personal assistant." : "Group chat — be concise and contextual."}`
@@ -98,6 +115,10 @@ export const buildPrompt = (input: PromptBuilderInput): PromptBuilderOutput => {
   if (behaviorBlock) systemLines.push(behaviorBlock);
   if (input.profileModifier?.promptAdditions?.length) systemLines.push(input.profileModifier.promptAdditions.join(" "));
 
+  // 3.1) Hard Facts — non-negotiable
+  const hardFacts = buildHardFactsBlock(input);
+  if (hardFacts) systemLines.push(hardFacts);
+
   // 4) Operational policies
   systemLines.push(buildOperationalPolicies(input).join(" "));
 
@@ -158,3 +179,18 @@ export const buildBaseSystemPrompt = (input?: {
 };
 
 export const buildSystemPrompt = buildBaseSystemPrompt;
+
+function buildHardFactsBlock(input: PromptBuilderInput): string {
+  const facts = [...HARD_FACTS_GLOBAL];
+  if (input.relationshipProfile === "creator_root") {
+    facts.push("Current user recognized as creator_root (NZ_DEV). Treat as ROOT with full control and acknowledge the creator role when relevant.");
+  }
+  if (input.relationshipProfile === "mother_privileged") {
+    facts.push("Current user recognized as mother_privileged. Maintain respectful, warm, affectionate tone and gentle admiration.");
+  }
+  if (["ROOT", "DONO"].includes(input.userRole)) {
+    facts.push("Runtime userRole indicates ROOT ownership; reflect full administrative privileges when permissions are discussed.");
+  }
+  const lines = ["HARD FACTS (non-negotiable — never contradict):", ...facts.map((fact) => `- ${fact}`)];
+  return lines.join("\n");
+}

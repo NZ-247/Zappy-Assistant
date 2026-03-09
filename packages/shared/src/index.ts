@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import pino, { type LoggerOptions } from "pino";
+import { Writable } from "node:stream";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -32,15 +33,216 @@ export const loadEnv = (): AppEnv => {
   return envSchema.parse(process.env);
 };
 
-export type LogCategory = "SYSTEM" | "WA-IN" | "WA-OUT" | "AI" | "HTTP" | "QUEUE" | "DB" | "WARN" | "ERROR";
+export type LogCategory =
+  | "SYSTEM"
+  | "AUTH"
+  | "WA-IN"
+  | "WA-OUT"
+  | "AI"
+  | "HTTP"
+  | "QUEUE"
+  | "DB"
+  | "WARN"
+  | "ERROR";
 
-export const createLogger = (name: string, options?: LoggerOptions) =>
-  pino({
+type PrettyContext = {
+  timezone?: string;
+  silenceNoise?: boolean;
+  verboseStacks?: boolean;
+};
+
+const ANSI = {
+  reset: "\u001B[0m",
+  dim: "\u001B[2m",
+  bold: "\u001B[1m",
+  colors: {
+    gray: "\u001B[90m",
+    cyan: "\u001B[36m",
+    blue: "\u001B[34m",
+    green: "\u001B[32m",
+    yellow: "\u001B[33m",
+    magenta: "\u001B[35m",
+    red: "\u001B[31m",
+    white: "\u001B[37m"
+  }
+};
+
+const categoryColor = (category?: string): string => {
+  switch (category) {
+    case "SYSTEM":
+      return ANSI.colors.cyan;
+    case "AUTH":
+      return ANSI.colors.magenta;
+    case "WA-IN":
+      return ANSI.colors.green;
+    case "WA-OUT":
+      return ANSI.colors.blue;
+    case "AI":
+      return ANSI.colors.magenta;
+    case "HTTP":
+      return ANSI.colors.cyan;
+    case "QUEUE":
+      return ANSI.colors.yellow;
+    case "DB":
+      return ANSI.colors.white;
+    case "WARN":
+      return ANSI.colors.yellow;
+    case "ERROR":
+      return ANSI.colors.red;
+    default:
+      return ANSI.colors.gray;
+  }
+};
+
+const formatLocalTime = (input: string | number | undefined, timezone?: string): string => {
+  const date = input ? new Date(input) : new Date();
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+  return fmt.format(date);
+};
+
+const normalizeNumber = (value?: string | null): string | undefined => {
+  if (!value) return undefined;
+  const num = value.replace(/\D/g, "");
+  return num || undefined;
+};
+
+const truncate = (text: string, max = 90): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
+
+const isBaileysNoise = (obj: any): boolean => {
+  const msg: string = obj?.msg ?? "";
+  const tag: string = obj?.tag ?? "";
+  const noisyTokens = ["regular_low", "retry receipt", "recv receipt", "sync response", "processing sync", "resync"];
+  return noisyTokens.some((t) => msg.includes(t) || tag.includes(t));
+};
+
+  const dedupe = () => {
+    const seen = new Map<string, number>();
+    const limit = 500;
+    return (key: string | null): boolean => {
+      if (!key) return false;
+      if (seen.has(key)) return true;
+      seen.set(key, Date.now());
+      if (seen.size > limit) {
+        const first = seen.keys().next().value as string | undefined;
+        if (first) seen.delete(first);
+      }
+      return false;
+    };
+  };
+
+const formatWaLine = (obj: any, tz?: string): string => {
+  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
+  const scope = obj.scope === "group" ? "GROUP" : "DIRECT";
+  const role = obj.permissionRole ?? obj.role ?? "";
+  const profile = obj.relationshipProfile ?? "";
+  const number = normalizeNumber(obj.phoneNumber ?? obj.waUserId) ?? "-";
+  const action = obj.action ? ` action=${obj.action}` : "";
+  const previewSource = obj.textPreview ?? obj.text ?? obj.msg ?? "";
+  const preview = previewSource ? ` -> "${truncate(String(previewSource).replace(/\s+/g, " ").trim(), 80)}"` : "";
+  return `[${time}] [${obj.category}] [${scope}] ${role || ""} ${profile || ""} ${number}${action}${preview}`.replace(/\s+/g, " ").trim();
+};
+
+const formatErrorBlock = (obj: any, tz?: string, levelLabel?: string, verboseStacks?: boolean): string => {
+  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
+  const cat = obj.category ?? (obj.level >= 50 ? "ERROR" : "WARN");
+  const src = obj.name ?? obj.module ?? "app";
+  const msg = obj.msg ?? obj.message ?? "";
+  const err = obj.err ?? obj.error;
+  const hint =
+    obj.category === "QUEUE"
+      ? "Hint: check Redis/queue connectivity and job payload."
+      : obj.category === "AI"
+        ? "Hint: verify OPENAI_API_KEY/LLM_ENABLED and network connectivity."
+        : obj.category === "DB"
+          ? "Hint: verify DATABASE_URL and DB availability."
+          : undefined;
+  const lines = [
+    `${categoryColor(cat)}${ANSI.bold}[${time}] [${cat}] ${levelLabel ?? ""}${ANSI.reset}`,
+    `source: ${src}`,
+    msg ? `message: ${msg}` : null,
+    hint ? `hint: ${hint}` : null,
+    err?.message ? `error: ${err.message}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const stack =
+    verboseStacks && err?.stack
+      ? `\nstack:\n${ANSI.dim}${String(err.stack)
+          .split("\n")
+          .slice(0, 12)
+          .join("\n")}${ANSI.reset}`
+      : "";
+  return `-----\n${lines}${stack}\n-----`;
+};
+
+const formatGenericLine = (obj: any, tz?: string): string => {
+  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
+  const cat = obj.category ?? "SYSTEM";
+  const msg = obj.msg ?? obj.message ?? "";
+  const detailFields = ["status", "route", "method", "code", "jobId", "queue", "model"]
+    .map((key) => (obj[key] !== undefined ? `${key}=${obj[key]}` : null))
+    .filter(Boolean);
+  const details = detailFields.length ? ` ${detailFields.join(" ")}` : "";
+  return `[${time}] [${cat}] ${msg}${details}`.trim();
+};
+
+const createPrettyStream = (ctx: PrettyContext) => {
+  const dedupSeen = dedupe();
+  const silenceNoise = ctx.silenceNoise ?? true;
+  const verboseStacks = ctx.verboseStacks ?? false;
+  return new Writable({
+    write(chunk, _enc, cb) {
+      try {
+        const obj = JSON.parse(chunk.toString());
+        if (silenceNoise && isBaileysNoise(obj) && process.env.DEBUG !== "trace") return cb();
+        const key = obj.category?.startsWith("WA-") && obj.waMessageId ? `${obj.category}:${obj.waMessageId}` : null;
+        if (dedupSeen(key)) return cb();
+
+        const level = Number(obj.level ?? 30);
+        const cat = obj.category ?? (level >= 50 ? "ERROR" : level === 40 ? "WARN" : undefined);
+        const color = categoryColor(cat);
+        let line: string;
+        if (cat === "WA-IN" || cat === "WA-OUT") {
+          line = formatWaLine(obj, ctx.timezone);
+        } else if (cat === "ERROR" || level >= 50) {
+          line = formatErrorBlock(obj, ctx.timezone, "ERROR", verboseStacks);
+        } else if (cat === "WARN" || level === 40) {
+          line = formatErrorBlock(obj, ctx.timezone, "WARN", verboseStacks);
+        } else {
+          line = formatGenericLine(obj, ctx.timezone);
+        }
+        process.stdout.write(`${color}${line}${ANSI.reset}\n`);
+      } catch {
+        process.stdout.write(chunk);
+      }
+      cb();
+    }
+  });
+};
+
+export const createLogger = (name: string, options?: LoggerOptions) => {
+  const baseOptions: LoggerOptions = {
     name,
-    level: process.env.NODE_ENV === "production" ? "info" : "debug",
+    level: process.env.LOG_LEVEL ?? (process.env.NODE_ENV === "production" ? "info" : "debug"),
     timestamp: pino.stdTimeFunctions.isoTime,
     ...options
+  };
+  const prettyEnabled = process.env.NODE_ENV !== "production" && process.env.PRETTY_LOGS !== "false";
+  if (!prettyEnabled) return pino(baseOptions);
+
+  const pretty = createPrettyStream({
+    timezone: process.env.BOT_TIMEZONE,
+    silenceNoise: process.env.DEBUG !== "trace",
+    verboseStacks: process.env.DEBUG?.includes("stack") ?? false
   });
+  return pino(baseOptions, pretty);
+};
 
 export const withCategory = (category: LogCategory, payload?: Record<string, unknown>) => ({
   category,
@@ -58,18 +260,26 @@ export const printStartupBanner = (
     adminApiUrl?: string;
     adminUiUrl?: string;
     queueName?: string;
+    redisStatus?: "OK" | "FAIL" | "PENDING";
+    dbStatus?: "OK" | "FAIL" | "PENDING";
+    workerStatus?: "OK" | "FAIL" | "PENDING";
+    llmStatus?: "OK" | "FAIL" | "PENDING";
+    waSessionPath?: string;
     extras?: Record<string, string | number | boolean | null | undefined>;
   }
 ) => {
-  if (process.env.NODE_ENV === "production") return;
+  if (process.env.NODE_ENV === "production" && process.env.STARTUP_BANNER !== "true") return;
   const lines = [
+    "==============================================",
     `🟢 ${input.app} — Zappy Assistant`,
     `Env: ${input.environment}`,
     input.timezone ? `Timezone: ${input.timezone}` : null,
     `LLM: ${input.llmEnabled ? "ENABLED" : "DISABLED"}${input.model ? ` (${input.model})` : ""}`,
+    input.queueName ? `Queue: ${input.queueName}` : null,
     input.adminApiUrl ? `Admin API: ${input.adminApiUrl}` : null,
     input.adminUiUrl ? `Admin UI: ${input.adminUiUrl}` : null,
-    input.queueName ? `Queue: ${input.queueName}` : null
+    input.waSessionPath ? `WA Session Path: ${input.waSessionPath}` : null,
+    `Redis: ${input.redisStatus ?? "PENDING"} | DB: ${input.dbStatus ?? "PENDING"} | Worker: ${input.workerStatus ?? "PENDING"} | LLM: ${input.llmStatus ?? (input.llmEnabled ? "PENDING" : "OFF")}`
   ]
     .concat(
       Object.entries(input.extras ?? {})
@@ -78,7 +288,7 @@ export const printStartupBanner = (
     )
     .filter(Boolean);
 
-  const banner = ["======================================", ...lines, "======================================"].join("\\n");
+  const banner = [...lines, "=============================================="].join("\n");
   logger.info(withCategory("SYSTEM", { banner, ...input }), banner);
 };
 

@@ -26,7 +26,11 @@ printStartupBanner(logger, {
   model: env.LLM_MODEL,
   adminApiUrl: `http://localhost:${env.ADMIN_API_PORT}`,
   adminUiUrl: `http://localhost:${env.ADMIN_UI_PORT}`,
-  queueName: env.QUEUE_NAME
+  queueName: env.QUEUE_NAME,
+  redisStatus: "PENDING",
+  dbStatus: "PENDING",
+  llmStatus: env.LLM_ENABLED ? "PENDING" : undefined,
+  workerStatus: "PENDING"
 });
 
 const reportStartupStatus = async () => {

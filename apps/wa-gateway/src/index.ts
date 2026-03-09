@@ -63,7 +63,12 @@ printStartupBanner(logger, {
   model: llmModel,
   adminApiUrl,
   adminUiUrl,
-  queueName: env.QUEUE_NAME
+  queueName: env.QUEUE_NAME,
+  waSessionPath: env.WA_SESSION_PATH,
+  redisStatus: "PENDING",
+  dbStatus: "PENDING",
+  llmStatus: env.LLM_ENABLED ? (llmConfigured ? "PENDING" : "FAIL") : undefined,
+  workerStatus: "PENDING"
 });
 
 const reportStartupStatus = async () => {
@@ -75,8 +80,14 @@ const reportStartupStatus = async () => {
     .ping()
     .then(() => true)
     .catch(() => false);
-  logger.info(withCategory("DB", { status: dbOk ? "OK" : "FAIL" }), `DB ${dbOk ? "OK" : "FAIL"}`);
-  logger.info(withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }), `Redis ${redisOk ? "OK" : "FAIL"}`);
+  logger.info(
+    withCategory("DB", { status: dbOk ? "OK" : "FAIL" }),
+    dbOk ? "DB OK" : "DB FAIL"
+  );
+  logger.info(
+    withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }),
+    redisOk ? "Redis OK" : "Redis FAIL"
+  );
 };
 
 let socket: ReturnType<typeof makeWASocket> | null = null;
@@ -139,7 +150,7 @@ const connect = async () => {
   socket.ev.on("connection.update", async (update: { connection?: "close" | "open"; lastDisconnect?: { error?: unknown }; qr?: string; isNewLogin?: boolean; pairingCode?: string }) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      logger.info(withCategory("SYSTEM", { status: "WhatsApp QR", qr }), "scan QR to pair");
+      logger.info(withCategory("SYSTEM", { status: "WhatsApp QR READY", qr }), "WhatsApp QR READY");
       qrcodeTerminal.generate(qr, { small: true });
     }
     if (update.isNewLogin === false && update.pairingCode === undefined && process.env.WA_PAIRING_PHONE) {
@@ -221,12 +232,14 @@ const connect = async () => {
       const canonical = context.canonicalIdentity;
       const relationshipProfile = context.relationshipProfile ?? canonical?.relationshipProfile;
       const permissionRole = context.user.permissionRole ?? canonical?.permissionRole ?? context.user.role;
+      const normalizedPhone = canonical?.phoneNumber ? canonical.phoneNumber.replace(/\D/g, "") : undefined;
       logger.info(
         withCategory("WA-IN", {
           tenantId: event.tenantId,
           scope: isGroup ? "group" : "direct",
           waUserId,
           phoneNumber: canonical?.phoneNumber,
+          normalizedPhone,
           lidJid: canonical?.lidJid,
           pnJid: canonical?.pnJid,
           relationshipProfile,
@@ -276,6 +289,7 @@ const connect = async () => {
               scope: isGroup ? "group" : "direct",
               waUserId,
               phoneNumber: canonical?.phoneNumber,
+              normalizedPhone,
               permissionRole,
               relationshipProfile,
               waGroupId: event.waGroupId,
@@ -309,6 +323,7 @@ const connect = async () => {
               scope: isGroup ? "group" : "direct",
               waUserId,
               phoneNumber: canonical?.phoneNumber,
+              normalizedPhone,
               permissionRole,
               relationshipProfile,
               waGroupId: event.waGroupId,
@@ -346,6 +361,7 @@ const connect = async () => {
               scope: isGroup ? "group" : "direct",
               waUserId,
               phoneNumber: canonical?.phoneNumber,
+              normalizedPhone,
               permissionRole,
               relationshipProfile,
               waGroupId: event.waGroupId,

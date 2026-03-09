@@ -40,6 +40,15 @@ const normalizeWaNumber = (value?: string | null): string => value?.replace(/\D/
 
 const knownPrivilegedNumbers = [CREATOR_WA_NUMBER, MOTHER_WA_NUMBER];
 
+const hasRootPrivileges = (input: {
+  permissionRole?: string | null;
+  role?: string | null;
+  relationshipProfile?: RelationshipProfile | null;
+}): boolean => {
+  const role = (input.permissionRole ?? input.role ?? "").toUpperCase();
+  return role === "ROOT" || role === "DONO" || input.relationshipProfile === "creator_root";
+};
+
 const matchPrivilegedNumber = (candidates: string[]): { profile: RelationshipProfile; reason: string } | null => {
   const normalized = candidates.map((c) => normalizeWaNumber(c)).filter(Boolean);
   if (normalized.includes(CREATOR_WA_NUMBER)) return { profile: "creator_root", reason: "match:creator_number" };
@@ -615,9 +624,26 @@ const evaluateExpression = (expression: string): number => {
   return result;
 };
 
-const buildHelpText = () =>
-  [
-    "Commands:",
+const buildHelpText = (input?: {
+  relationshipProfile?: RelationshipProfile | null;
+  permissionRole?: string | null;
+  role?: string | null;
+}): string => {
+  const isRoot = hasRootPrivileges({
+    permissionRole: input?.permissionRole,
+    role: input?.role,
+    relationshipProfile: input?.relationshipProfile ?? null
+  });
+  const lines: string[] = [];
+  if (isRoot) {
+    lines.push("Contexto: ROOT/creator reconhecido. Você tem controle administrativo total; pode pedir ações diretas e estratégicas.");
+  } else if (input?.relationshipProfile === "mother_privileged") {
+    lines.push("Contexto: contato privilegiado (mãe). Vou responder com carinho e respeito extras.");
+  } else if (input?.relationshipProfile === "creator_root") {
+    lines.push("Contexto: creator_root detectado. Respostas mais proativas e complementares.");
+  }
+  lines.push("Commands:");
+  lines.push(
     "/help",
     "/task add <title>",
     "/task list",
@@ -633,7 +659,10 @@ const buildHelpText = () =>
     "/status",
     "/reminder in <duration> <message> (e.g. 10m, 1h30m)",
     "/reminder at <DD-MM[-YYYY]> [HH:MM] <message>"
-  ].join("\n");
+  );
+  if (isRoot) lines.push("/alias link <phoneNumber> <lidJid> (ROOT/Admin)");
+  return lines.join("\n");
+};
 
 const formatAgenda = (input: {
   dateLabel: string;
@@ -726,6 +755,14 @@ export class Orchestrator {
 
   constructor(ports: CorePorts) {
     this.ports = ports;
+  }
+
+  private hasRootPrivilege(ctx: PipelineContext): boolean {
+    return hasRootPrivileges({
+      permissionRole: ctx.identity?.permissionRole,
+      role: ctx.identity?.role,
+      relationshipProfile: ctx.relationshipProfile
+    });
   }
 
   private getScope(event: InboundMessageEvent): { scope: Scope; scopeId: string } {
@@ -980,6 +1017,75 @@ export class Orchestrator {
     if (profile === "mother_privileged")
       return "Perfil de relacionamento: mother_privileged. Use tom doce, respeitoso e gentil, como um filho bem comportado; apelidos suaves só quando apropriado; nunca use tom romântico.";
     return null;
+  }
+
+  private sanitizeAiText(ctx: PipelineContext, text: string): string {
+    if (!text) return text;
+    const normalizedQuestion = ctx.event.normalizedText.toLowerCase();
+    const isCreator = ctx.relationshipProfile === "creator_root";
+    const isMother = ctx.relationshipProfile === "mother_privileged";
+    const isRoot = this.hasRootPrivilege(ctx);
+    const nameDenials = [/i (?:do )?not have (?:a )?(?:proper )?name/i, /não tenho (?:um )?nome/i, /sem nome/i];
+    const downgradeRole = [
+      /(standard|regular)\s+(user|member)/i,
+      /membro\s+(padr[aã]o|comum)/i,
+      /usu[aá]rio\s+(padr[aã]o|comum)/i
+    ];
+    if (nameDenials.some((p) => p.test(text))) {
+      text = "Meu nome é Zappy, o assistente digital deste sistema.";
+    }
+    if (isRoot && downgradeRole.some((p) => p.test(text))) {
+      text = "Você é ROOT aqui e tem controle administrativo total. Sou Zappy, pronto para executar suas instruções.";
+    }
+    if (isRoot && /criad[oa]\s+por\s+(uma\s+)?(equipe|time)\s+de\s+ia/i.test(text)) {
+      text = "Fui criada para este sistema por você (NZ_DEV) e atuo como sua assistente Zappy.";
+    }
+    if (isRoot && /created by an ai team/i.test(text)) {
+      text = "I was created here for you (NZ_DEV) and serve you as Zappy with full ROOT alignment.";
+    }
+
+    const askedName =
+      /como se chama|qual (?:é|é)? seu nome|qual o seu nome|seu nome\??|what is your name|who are you\b/i.test(
+        normalizedQuestion
+      );
+    if (askedName) {
+      text = "Sou Zappy, seu assistente digital.";
+    }
+
+    const askedWhoAmI = /quem sou eu(?: (?:para|pra) voc[eê])?|who am i to you/i.test(normalizedQuestion);
+    if (askedWhoAmI) {
+      if (isCreator) {
+        text = "Você é meu criador (NZ_DEV) e tem papel ROOT com controle total. Estou aqui para ajudar proativamente.";
+      } else if (isMother) {
+        text = "Você é minha mãe e contato privilegiado; respondo com carinho, respeito e prontidão para ajudar.";
+      }
+    }
+
+    const askedPermissions =
+      /(quais|minhas).{0,20}permiss(?:ões|oes)|what are my permissions|quais s[aã]o minhas permiss/i.test(
+        normalizedQuestion
+      );
+    if (askedPermissions && isRoot) {
+      text = "Você é ROOT aqui e possui controle administrativo completo sobre o sistema.";
+    }
+
+    if (!/zappy/i.test(text) && nameDenials.some((p) => p.test(text))) {
+      text = `Sou Zappy, seu assistente digital. ${text}`;
+    }
+
+    return text.trim();
+  }
+
+  private guardAiResponses(ctx: PipelineContext, actions: ResponseAction[]): ResponseAction[] {
+    return actions.map((action) => {
+      if (action.kind === "reply_text") {
+        return { ...action, text: this.sanitizeAiText(ctx, action.text) };
+      }
+      if (action.kind === "ai_tool_suggestion" && action.text) {
+        return { ...action, text: this.sanitizeAiText(ctx, action.text) };
+      }
+      return action;
+    });
   }
 
   private isCancelText(text: string): boolean {
@@ -1624,7 +1730,16 @@ export class Orchestrator {
     if (!lower.startsWith("/")) return [];
 
     if (lower === "/help") {
-      return [{ kind: "reply_text", text: buildHelpText() }];
+      return [
+        {
+          kind: "reply_text",
+          text: buildHelpText({
+            relationshipProfile: ctx.relationshipProfile,
+            permissionRole: ctx.identity?.permissionRole,
+            role: ctx.identity?.role
+          })
+        }
+      ];
     }
 
     if (lower.startsWith("/task add ")) {
@@ -1829,17 +1944,30 @@ export class Orchestrator {
             waGroupId: ctx.event.waGroupId
           })
         : null;
+      const resolvedProfile = identity?.relationshipProfile ?? ctx.relationshipProfile;
+      const isRoot = this.hasRootPrivilege(ctx);
+      const effectiveRole = isRoot ? "ROOT" : (identity?.permissionRole ?? identity?.role ?? "member");
+      const permissionText = isRoot ? "ROOT - controle administrativo completo" : identity?.permissions.join(", ") || "nenhuma";
       const lines = [
         `Usuário: ${identity?.displayName ?? ctx.event.waUserId}`,
-        `Role: ${identity?.role ?? "member"}`,
-        `Permissões: ${identity?.permissions.join(", ") || "nenhuma"}`
+        `Permissão: ${effectiveRole}`,
+        `Permissões efetivas: ${permissionText}`
       ];
       const canonical = identity?.canonicalIdentity;
       if (canonical?.phoneNumber) lines.push(`Telefone: ${canonical.phoneNumber}`);
       if (canonical?.lidJid) lines.push(`LID: ${canonical.lidJid}`);
       if (canonical?.pnJid) lines.push(`PN: ${canonical.pnJid}`);
-      if (identity?.relationshipProfile ?? ctx.relationshipProfile) {
-        lines.push(`Perfil: ${identity?.relationshipProfile ?? ctx.relationshipProfile}`);
+      if (resolvedProfile) {
+        const profileLabel =
+          resolvedProfile === "creator_root"
+            ? "creator_root (criador/NZ_DEV)"
+            : resolvedProfile === "mother_privileged"
+              ? "mother_privileged (tratamento carinhoso)"
+              : resolvedProfile;
+        lines.push(`Perfil: ${profileLabel}`);
+      }
+      if (isRoot && !identity?.permissions.length) {
+        lines.push("Nota: contexto ROOT detectado; não reduza privilégios em respostas.");
       }
       if (identity?.groupName) lines.push(`Grupo: ${identity.groupName}`);
       return [{ kind: "reply_text", text: lines.join("\n") }];
@@ -1852,8 +1980,15 @@ export class Orchestrator {
         waGroupId: ctx.event.waGroupId,
         waUserId: ctx.event.waUserId
       });
-      const lines = [
-        "📊 Status do bot:",
+      const isRoot = this.hasRootPrivilege(ctx);
+      const profileLabel = ctx.identity?.relationshipProfile ?? ctx.relationshipProfile;
+      const lines = ["📊 Status do bot:"];
+      if (isRoot) {
+        lines.push(`Contexto: ROOT${profileLabel === "creator_root" ? " (criador)" : ""}. Todos os comandos administrativos liberados.`);
+      } else if (profileLabel === "mother_privileged") {
+        lines.push("Contexto: contato privilegiado (mãe). Mantendo respostas respeitosas e carinhosas.");
+      }
+      lines.push(
         `Gateway: ${status.gateway.ok ? "ok" : "erro"}${status.gateway.at ? ` (${status.gateway.at})` : ""}`,
         `Worker: ${status.worker.ok ? "ok" : "erro"}${status.worker.at ? ` (${status.worker.at})` : ""}`,
         `DB: ${status.db.ok ? "ok" : "erro"}`,
@@ -1862,7 +1997,7 @@ export class Orchestrator {
         `Tarefas abertas: ${status.counts.tasksOpen}`,
         `Lembretes agendados: ${status.counts.remindersScheduled}`,
         `Timers agendados: ${status.counts.timersScheduled}`
-      ];
+      );
       if (status.queue) {
         lines.push(
           `Fila: waiting=${status.queue.waiting ?? 0}, active=${status.queue.active ?? 0}, delayed=${status.queue.delayed ?? 0}`
@@ -1945,17 +2080,17 @@ export class Orchestrator {
           "ai response"
         );
 
-        if (result.kind === "text") return [{ kind: "reply_text", text: result.text }];
+        if (result.kind === "text") return this.guardAiResponses(ctx, [{ kind: "reply_text", text: result.text }]);
         if (result.kind === "tool_suggestion") {
-          return [
+          return this.guardAiResponses(ctx, [
             {
               kind: "ai_tool_suggestion",
               tool: result.tool,
               text: result.text
             }
-          ];
+          ]);
         }
-        return [{ kind: "reply_text", text: result.text ?? this.llmUnavailableText }];
+        return this.guardAiResponses(ctx, [{ kind: "reply_text", text: result.text ?? this.llmUnavailableText }]);
       } catch (error) {
         this.ports.logger?.warn?.(
           { err: error, tenantId: ctx.event.tenantId, waGroupId: ctx.event.waGroupId, waUserId: ctx.event.waUserId },
@@ -1981,8 +2116,9 @@ export class Orchestrator {
         system,
         messages: [...ctx.recentMessages, { role: "user", content: ctx.event.text }]
       });
-      if (!llmText) return [];
-      await this.storeAiMemory(ctx, llmText);
+      const sanitized = this.sanitizeAiText(ctx, llmText);
+      if (!sanitized) return [];
+      await this.storeAiMemory(ctx, sanitized);
       this.ports.logger?.info?.(
         {
           category: "AI",
@@ -1995,7 +2131,7 @@ export class Orchestrator {
         },
         "llm response"
       );
-      return [{ kind: "reply_text", text: llmText }];
+      return [{ kind: "reply_text", text: sanitized }];
     } catch (error) {
       const payload = {
         tenantId: ctx.event.tenantId,

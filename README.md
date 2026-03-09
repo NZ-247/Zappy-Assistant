@@ -58,12 +58,15 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Admin/root command to bind aliases when WhatsApp hides the phone number: `/alias link <phoneNumber> <lidJid>` (example: `/alias link 556699064658 70029643092123@lid`). The link is stored, relationshipProfile/permissionRole are recalculated immediately, and duplicate users are merged.
 
 ## Logging
-- Pino JSON logs include `category`: `SYSTEM`, `WA-IN`, `WA-OUT`, `AI`, `HTTP`, `QUEUE`, `DB`, `WARN`, `ERROR`.
-- WA-IN/WA-OUT entries log timestamp, scope (direct/group), `waUserId`, resolved `phoneNumber`, `permissionRole`, `relationshipProfile`, `waMessageId`, media flag, and a short text preview.
-- AI entries log model, AI enabled/disabled, tool suggestion (if any), and fallback usage. Errors carry `category: ERROR` with origin ids for traceability.
+- Prod: structured JSON (pino) for ingestion. Dev: pretty, colorized, compact lines grouped by category (`SYSTEM`, `AUTH`, `WA-IN`, `WA-OUT`, `AI`, `HTTP`, `QUEUE`, `DB`, `WARN`, `ERROR`). Set `PRETTY_LOGS=false` to force JSON in dev.
+- Local timestamps respect `BOT_TIMEZONE`. `DEBUG=trace` disables noise filtering; `DEBUG=stack` shows stack traces inside WARN/ERROR blocks.
+- WA-IN/WA-OUT dev lines: `[HH:MM:SS] [WA-IN] [DIRECT|GROUP] <role> <profile> <phone> -> "preview"` with `action=` for outbound. Structured fields (`waMessageId`, `tenantId`, etc.) stay in the JSON payload.
+- Warnings/errors are rendered in a block with source module and a short hint; full stack only when `DEBUG=stack`.
+- Baileys low-level sync chatter is silenced in dev unless `DEBUG=trace` is set.
 
 ## Startup banner (dev)
-On startup (non-production) each app prints a banner with app name, environment, timezone, LLM enabled/disabled, model, Admin API/UI URLs, and queue name, followed by DB/Redis connection status lines and WhatsApp connection state changes.
+- Non-production banner shows app, env, timezone, LLM on/off+model, queue name, Admin API/UI URLs, WA session path, and service statuses (Redis/DB/Worker/LLM).
+- Status transitions are logged clearly: WhatsApp CONNECTING/QR READY/CONNECTED/DISCONNECTED, Redis/DB OK|FAIL, Worker OK|FAIL.
 
 ## Admin
 
