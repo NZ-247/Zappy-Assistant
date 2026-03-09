@@ -25,7 +25,8 @@ import {
   createMuteAdapter,
   createOpenAiAdapter,
   createConversationStateAdapter,
-  conversationMemoryRepository
+  conversationMemoryRepository,
+  consentRepository
 } from "@zappy/adapters";
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
@@ -116,6 +117,7 @@ const orchestrator = new Orchestrator({
   identity: identityRepository,
   status: statusPort,
   conversationState: createConversationStateAdapter(redis),
+  consent: consentRepository,
   botName: env.DEFAULT_BOT_NAME,
   defaultAssistantMode: env.ASSISTANT_MODE_DEFAULT,
   defaultFunMode: env.FUN_MODE_DEFAULT,
@@ -123,7 +125,10 @@ const orchestrator = new Orchestrator({
   logger,
   timezone: env.BOT_TIMEZONE,
   baseSystemPrompt,
-  llmMemoryMessages: env.LLM_MEMORY_MESSAGES
+  llmMemoryMessages: env.LLM_MEMORY_MESSAGES,
+  consentTermsVersion: env.CONSENT_TERMS_VERSION,
+  consentLink: env.CONSENT_LINK,
+  consentSource: env.CONSENT_SOURCE
 });
 
 const getText = (message: any): string =>

@@ -91,6 +91,7 @@ export type MessageKind = "text" | "media" | "system" | "unknown";
 export type MessageClassificationKind =
   | "system_event"
   | "ignored_event"
+  | "consent_pending"
   | "command"
   | "trigger_candidate"
   | "ai_candidate"
@@ -192,6 +193,7 @@ export interface AiAssistantPort {
 
 export type ConversationState =
   | "NONE"
+  | "WAITING_CONSENT"
   | "WAITING_CONFIRMATION"
   | "WAITING_TASK_DETAILS"
   | "WAITING_REMINDER_DETAILS"
@@ -204,6 +206,21 @@ export interface ConversationStateRecord {
   context?: Record<string, unknown>;
   updatedAt: Date;
   expiresAt?: Date | null;
+}
+
+export type ConsentStatus = "PENDING" | "ACCEPTED" | "DECLINED";
+
+export interface UserConsentRecord {
+  id: string;
+  tenantId: string;
+  userId: string;
+  status: ConsentStatus;
+  termsVersion: string;
+  acceptedAt?: Date | null;
+  declinedAt?: Date | null;
+  source?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export type LlmErrorReason = "rate_limit" | "insufficient_quota" | "timeout" | "network" | "unknown";
@@ -464,6 +481,18 @@ export interface ConversationStatePort {
   clearState(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<void>;
 }
 
+export interface ConsentPort {
+  getConsent(input: { tenantId: string; waUserId: string; termsVersion?: string }): Promise<UserConsentRecord | null>;
+  setConsentStatus(input: {
+    tenantId: string;
+    waUserId: string;
+    status: ConsentStatus;
+    termsVersion: string;
+    source?: string;
+    timestamp?: Date;
+  }): Promise<UserConsentRecord>;
+}
+
 export interface QueuePort {
   enqueueReminder(reminderId: string, runAt: Date): Promise<{ jobId: string }>;
   enqueueTimer(timerId: string, runAt: Date): Promise<{ jobId: string }>;
@@ -544,6 +573,7 @@ export interface CorePorts {
   identity?: IdentityPort;
   status?: StatusPort;
   conversationState?: ConversationStatePort;
+  consent: ConsentPort;
   clock?: ClockPort;
   logger?: LoggerPort;
   botName?: string;
@@ -554,6 +584,9 @@ export interface CorePorts {
   defaultReminderTime?: string;
   baseSystemPrompt?: string;
   llmMemoryMessages?: number;
+  consentTermsVersion?: string;
+  consentLink?: string;
+  consentSource?: string;
 }
 
 const renderTemplate = (template: string, vars: Record<string, string>): string => {
@@ -718,6 +751,10 @@ type PipelineContext = {
   classification: MessageClassification;
   muteInfo?: { until: Date } | null;
   conversationState: ConversationStateRecord;
+  consent?: UserConsentRecord | null;
+  consentRequired: boolean;
+  bypassConsent: boolean;
+  consentVersion: string;
   identity?: {
     displayName?: string | null;
     role: string;
@@ -752,9 +789,16 @@ export class Orchestrator {
     "No momento estou sem acesso ao assistente inteligente. Você ainda pode usar /help, /task e /reminder.";
   private readonly dedupTtlSeconds = 12;
   private readonly pendingStateTtlMs = 10 * 60 * 1000;
+  private readonly greetingCooldownSeconds = 180;
+  private readonly consentTermsVersion: string;
+  private readonly consentLink: string;
+  private readonly consentSource: string;
 
   constructor(ports: CorePorts) {
     this.ports = ports;
+    this.consentTermsVersion = ports.consentTermsVersion ?? "2026-03";
+    this.consentLink = ports.consentLink ?? "https://services.net.br/politics";
+    this.consentSource = ports.consentSource ?? "wa-gateway";
   }
 
   private hasRootPrivilege(ctx: PipelineContext): boolean {
@@ -763,6 +807,19 @@ export class Orchestrator {
       role: ctx.identity?.role,
       relationshipProfile: ctx.relationshipProfile
     });
+  }
+
+  private shouldBypassConsent(ctx: PipelineContext): boolean {
+    const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase();
+    const privilegedRoles = ["ROOT", "DONO", "OWNER", "ADMIN", "PRIVILEGED", "INTERNAL"];
+    if (privilegedRoles.includes(role)) return true;
+    if (
+      ctx.relationshipProfile === "creator_root" ||
+      ctx.relationshipProfile === "mother_privileged" ||
+      ctx.relationshipProfile === "delegated_owner"
+    )
+      return true;
+    return false;
   }
 
   private getScope(event: InboundMessageEvent): { scope: Scope; scopeId: string } {
@@ -887,6 +944,12 @@ export class Orchestrator {
       conversationState = { state: "NONE", updatedAt: now };
     }
 
+    const consent = await this.ports.consent.getConsent({
+      tenantId: event.tenantId,
+      waUserId: event.waUserId,
+      termsVersion: this.consentTermsVersion
+    });
+
     const relationship = resolveRelationshipProfile({
       waUserId: event.waUserId,
       phoneNumber: identity?.canonicalIdentity?.phoneNumber,
@@ -911,7 +974,7 @@ export class Orchestrator {
           limit: memoryLimit
         });
 
-    return {
+    const ctx: PipelineContext = {
       event,
       scope,
       relationshipProfile: relationship.profile,
@@ -927,16 +990,40 @@ export class Orchestrator {
       classification: { kind: "ignored_event" },
       muteInfo,
       conversationState,
+      consent,
+      consentRequired: false,
+      bypassConsent: false,
+      consentVersion: this.consentTermsVersion,
       identity,
       recentMessages,
       policyMuted: false
     };
+
+    ctx.bypassConsent = this.shouldBypassConsent(ctx);
+    ctx.consentRequired =
+      !ctx.bypassConsent &&
+      (!consent || consent.termsVersion !== this.consentTermsVersion || consent.status !== "ACCEPTED");
+    if (!ctx.consentRequired && ctx.conversationState.state === "WAITING_CONSENT") {
+      await this.clearConversationState(ctx);
+      ctx.conversationState = { state: "NONE", updatedAt: now };
+    }
+
+    return ctx;
   }
 
   private async isDuplicate(event: NormalizedEvent): Promise<boolean> {
     if (!event.normalizedText) return false;
     const key = `dup:${event.tenantId}:${event.waGroupId ?? event.waUserId}:${event.normalizedText.slice(0, 80).toLowerCase()}`;
     return !(await this.ports.cooldown.canFire(key, this.dedupTtlSeconds));
+  }
+
+  private isGreetingMessage(text: string): boolean {
+    const normalized = text.trim().toLowerCase().replace(/[!.,]/g, "");
+    if (!normalized) return false;
+    const greetingTokens = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "salve", "eai", "e aí"];
+    if (normalized.split(/\s+/).length > 6) return false;
+    if (normalized.includes("?")) return false;
+    return greetingTokens.some((token) => normalized === token || normalized.startsWith(`${token} `));
   }
 
   private isEchoFromAssistant(ctx: PipelineContext): boolean {
@@ -950,6 +1037,7 @@ export class Orchestrator {
     if (event.isStatusBroadcast) return { kind: "ignored_event", reason: "status_broadcast" };
     if (event.isFromBot) return { kind: "ignored_event", reason: "from_bot" };
     if (event.messageKind === "system") return { kind: "system_event" };
+    if (ctx.conversationState.state === "WAITING_CONSENT") return { kind: "consent_pending", reason: "consent_required" };
     if (!event.normalizedText && !event.hasMedia) return { kind: "ignored_event", reason: "empty_payload" };
     if (event.hasMedia && !event.normalizedText && ctx.downloadsMode === "off") {
       return { kind: "ignored_event", reason: "media_not_allowed" };
@@ -973,6 +1061,126 @@ export class Orchestrator {
     const muteActive = ctx.muteInfo && ctx.muteInfo.until.getTime() > ctx.now.getTime();
     if (muteActive) ctx.policyMuted = true;
     return {};
+  }
+
+  private normalizeConsentInput(text: string): string {
+    return text
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim()
+      .toLowerCase();
+  }
+
+  private buildConsentOnboardingText(): string {
+    return [
+      "Olá, seja bem-vindo!",
+      "Sou Zappy, assistente digital da Services.NET.",
+      "",
+      "Antes de prosseguir, recomendamos que leia e aceite nossos Termos de Compromisso e a Política de Privacidade disponíveis em:",
+      this.consentLink,
+      "",
+      "Para continuar, responda com: SIM",
+      "Se não concordar, responda com: NÃO"
+    ].join("\n");
+  }
+
+  private buildConsentReminderText(): string {
+    return `Para continuar, preciso do seu consentimento. Leia: ${this.consentLink}. Responda SIM para aceitar ou NÃO para recusar.`;
+  }
+
+  private buildConsentAcceptedText(): string {
+    return "Obrigado! Consentimento registrado. Sou Zappy, assistente digital da Services.NET. Posso ajudar com suporte, orçamento, agendamento ou dúvidas.";
+  }
+
+  private async setConsentWaitingState(ctx: PipelineContext): Promise<void> {
+    if (!this.ports.conversationState) {
+      ctx.conversationState = { state: "WAITING_CONSENT", updatedAt: ctx.now };
+      return;
+    }
+    const expiresAt = new Date(ctx.now.getTime() + this.pendingStateTtlMs);
+    await this.ports.conversationState.setState({
+      tenantId: ctx.event.tenantId,
+      waGroupId: ctx.event.waGroupId,
+      waUserId: ctx.event.waUserId,
+      state: "WAITING_CONSENT",
+      context: { termsVersion: this.consentTermsVersion },
+      expiresAt
+    });
+    ctx.conversationState = { state: "WAITING_CONSENT", context: { termsVersion: this.consentTermsVersion }, updatedAt: ctx.now, expiresAt };
+  }
+
+  private async enforceConsent(ctx: PipelineContext): Promise<ResponseAction[]> {
+    if (ctx.bypassConsent) return [];
+    const needsConsent = ctx.consentRequired || ctx.classification.kind === "consent_pending";
+    if (!needsConsent) return [];
+
+    const normalized = this.normalizeConsentInput(ctx.event.normalizedText);
+    const isYes = /^sim\b/.test(normalized) || normalized === "yes";
+    const isNo = /^(nao\b|nao aceito|nao quero|nao concordo)/.test(normalized);
+    const wantsTerms = normalized.includes("terms") || normalized.includes("termos") || normalized.includes("politica") || normalized.includes("politics");
+    const wantsHelp = normalized === "ajuda" || normalized === "/ajuda" || normalized === "help" || normalized === "/help";
+
+    const ensurePending = async () => {
+      if (!ctx.consent || ctx.consent.status !== "PENDING" || ctx.consent.termsVersion !== this.consentTermsVersion) {
+        ctx.consent = await this.ports.consent.setConsentStatus({
+          tenantId: ctx.event.tenantId,
+          waUserId: ctx.event.waUserId,
+          status: "PENDING",
+          termsVersion: this.consentTermsVersion,
+          source: this.consentSource,
+          timestamp: ctx.now
+        });
+      }
+      await this.setConsentWaitingState(ctx);
+    };
+
+    if (isYes) {
+      ctx.consent = await this.ports.consent.setConsentStatus({
+        tenantId: ctx.event.tenantId,
+        waUserId: ctx.event.waUserId,
+        status: "ACCEPTED",
+        termsVersion: this.consentTermsVersion,
+        source: this.consentSource,
+        timestamp: ctx.now
+      });
+      ctx.consentRequired = false;
+      await this.clearConversationState(ctx);
+      ctx.conversationState = { state: "NONE", updatedAt: ctx.now };
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.buildConsentAcceptedText(), { suggestNext: "organizar suporte, orçamento, agendamento ou dúvidas" }) }];
+    }
+
+    if (isNo) {
+      ctx.consent = await this.ports.consent.setConsentStatus({
+        tenantId: ctx.event.tenantId,
+        waUserId: ctx.event.waUserId,
+        status: "DECLINED",
+        termsVersion: this.consentTermsVersion,
+        source: this.consentSource,
+        timestamp: ctx.now
+      });
+      await this.setConsentWaitingState(ctx);
+      return [
+        {
+          kind: "reply_text",
+          text: this.stylizeReply(ctx, `Entendido. Não vou prosseguir sem seu consentimento. Se mudar de ideia, envie SIM após ler: ${this.consentLink}.`)
+        }
+      ];
+    }
+
+    if (wantsTerms) {
+      await ensurePending();
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Termos de Compromisso e Política de Privacidade: ${this.consentLink}. Responda SIM para aceitar ou NÃO para recusar.`) }];
+    }
+
+    if (wantsHelp) {
+      await ensurePending();
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.buildConsentReminderText()) }];
+    }
+
+    await ensurePending();
+    const message =
+      ctx.conversationState.state === "WAITING_CONSENT" ? this.buildConsentReminderText() : this.buildConsentOnboardingText();
+    return [{ kind: "reply_text", text: this.stylizeReply(ctx, message) }];
   }
 
   private formatList(action: ReplyListAction): string {
@@ -1642,6 +1850,8 @@ export class Orchestrator {
         return "Faltam alguns detalhes. Pode completar a informação para eu seguir?";
       case "WAITING_TOOL_CONFIRMATION":
         return "Quase lá. Confirma que devo executar?";
+      case "WAITING_CONSENT":
+        return "Preciso que você aceite os termos primeiro. Responda SIM para aceitar ou NÃO para recusar.";
       case "HANDOFF_ACTIVE":
         return "O atendimento humano já foi acionado. Aguarde, por favor.";
       default:
@@ -1682,7 +1892,26 @@ export class Orchestrator {
     };
   }
 
-  private async runTriggerStage(ctx: PipelineContext): Promise<ResponseAction[]> {
+  private async runGreetingStage(ctx: PipelineContext): Promise<ResponseAction[]> {
+    if (ctx.policyMuted) return [];
+    if (ctx.consentRequired) return [];
+    if (ctx.relationshipProfile === "creator_root") return [];
+    if (ctx.classification.kind !== "trigger_candidate" && ctx.classification.kind !== "ai_candidate") return [];
+    if (!this.isGreetingMessage(ctx.event.normalizedText)) return [];
+
+    const scopePart = ctx.event.waGroupId ?? ctx.event.waUserId;
+    const key = `greeting:${ctx.event.tenantId}:${scopePart}`;
+    const canFire = await this.ports.cooldown.canFire(key, this.greetingCooldownSeconds);
+    if (!canFire) return [];
+
+    const text = this.stylizeReply(
+      ctx,
+      "Olá! Sou Zappy, assistente digital da Services.NET. Posso ajudar com suporte, orçamento, agendamento ou dúvidas. Como posso ajudar?"
+    );
+    return [{ kind: "reply_text", text }];
+  }
+
+  private async runBusinessTriggers(ctx: PipelineContext): Promise<ResponseAction[]> {
     if (ctx.policyMuted) return [];
     if (ctx.classification.kind === "command") return [];
     if (ctx.classification.kind === "tool_follow_up") return [];
@@ -2165,7 +2394,13 @@ export class Orchestrator {
     const policyResult = this.applyPolicies(ctx);
     if (policyResult.stop) return this.formatActionsForDelivery(policyResult.stop);
 
-    const triggerActions = await this.runTriggerStage(ctx);
+    const consentActions = await this.enforceConsent(ctx);
+    if (consentActions.length > 0) return this.formatActionsForDelivery(consentActions);
+
+    const greetingActions = await this.runGreetingStage(ctx);
+    if (greetingActions.length > 0) return this.formatActionsForDelivery(greetingActions);
+
+    const triggerActions = await this.runBusinessTriggers(ctx);
     if (triggerActions.length > 0) return this.formatActionsForDelivery(triggerActions);
 
     const commandActions = await this.runCommandRouter(ctx);

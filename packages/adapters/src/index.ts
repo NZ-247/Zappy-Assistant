@@ -2,6 +2,7 @@ import {
   AuditAction,
   MatchType,
   PrismaClient,
+  ConsentStatus,
   ReminderStatus,
   Scope,
   TaskStatus,
@@ -1099,6 +1100,76 @@ export const createConversationStateAdapter = (redis: Redis) => {
       await redis.del(key);
     }
   };
+};
+
+export const consentRepository = {
+  getConsent: async (input: { tenantId: string; waUserId: string; termsVersion?: string }) => {
+    const user = await findUserForTenant(input.tenantId, input.waUserId);
+    if (!user) return null;
+    const where: Prisma.UserConsentWhereInput = { tenantId: input.tenantId, userId: user.id };
+    if (input.termsVersion) where.termsVersion = input.termsVersion;
+    const row = await prisma.userConsent.findFirst({ where, orderBy: { createdAt: "desc" } });
+    if (!row) return null;
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      status: row.status as ConsentStatus,
+      termsVersion: row.termsVersion,
+      acceptedAt: row.acceptedAt,
+      declinedAt: row.declinedAt,
+      source: row.source,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    };
+  },
+  setConsentStatus: async (input: {
+    tenantId: string;
+    waUserId: string;
+    status: ConsentStatus;
+    termsVersion: string;
+    source?: string;
+    timestamp?: Date;
+  }) => {
+    const user =
+      (await findUserForTenant(input.tenantId, input.waUserId)) ??
+      (await prisma.user.create({
+        data: { tenantId: input.tenantId, waUserId: input.waUserId, displayName: input.waUserId, role: "member" }
+      }));
+    const ts = input.timestamp ?? new Date();
+    const acceptedAt = input.status === "ACCEPTED" ? ts : null;
+    const declinedAt = input.status === "DECLINED" ? ts : null;
+    const row = await prisma.userConsent.upsert({
+      where: { tenantId_userId_termsVersion: { tenantId: input.tenantId, userId: user.id, termsVersion: input.termsVersion } },
+      create: {
+        tenantId: input.tenantId,
+        userId: user.id,
+        status: input.status,
+        termsVersion: input.termsVersion,
+        source: input.source ?? "wa-gateway",
+        acceptedAt,
+        declinedAt
+      },
+      update: {
+        status: input.status,
+        source: input.source ?? "wa-gateway",
+        acceptedAt,
+        declinedAt
+      }
+    });
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      status: row.status as ConsentStatus,
+      termsVersion: row.termsVersion,
+      acceptedAt: row.acceptedAt,
+      declinedAt: row.declinedAt,
+      source: row.source,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    };
+  }
 };
 
 const mergeUsers = async (sourceId: string, targetId: string) => {

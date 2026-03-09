@@ -12,6 +12,7 @@ npm run prisma:generate
 
 - `LLM_ENABLED=false` skips the LLM fallback and keeps commands/triggers active.
 - `BOT_TIMEZONE` (default `America/Cuiaba`) controls all reminder parsing/formatting.
+- Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
 ## Run
 
@@ -44,6 +45,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Trigger priority, cooldown, template variables.
 - Reminder and timer jobs via BullMQ with idempotent worker.
 - Admin API + UI for flags, triggers, status, logs, and message feed.
+- Services.NET onboarding/consent gate for common users (SIM/NÃO) with link (`CONSENT_LINK`), pending reminder state, and privileged bypass (creator_root, mother_privileged, owners/admins).
 - Relationship-aware personas with resolver:
   - creator_root (`556699064658`) and mother_privileged (`556692283438`) get tailored tone, initiative, and deeper memory; other profiles map to delegated_owner/admin/member/external_contact.
 - Natural-language tools: create/update/complete/delete tasks, create/update/delete reminders, add/list notes, get time/settings without slash commands.

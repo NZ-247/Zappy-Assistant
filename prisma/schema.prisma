@@ -41,6 +41,12 @@ enum TimerStatus {
   CANCELED
 }
 
+enum ConsentStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
 enum AuditAction {
   CREATE
   UPDATE
@@ -67,6 +73,7 @@ model Tenant {
   updatedAt     DateTime       @updatedAt
   groups        Group[]
   users         User[]
+  userConsents  UserConsent[]
   conversations Conversation[]
   featureFlags  FeatureFlag[]
   triggers      Trigger[]
@@ -114,6 +121,7 @@ model User {
   relationshipProfile String?
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
+  consents           UserConsent[]
   messages           Message[]
   reminders          Reminder[]
   featureFlags       FeatureFlag[]
@@ -328,6 +336,25 @@ model ConversationMemory {
 
   @@index([conversationId, createdAt])
   @@index([tenantId, createdAt])
+}
+
+model UserConsent {
+  id            String         @id @default(uuid())
+  tenantId      String
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status        ConsentStatus  @default(PENDING)
+  termsVersion  String
+  acceptedAt    DateTime?
+  declinedAt    DateTime?
+  source        String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
+  @@unique([tenantId, userId, termsVersion])
 }
 
 model AuditLog {

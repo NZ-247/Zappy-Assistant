@@ -23,7 +23,10 @@ const envSchema = z.object({
   DEFAULT_TENANT_NAME: z.string().default("Default Tenant"),
   DEFAULT_BOT_NAME: z.string().default("Zappy"),
   ASSISTANT_MODE_DEFAULT: z.enum(["off", "professional", "fun", "mixed"]).default("professional"),
-  FUN_MODE_DEFAULT: z.enum(["off", "on"]).default("off")
+  FUN_MODE_DEFAULT: z.enum(["off", "on"]).default("off"),
+  CONSENT_TERMS_VERSION: z.string().default("2026-03"),
+  CONSENT_LINK: z.string().default("https://services.net.br/politics"),
+  CONSENT_SOURCE: z.string().default("wa-gateway")
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
