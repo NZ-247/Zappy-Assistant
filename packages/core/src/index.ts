@@ -136,6 +136,10 @@ export interface InboundMessageEvent {
   quotedWaUserId?: string;
   isReplyToBot?: boolean;
   botIsGroupAdmin?: boolean;
+  botAdminStatusSource?: "live" | "cache" | "fallback";
+  botAdminCheckedAt?: Date;
+  botAdminCheckFailed?: boolean;
+  botAdminCheckError?: string;
   groupName?: string;
 }
 
@@ -588,6 +592,7 @@ export interface ClockPort {
 }
 
 export interface LoggerPort {
+  debug?(obj: unknown, msg?: string, ...args: unknown[]): void;
   info?(obj: unknown, msg?: string, ...args: unknown[]): void;
   warn(obj: unknown, msg?: string, ...args: unknown[]): void;
   error?(obj: unknown, msg?: string, ...args: unknown[]): void;
@@ -699,26 +704,8 @@ const evaluateExpression = (expression: string): number => {
   return result;
 };
 
-const buildHelpText = (input?: {
-  relationshipProfile?: RelationshipProfile | null;
-  permissionRole?: string | null;
-  role?: string | null;
-}): string => {
-  const isRoot = hasRootPrivileges({
-    permissionRole: input?.permissionRole,
-    role: input?.role,
-    relationshipProfile: input?.relationshipProfile ?? null
-  });
-  const lines: string[] = [];
-  if (isRoot) {
-    lines.push("Contexto: ROOT/creator reconhecido. Você tem controle administrativo total; pode pedir ações diretas e estratégicas.");
-  } else if (input?.relationshipProfile === "mother_privileged") {
-    lines.push("Contexto: contato privilegiado (mãe). Vou responder com carinho e respeito extras.");
-  } else if (input?.relationshipProfile === "creator_root") {
-    lines.push("Contexto: creator_root detectado. Respostas mais proativas e complementares.");
-  }
-  lines.push("Commands:");
-  lines.push(
+const buildCommandList = (isRoot: boolean): string[] => {
+  const commands = [
     "/help",
     "/task add <title>",
     "/task list",
@@ -743,8 +730,31 @@ const buildHelpText = (input?: {
     "/status",
     "/reminder in <duration> <message> (e.g. 10m, 1h30m)",
     "/reminder at <DD-MM[-YYYY]> [HH:MM] <message>"
-  );
-  if (isRoot) lines.push("/alias link <phoneNumber> <lidJid> (ROOT/Admin)");
+  ];
+  if (isRoot) commands.push("/alias link <phoneNumber> <lidJid> (ROOT/Admin)");
+  return commands;
+};
+
+const buildHelpText = (input?: {
+  relationshipProfile?: RelationshipProfile | null;
+  permissionRole?: string | null;
+  role?: string | null;
+}): string => {
+  const isRoot = hasRootPrivileges({
+    permissionRole: input?.permissionRole,
+    role: input?.role,
+    relationshipProfile: input?.relationshipProfile ?? null
+  });
+  const lines: string[] = [];
+  if (isRoot) {
+    lines.push("Contexto: ROOT/creator reconhecido. Você tem controle administrativo total; pode pedir ações diretas e estratégicas.");
+  } else if (input?.relationshipProfile === "mother_privileged") {
+    lines.push("Contexto: contato privilegiado (mãe). Vou responder com carinho e respeito extras.");
+  } else if (input?.relationshipProfile === "creator_root") {
+    lines.push("Contexto: creator_root detectado. Respostas mais proativas e complementares.");
+  }
+  lines.push("Commands:");
+  lines.push(...buildCommandList(isRoot));
   return lines.join("\n");
 };
 
@@ -820,6 +830,12 @@ type PipelineContext = {
   groupAllowed: boolean;
   groupChatMode: GroupChatMode;
   botIsGroupAdmin: boolean;
+  botAdminStatusSource?: "live" | "cache" | "fallback";
+  botAdminSourceUsed?: string;
+  botAdminResolutionPath?: Array<{ source: string; value?: boolean; checkedAt?: Date }>;
+  botAdminCheckedAt?: Date;
+  botAdminCheckFailed?: boolean;
+  botAdminCheckError?: string;
   isBotMentioned: boolean;
   isReplyToBot: boolean;
   mentionedWaUserIds: string[];
@@ -850,6 +866,7 @@ export class Orchestrator {
   private readonly dedupTtlSeconds = 12;
   private readonly pendingStateTtlMs = 10 * 60 * 1000;
   private readonly greetingCooldownSeconds = 180;
+  private readonly botAdminStaleMs = 3 * 60 * 1000;
   private readonly consentTermsVersion: string;
   private readonly consentLink: string;
   private readonly consentSource: string;
@@ -888,6 +905,15 @@ export class Orchestrator {
       lower.startsWith("/chat on") ||
       lower.startsWith("/chat off")
     );
+  }
+
+  private commandRequiresGroupAdmin(commandName?: string): boolean {
+    if (!commandName) return false;
+    const cmd = commandName.toLowerCase();
+    if (cmd.startsWith("/chat")) return true;
+    if (cmd.startsWith("/add gp allowed_groups")) return true;
+    if (cmd.startsWith("/rm gp allowed_groups")) return true;
+    return false;
   }
 
   private shouldBypassConsent(ctx: PipelineContext): boolean {
@@ -1073,7 +1099,31 @@ export class Orchestrator {
         });
     const groupChatMode = groupAccess?.chatMode ?? "on";
     const groupAllowed = event.isGroup ? (groupAccess ? Boolean(groupAccess.allowed) : true) : true;
-    const botIsGroupAdmin = event.isGroup ? Boolean(event.botIsGroupAdmin ?? groupAccess?.botIsAdmin ?? true) : true;
+    const botAdminCheckedAtTs =
+      event.botAdminCheckedAt?.getTime?.() ?? groupAccess?.botAdminCheckedAt?.getTime?.() ?? undefined;
+    const botAdminFresh = botAdminCheckedAtTs ? now.getTime() - botAdminCheckedAtTs < this.botAdminStaleMs : false;
+    const botAdminStatusSource = event.botAdminStatusSource ?? (botAdminFresh ? "cache" : undefined);
+    const botAdminResolutionPath: Array<{ source: string; value?: boolean; checkedAt?: Date }> = [];
+    if (event.isGroup) {
+      if (typeof event.botIsGroupAdmin === "boolean") {
+        botAdminResolutionPath.push({
+          source: `event:${event.botAdminStatusSource ?? "unknown"}`,
+          value: event.botIsGroupAdmin,
+          checkedAt: event.botAdminCheckedAt
+        });
+      }
+      if (typeof groupAccess?.botIsAdmin === "boolean") {
+        botAdminResolutionPath.push({
+          source: botAdminFresh ? "db:fresh" : "db",
+          value: groupAccess.botIsAdmin,
+          checkedAt: groupAccess.botAdminCheckedAt ?? undefined
+        });
+      }
+      botAdminResolutionPath.push({ source: "default:optimistic", value: true });
+    }
+    const chosenAdmin = botAdminResolutionPath.find((c) => c.value !== undefined) ?? { source: "direct", value: true };
+    const botIsGroupAdmin = event.isGroup ? Boolean(chosenAdmin.value) : true;
+    const botAdminSourceUsed = event.isGroup ? chosenAdmin.source : "direct";
     const mentionedWaUserIds = event.mentionedWaUserIds ?? [];
     const requesterIsAdmin =
       this.ports.adminAccess && event.waUserId
@@ -1105,6 +1155,12 @@ export class Orchestrator {
       groupAllowed,
       groupChatMode,
       botIsGroupAdmin,
+      botAdminStatusSource,
+      botAdminSourceUsed,
+      botAdminResolutionPath,
+      botAdminCheckedAt: botAdminCheckedAtTs ? new Date(botAdminCheckedAtTs) : undefined,
+      botAdminCheckFailed: Boolean(event.botAdminCheckFailed || botAdminStatusSource === "fallback"),
+      botAdminCheckError: event.botAdminCheckError,
       isBotMentioned: Boolean(event.isBotMentioned),
       isReplyToBot: Boolean(event.isReplyToBot),
       mentionedWaUserIds,
@@ -1227,7 +1283,13 @@ export class Orchestrator {
     const isCommand = ctx.classification.kind === "command";
     const isToolFollowUp = ctx.classification.kind === "tool_follow_up";
     const isAccessCommand = this.isAccessControlCommand(ctx.event.normalizedText);
+    const addressed = ctx.isBotMentioned || ctx.isReplyToBot;
+    const directedToBot = isCommand || isToolFollowUp || addressed;
     const isPrivileged = this.isRequesterAdmin(ctx);
+
+    if (!directedToBot) {
+      return { stop: [{ kind: "noop", reason: "group_not_addressed" }] };
+    }
 
     if (!ctx.groupAllowed) {
       if (isAccessCommand && isPrivileged) return { commandsOnly: true };
@@ -1236,17 +1298,43 @@ export class Orchestrator {
       return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
     }
 
-    if (!ctx.botIsGroupAdmin) {
-      const text = "Preciso ser admin deste grupo para funcionar. Promova o bot a admin e tente novamente.";
-      return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
-    }
-
     if (ctx.groupChatMode === "off") {
       if (isCommand || isToolFollowUp || isAccessCommand) return { commandsOnly: true };
       return { stop: [{ kind: "noop", reason: "chat_mode_off" }] };
     }
 
-    const addressed = ctx.isBotMentioned || ctx.isReplyToBot;
+    const requiresGroupAdmin = isCommand && this.commandRequiresGroupAdmin(ctx.classification.commandName);
+    if (requiresGroupAdmin && (ctx.botAdminCheckFailed || !ctx.botIsGroupAdmin)) {
+      if (process.env.NODE_ENV !== "production") {
+        this.ports.logger?.debug?.(
+          {
+            category: "BOT_ADMIN_GUARD",
+            tenantId: ctx.event.tenantId,
+            waGroupId: ctx.event.waGroupId,
+            command: ctx.classification.commandName,
+            guard: "requires_group_admin",
+            decision: "deny",
+            botIsAdmin: ctx.botIsGroupAdmin,
+            sourceUsed: ctx.botAdminSourceUsed,
+            statusSource: ctx.botAdminStatusSource,
+            eventBotIsAdmin: ctx.event.botIsGroupAdmin,
+            eventBotAdminSource: ctx.event.botAdminStatusSource,
+            groupBotIsAdmin: ctx.groupAccess?.botIsAdmin,
+            groupBotCheckedAt: ctx.groupAccess?.botAdminCheckedAt?.toISOString?.(),
+            botAdminCheckedAt: ctx.botAdminCheckedAt?.toISOString?.(),
+            resolutionPath: ctx.botAdminResolutionPath?.map((c) => ({ source: c.source, value: c.value })),
+            checkFailed: ctx.botAdminCheckFailed,
+            checkError: ctx.botAdminCheckError
+          },
+          "bot admin guard blocked command"
+        );
+      }
+      const text = ctx.botAdminCheckFailed
+        ? "Não consegui confirmar se sou admin deste grupo agora (falha ao ler os metadados). Tente novamente em alguns segundos ou verifique minhas permissões."
+        : "Preciso ser admin deste grupo para concluir este comando. Promova o bot a admin e tente novamente.";
+      return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
+    }
+
     if (!isCommand && !isToolFollowUp && !addressed) {
       return { stop: [{ kind: "noop", reason: "group_not_addressed" }] };
     }
@@ -2161,14 +2249,84 @@ export class Orchestrator {
     return [];
   }
 
+  private formatRequesterLabel(ctx: PipelineContext): string {
+    const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "member").toUpperCase();
+    const profile = ctx.relationshipProfile ?? ctx.identity?.relationshipProfile ?? "member";
+    return profile && profile !== "member" ? `${role} (${profile})` : role;
+  }
+
+  private buildHelpResponse(ctx: PipelineContext): string {
+    const isRoot = this.hasRootPrivilege(ctx);
+    const commands = buildCommandList(isRoot);
+    const requester = this.formatRequesterLabel(ctx);
+
+    if (!ctx.event.isGroup) {
+      const base = buildHelpText({
+        relationshipProfile: ctx.relationshipProfile,
+        permissionRole: ctx.identity?.permissionRole,
+        role: ctx.identity?.role
+      });
+      return [`Você: ${requester}`, base].join("\n");
+    }
+
+    const groupLabel = ctx.identity?.groupName ?? ctx.groupAccess?.groupName ?? ctx.event.waGroupId ?? "grupo";
+    const aiActive = ctx.assistantMode !== "off" && ctx.groupChatMode === "on";
+    const aiLabel = aiActive ? "ativo (menções/respostas)" : "restrito";
+    const botAdminLabel = ctx.botAdminCheckFailed
+      ? "indeterminado (falha ao atualizar)"
+      : ctx.botIsGroupAdmin
+        ? "sim"
+        : "não";
+    const lines = [
+      `Grupo: ${groupLabel}`,
+      `ID: ${ctx.event.waGroupId ?? "-"}`,
+      `Permitido: ${ctx.groupAllowed ? "sim" : "não"}`,
+      `Bot admin: ${botAdminLabel}`,
+      `Chat: ${ctx.groupChatMode.toUpperCase()}`,
+      `AI: ${aiLabel}`,
+      `Você: ${requester}`
+    ];
+    const missing: string[] = [];
+    if (!ctx.groupAllowed) missing.push("Grupo não autorizado (use /add gp allowed_groups).");
+    if (ctx.botAdminCheckFailed) missing.push("Status de admin do bot não pôde ser confirmado agora.");
+    else if (!ctx.botIsGroupAdmin) missing.push("Bot não é admin do grupo.");
+    if (ctx.groupChatMode === "off") missing.push("Chat do bot está OFF (use /chat on).");
+    if (ctx.assistantMode === "off") missing.push("AI desativada (assistant_mode=off).");
+    if (missing.length > 0) {
+      lines.push("Pendências:");
+      lines.push(...missing.map((m) => `- ${m}`));
+    }
+    lines.push("Comandos:");
+    lines.push(...commands);
+    return lines.join("\n");
+  }
+
   private async runCommandRouter(ctx: PipelineContext): Promise<ResponseAction[]> {
     const cmd = ctx.event.normalizedText;
     const lower = cmd.toLowerCase();
+    const botAdminLabel = ctx.botAdminCheckFailed ? "indeterminado" : ctx.botIsGroupAdmin ? "sim" : "não";
 
     if (!lower.startsWith("/")) return [];
 
     const requireAdmin = (): ResponseAction[] | null => {
       if (this.isRequesterAdmin(ctx)) return null;
+      if (process.env.NODE_ENV !== "production" && lower.startsWith("/chat")) {
+        this.ports.logger?.debug?.(
+          {
+            category: "BOT_ADMIN_GUARD",
+            tenantId: ctx.event.tenantId,
+            waGroupId: ctx.event.waGroupId,
+            command: lower,
+            guard: "require_bot_admin_user",
+            decision: "deny",
+            botIsAdmin: ctx.botIsGroupAdmin,
+            sourceUsed: ctx.botAdminSourceUsed,
+            statusSource: ctx.botAdminStatusSource,
+            requesterIsAdmin: false
+          },
+          "bot admin user guard blocked command"
+        );
+      }
       return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Somente admins do bot podem usar este comando.") }];
     };
 
@@ -2211,11 +2369,7 @@ export class Orchestrator {
       return [
         {
           kind: "reply_text",
-          text: buildHelpText({
-            relationshipProfile: ctx.relationshipProfile,
-            permissionRole: ctx.identity?.permissionRole,
-            role: ctx.identity?.role
-          })
+          text: this.buildHelpResponse(ctx)
         }
       ];
     }
@@ -2229,7 +2383,7 @@ export class Orchestrator {
         `Nome: ${access?.groupName ?? ctx.identity?.groupName ?? ctx.event.waGroupId ?? "-"}`,
         `Permitido: ${access?.allowed ? "sim" : "não"}`,
         `Modo de chat: ${access?.chatMode ?? ctx.groupChatMode}`,
-        `Bot admin: ${ctx.botIsGroupAdmin ? "sim" : "não"}`
+        `Bot admin: ${botAdminLabel}`
       ];
       return [{ kind: "reply_text", text: lines.join("\n") }];
     }
@@ -2249,7 +2403,7 @@ export class Orchestrator {
       return [
         {
           kind: "reply_text",
-          text: this.stylizeReply(ctx, `Grupo autorizado: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}. Bot admin=${ctx.botIsGroupAdmin ? "sim" : "não"}.`)
+          text: this.stylizeReply(ctx, `Grupo autorizado: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}. Bot admin=${botAdminLabel}.`)
         }
       ];
     }
@@ -2295,6 +2449,24 @@ export class Orchestrator {
       const adminCheck = requireAdmin();
       if (adminCheck) return adminCheck;
       if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
+      if (process.env.NODE_ENV !== "production") {
+        this.ports.logger?.debug?.(
+          {
+            category: "BOT_ADMIN_GUARD",
+            tenantId: ctx.event.tenantId,
+            waGroupId: ctx.event.waGroupId,
+            command: lower,
+            guard: "chat_command",
+            decision: "proceed",
+            botIsAdmin: ctx.botIsGroupAdmin,
+            sourceUsed: ctx.botAdminSourceUsed,
+            statusSource: ctx.botAdminStatusSource,
+            eventBotIsAdmin: ctx.event.botIsGroupAdmin,
+            groupBotIsAdmin: ctx.groupAccess?.botIsAdmin
+          },
+          "chat command bot admin state"
+        );
+      }
       const mode = lower.endsWith("off") ? "off" : "on";
       const updated = await this.ports.groupAccess.setChatMode({
         tenantId: ctx.event.tenantId,
@@ -2305,7 +2477,7 @@ export class Orchestrator {
       return [
         {
           kind: "reply_text",
-          text: this.stylizeReply(ctx, `Modo de chat do grupo ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${ctx.botIsGroupAdmin ? "sim" : "não"}.`)
+          text: this.stylizeReply(ctx, `Modo de chat do grupo ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${botAdminLabel}.`)
         }
       ];
     }
@@ -2562,7 +2734,7 @@ export class Orchestrator {
           `Grupo: ${ctx.event.waGroupId ?? "-"}`,
           `Grupo permitido: ${ctx.groupAllowed ? "sim" : "não"}`,
           `Modo de chat: ${ctx.groupChatMode}`,
-          `Bot admin: ${ctx.botIsGroupAdmin ? "sim" : "não"}`
+          `Bot admin: ${botAdminLabel}`
         );
       }
       return [{ kind: "reply_text", text: this.stylizeReply(ctx, lines.join("\n")) }];
@@ -2760,6 +2932,29 @@ export class Orchestrator {
 
     const ctx = await this.buildContext(normalized);
     ctx.classification = await this.classifyMessage(ctx);
+
+    if (process.env.NODE_ENV !== "production" && ctx.event.isGroup) {
+      this.ports.logger?.debug?.(
+        {
+          category: "BOT_ADMIN_GUARD",
+          tenantId: ctx.event.tenantId,
+          waGroupId: ctx.event.waGroupId,
+          guardSource: ctx.classification.commandName ?? ctx.classification.kind,
+          botIsAdmin: ctx.botIsGroupAdmin,
+          sourceUsed: ctx.botAdminSourceUsed ?? ctx.botAdminStatusSource ?? "unknown",
+          statusSource: ctx.botAdminStatusSource,
+          eventBotIsAdmin: ctx.event.botIsGroupAdmin,
+          eventBotAdminSource: ctx.event.botAdminStatusSource,
+          groupBotIsAdmin: ctx.groupAccess?.botIsAdmin,
+          groupBotCheckedAt: ctx.groupAccess?.botAdminCheckedAt?.toISOString?.(),
+          botAdminCheckedAt: ctx.botAdminCheckedAt?.toISOString?.(),
+          botAdminCheckFailed: ctx.botAdminCheckFailed,
+          botAdminCheckError: ctx.botAdminCheckError,
+          resolutionPath: ctx.botAdminResolutionPath?.map((c) => ({ source: c.source, value: c.value }))
+        },
+        "bot admin state (pre-guard)"
+      );
+    }
 
     if (ctx.classification.kind === "ignored_event" || ctx.classification.kind === "system_event") {
       return this.formatActionsForDelivery([{ kind: "noop", reason: ctx.classification.reason ?? ctx.classification.kind }]);

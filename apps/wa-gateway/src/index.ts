@@ -172,8 +172,38 @@ const hasMedia = (message: any): boolean =>
       message?.documentWithCaptionMessage
   );
 
-const normalizeJid = (jid?: string | null): string => (jid ? jid.split(":")[0] : "");
-const groupAdminCache = new Map<string, { isAdmin: boolean; checkedAt: number }>();
+const normalizeJid = (jid?: string | null): string => {
+  if (!jid) return "";
+  const [userWithDevice, server] = jid.split("@");
+  if (!server) return jid;
+  const user = userWithDevice.includes(":") ? userWithDevice.split(":")[0] : userWithDevice;
+  const normalizedServer = server === "c.us" ? "s.whatsapp.net" : server;
+  return `${user}@${normalizedServer}`;
+};
+
+const isBotAdminCommand = (text: string): boolean => {
+  const lower = text.trim().toLowerCase();
+  if (lower.startsWith("/chat ")) return true;
+  if (lower === "/add gp allowed_groups") return true;
+  if (lower === "/rm gp allowed_groups") return true;
+  return false;
+};
+
+type BotAdminStatus = {
+  isAdmin?: boolean;
+  checkedAt: number;
+  source: "cache" | "live" | "fallback";
+  error?: string;
+  cached?: boolean;
+  metadataFetched?: boolean;
+  participantFound?: boolean;
+  participantAdmin?: boolean;
+  participantAdminLabel?: string | boolean | null;
+  botJidRaw?: string;
+  botJidNormalized?: string;
+};
+
+const groupAdminCache = new Map<string, BotAdminStatus>();
 const GROUP_ADMIN_CACHE_TTL_MS = 3 * 60 * 1000;
 
 const getContextInfo = (message: any) =>
@@ -187,23 +217,118 @@ const getContextInfo = (message: any) =>
   message?.templateButtonReplyMessage?.contextInfo ??
   undefined;
 
-const ensureBotAdminStatus = async (groupJid: string): Promise<boolean> => {
+const ensureBotAdminStatus = async (groupJid: string, options?: { forceRefresh?: boolean }): Promise<BotAdminStatus> => {
+  const now = Date.now();
   const cached = groupAdminCache.get(groupJid);
-  if (cached && Date.now() - cached.checkedAt < GROUP_ADMIN_CACHE_TTL_MS) return cached.isAdmin;
-  if (!socket?.user?.id) return false;
+  if (!options?.forceRefresh && cached && now - cached.checkedAt < GROUP_ADMIN_CACHE_TTL_MS) {
+    return { ...cached, cached: true, source: cached.source === "live" ? "cache" : cached.source };
+  }
+  if (!socket?.user?.id) {
+    const fallback =
+      cached ?? {
+        isAdmin: undefined,
+        checkedAt: now,
+        source: "fallback" as const,
+        error: "socket_not_ready",
+        metadataFetched: false,
+        botJidRaw: socket?.user?.id,
+        botJidNormalized: socket?.user?.id ? normalizeJid(socket.user.id) : undefined
+      };
+    groupAdminCache.set(groupJid, fallback);
+    return { ...fallback, source: "fallback" };
+  }
+
   try {
     const metadata = await socket.groupMetadata(groupJid);
-    const botId = normalizeJid(socket.user.id);
-    const isAdmin = Boolean(
-      metadata?.participants?.some((p: any) => normalizeJid(p.id) === botId && Boolean(p.admin || p.isAdmin || p.admin === "admin"))
+    const botIdRaw = socket.user.id;
+    const botId = normalizeJid(botIdRaw);
+    const participant = metadata?.participants?.find((p: any) => normalizeJid(p.id) === botId);
+    const adminLabel = participant?.admin ?? participant?.isAdmin ?? null;
+    const participantAdmin = Boolean(
+      participant &&
+        (participant.admin === "admin" || participant.admin === "superadmin" || participant.isAdmin === true || participant.admin === true)
     );
-    groupAdminCache.set(groupJid, { isAdmin, checkedAt: Date.now() });
-    return isAdmin;
+    const isAdmin = participantAdmin;
+    const status: BotAdminStatus = {
+      isAdmin,
+      checkedAt: now,
+      source: "live",
+      metadataFetched: true,
+      participantFound: Boolean(participant),
+      participantAdmin,
+      participantAdminLabel: adminLabel,
+      botJidRaw: botIdRaw,
+      botJidNormalized: botId
+    };
+    groupAdminCache.set(groupJid, status);
+    return status;
   } catch (error) {
-    logger.warn(withCategory("WARN", { waGroupId: groupJid, error }), "failed to resolve group admin status");
-    groupAdminCache.set(groupJid, { isAdmin: false, checkedAt: Date.now() });
-    return false;
+    logger.warn(
+      withCategory("WARN", {
+        waGroupId: groupJid,
+        note: "bot-admin-refresh-failed",
+        message: (error as Error)?.message
+      }),
+      "bot admin refresh failed"
+    );
+    const fallback =
+      cached ?? {
+        isAdmin: undefined,
+        checkedAt: now,
+        source: "fallback" as const,
+        error: (error as Error)?.message,
+        metadataFetched: false,
+        botJidRaw: socket?.user?.id,
+        botJidNormalized: socket?.user?.id ? normalizeJid(socket.user.id) : undefined
+      };
+    groupAdminCache.set(groupJid, fallback);
+    return fallback;
   }
+};
+
+const refreshBotAdminState = async (input: { waGroupId: string; tenantId?: string; groupName?: string | null; force?: boolean; origin?: string; guardSource?: string }) => {
+  const existing =
+    input.tenantId && input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+  const status = await ensureBotAdminStatus(input.waGroupId, { forceRefresh: input.force });
+  let persistedAfter = existing?.botIsAdmin;
+
+  const shouldPersist = status.source === "live";
+  if (shouldPersist && input.tenantId && typeof status.isAdmin === "boolean") {
+    const updated = await groupAccessRepository.getGroupAccess({
+      tenantId: input.tenantId,
+      waGroupId: input.waGroupId,
+      groupName: input.groupName ?? undefined,
+      botIsAdmin: status.isAdmin
+    });
+    persistedAfter = updated.botIsAdmin;
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    const botJidRaw = status.botJidRaw ?? socket?.user?.id;
+    const botJidNormalized = status.botJidNormalized ?? (botJidRaw ? normalizeJid(botJidRaw) : undefined);
+    logger.debug(
+      withCategory("SYSTEM", {
+        waGroupId: input.waGroupId,
+        origin: input.origin ?? "refreshBotAdminState",
+        guardSource: input.guardSource,
+        botJidRaw,
+        botJidNormalized,
+        metadataFetched: Boolean(status.metadataFetched),
+        participantFound: Boolean(status.participantFound),
+        participantAdmin: status.participantAdmin,
+        participantAdminLabel: status.participantAdminLabel,
+        source: status.source,
+        liveIsAdmin: status.isAdmin,
+        persistedBefore: existing?.botIsAdmin,
+        persistedAfter,
+        error: status.error,
+        checkedAt: new Date(status.checkedAt).toISOString()
+      }),
+      "bot admin detection"
+    );
+  }
+
+  return status;
 };
 
 const connect = async () => {
@@ -232,6 +357,31 @@ const connect = async () => {
     } else if (connection === "open") {
       logger.info(withCategory("SYSTEM", { status: "WhatsApp CONNECTED", user: socket?.user?.id }), "WhatsApp CONNECTED");
       await markGatewayHeartbeat(redis, true);
+    }
+  });
+
+  (socket.ev as any).on("group-participants.update", async (update: { id?: string; participants?: string[]; action?: string }) => {
+    try {
+      const botId = socket?.user?.id ? normalizeJid(socket.user.id) : undefined;
+      if (!botId || !update?.id) return;
+      const participants = (update.participants ?? []).map((p) => normalizeJid(p));
+      const involvesBot = participants.includes(botId);
+      if (!involvesBot) return;
+
+      const groupRecord = await prisma.group.findUnique({ where: { waGroupId: update.id } });
+      const status = await refreshBotAdminState({
+        waGroupId: update.id,
+        tenantId: groupRecord?.tenantId,
+        groupName: groupRecord?.name,
+        force: true,
+        origin: "participants.update"
+      });
+      logger.info(
+        withCategory("SYSTEM", { waGroupId: update.id, botIsAdmin: status.isAdmin, source: "participants.update" }),
+        "refreshed bot admin status"
+      );
+    } catch (error) {
+      logger.warn(withCategory("WARN", { waGroupId: update?.id, error }), "failed to refresh bot admin after participant update");
     }
   });
 
@@ -265,12 +415,12 @@ const connect = async () => {
       if (!text && !mediaPresent) continue;
       const botJid = socket.user?.id ? normalizeJid(socket.user.id) : undefined;
       const contextInfo = getContextInfo(message.message);
-      const mentionedWaUserIds = (contextInfo?.mentionedJid as string[] | undefined) ?? [];
+      const mentionedWaUserIds = ((contextInfo?.mentionedJid as string[] | undefined) ?? []).map((jid) => normalizeJid(jid));
       const quotedWaMessageId = (contextInfo as any)?.stanzaId as string | undefined;
-      const quotedWaUserId = (contextInfo as any)?.participant as string | undefined;
-      const isReplyToBot = botJid ? normalizeJid(quotedWaUserId) === botJid : false;
-      const isBotMentioned = botJid ? mentionedWaUserIds.some((jid) => normalizeJid(jid) === botJid) : false;
-      const botIsGroupAdmin = isGroup ? await ensureBotAdminStatus(remoteJid) : false;
+      const quotedWaUserIdRaw = (contextInfo as any)?.participant as string | undefined;
+      const quotedWaUserId = quotedWaUserIdRaw ? normalizeJid(quotedWaUserIdRaw) : undefined;
+      const isReplyToBot = botJid ? normalizeJid(quotedWaUserIdRaw) === botJid : false;
+      const isBotMentioned = botJid ? mentionedWaUserIds.includes(botJid) : false;
 
       const context = await ensureTenantContext({
         waGroupId: isGroup ? remoteJid : undefined,
@@ -280,6 +430,26 @@ const connect = async () => {
         remoteJid,
         userName: message.pushName ?? null
       });
+
+      const lastAdminCheck = context.group?.botAdminCheckedAt?.getTime?.() ?? 0;
+      const adminCommand = isGroup && text.startsWith("/") && isBotAdminCommand(text);
+      const shouldForceAdminRefresh =
+        isGroup &&
+        (adminCommand ||
+          !context.group?.botAdminCheckedAt ||
+          Date.now() - lastAdminCheck > GROUP_ADMIN_CACHE_TTL_MS ||
+          context.group?.botIsAdmin === false);
+      const botAdminStatus = isGroup
+        ? await refreshBotAdminState({
+            waGroupId: remoteJid,
+            tenantId: context.tenant.id,
+            groupName: context.group?.name ?? message.pushName ?? remoteJid,
+            force: shouldForceAdminRefresh,
+            origin: "messages.upsert"
+          })
+        : undefined;
+      const botAdminCheckedAt = botAdminStatus?.checkedAt ? new Date(botAdminStatus.checkedAt) : context.group?.botAdminCheckedAt ?? undefined;
+      const botIsGroupAdmin = isGroup ? botAdminStatus?.isAdmin ?? context.group?.botIsAdmin ?? undefined : undefined;
 
       const event: InboundMessageEvent = {
         tenantId: context.tenant.id,
@@ -302,7 +472,11 @@ const connect = async () => {
         quotedWaUserId,
         isReplyToBot,
         botIsGroupAdmin,
-        groupName: context.group?.name ?? undefined
+        botAdminStatusSource: botAdminStatus?.source,
+        botAdminCheckFailed: botAdminStatus?.source === "fallback",
+        botAdminCheckError: botAdminStatus?.error,
+        botAdminCheckedAt,
+        groupName: context.group?.name ?? message.pushName ?? remoteJid ?? undefined
       };
 
       const persisted = await persistInboundMessage({

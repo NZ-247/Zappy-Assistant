@@ -6,11 +6,22 @@
 - Applies to commands, AI replies, moderation/hand-off, confirmations, and tool suggestions.
 
 ## Group scope & chat modes
-- A group must be **allowed** and the bot must be **group admin** to operate.
+- Group traffic is **direction-first**: if a group message is not a command, mention, or reply-to-bot, it is ignored silently.
+- A group must be **allowed**; bot admin is required only for commands flagged as needing group-admin power (e.g. `/chat on|off`, allowed-group commands). Warnings are never emitted for plain, non-command chatter.
 - Per-group chat mode: `ON` (default) or `OFF`.
-  - `chat=OFF`: only prefix commands and backend/system flows are processed; regular chat/AI is ignored.
-  - `chat=ON`: AI/triggers in groups only run when the bot is mentioned (`@`) or the user replies to a bot message.
+  - `chat=OFF`: only prefix commands and backend/system flows are processed; mentions/replies without commands are ignored.
+  - `chat=ON`: AI/triggers in groups run only when the bot is mentioned (`@`) or the user replies to a bot message.
 - Direct (1:1) chats are not affected.
+
+## Bot admin status refresh
+- On every inbound group message, the gateway refreshes bot admin status from live WhatsApp group metadata when stale or previously false.
+- Group participant updates that involve the bot (`group-participants.update`) also trigger an immediate refresh.
+- `Group.botIsAdmin` and `botAdminCheckedAt` are auto-repaired in the database when the live state says the bot is admin.
+- If metadata fetch fails, a concise warning is logged and the previous known state is kept (no user-facing spam).
+
+## Contextual /help
+- In groups, `/help` starts with a status block: group name/id, allowed flag, bot admin flag, chat mode, AI status, requester role/profile, and any missing prerequisites.
+- The command list is shown after the status block; direct chats keep the leaner help text but include requester context when relevant.
 
 ## Allowed groups commands
 - `/add gp allowed_groups` (group, admin): allow current group.
@@ -32,14 +43,9 @@
 - Located at `packages/core/src/common/bot-common.ts`.
 - Functions: resolveTargetUserFromMentionOrReply, requireGroupContext, shouldRespondInGroupChat, shouldReplyToMessage, buildQuotedReplyOptions, resolveAllowedGroupAccess, resolveBotAdminAccess.
 
-## Manual test checklist
-1. Group `chat=OFF`, plain non-command message → ignored.
-2. Group `chat=ON`, non-mentioned plain message → ignored.
-3. Group `chat=ON`, `@bot` mention → AI/command reply with quote.
-4. Reply to a bot message in group → AI reply with quote.
-5. Command reply is quoted to triggering message.
-6. `/whoami` returns user + group state.
-7. `/userinfo` works on mention/reply.
-8. `/groupinfo` shows current group state (allowed/chat/admin).
-9. Allowed_groups gating: disallowed group blocked until `/add gp allowed_groups` by admin.
-10. Bot admin list commands add/remove/list correctly.
+## Manual smoke tests
+1. Bot is admin in group → no false “promova a admin” warning on normal traffic.
+2. Plain non-directed group message → ignored silently (no admin warning).
+3. `/help` in group → contextual status block (allowed/chat/admin/AI/requester) followed by command list.
+4. Command that requires bot group-admin (e.g., `/chat on` in a non-admin group) → warning appears instead of proceeding.
+5. Mention or reply-to-bot still triggers AI/commands as expected when chat=ON.
