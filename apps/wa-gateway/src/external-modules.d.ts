@@ -14,7 +14,14 @@ declare module "baileys" {
   export interface BaileysSocket {
     user?: { id?: string };
     requestPairingCode(phone: string): Promise<string>;
-    sendMessage(to: string, message: { text: string }): Promise<{ key: { id?: string } }>;
+    sendMessage(
+      to: string,
+      message: { text: string },
+      options?: { quoted?: unknown }
+    ): Promise<{ key: { id?: string } }>;
+    groupMetadata(
+      jid: string
+    ): Promise<{ id: string; subject?: string; participants?: Array<{ id: string; admin?: string | boolean; isAdmin?: boolean }> }>;
     ev: {
       on(event: "creds.update", handler: () => Promise<void>): void;
       on(
@@ -35,8 +42,12 @@ declare module "baileys" {
             key: { fromMe?: boolean; remoteJid?: string; participant?: string; id?: string };
             message?: {
               conversation?: string;
-              extendedTextMessage?: { text?: string };
-              imageMessage?: { caption?: string };
+              extendedTextMessage?: { text?: string; contextInfo?: unknown };
+              imageMessage?: { caption?: string; contextInfo?: unknown };
+              videoMessage?: { caption?: string; contextInfo?: unknown };
+              documentMessage?: { caption?: string; contextInfo?: unknown };
+              audioMessage?: { contextInfo?: unknown };
+              stickerMessage?: { contextInfo?: unknown };
             };
             messageTimestamp?: number | { toString: () => string };
           }>;

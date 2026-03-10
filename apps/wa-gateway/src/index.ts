@@ -26,7 +26,9 @@ import {
   createOpenAiAdapter,
   createConversationStateAdapter,
   conversationMemoryRepository,
-  consentRepository
+  consentRepository,
+  groupAccessRepository,
+  botAdminRepository
 } from "@zappy/adapters";
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
@@ -92,6 +94,30 @@ const reportStartupStatus = async () => {
   );
 };
 
+type OutboundSendInput = {
+  to: string;
+  content: any;
+  quotedMessage?: any;
+  logContext: Record<string, unknown>;
+};
+
+const sendWithReplyFallback = async ({ to, content, quotedMessage, logContext }: OutboundSendInput) => {
+  if (!socket) throw new Error("Socket not ready");
+  if (quotedMessage) {
+    try {
+      return await socket.sendMessage(to, content, { quoted: quotedMessage });
+    } catch (error) {
+      logger.debug(
+        withCategory("WA-OUT", { ...logContext, error, replyTo: quotedMessage?.key?.id, note: "quoted_send_failed" }),
+        "quoted send failed; falling back without reply context"
+      );
+    }
+  } else {
+    logger.debug(withCategory("WA-OUT", { ...logContext, note: "quoted_message_missing" }), "no quoted message available; sending without reply context");
+  }
+  return socket.sendMessage(to, content);
+};
+
 let socket: ReturnType<typeof makeWASocket> | null = null;
 const heartbeat = setInterval(() => {
   void markGatewayHeartbeat(redis, Boolean(socket?.user));
@@ -115,6 +141,8 @@ const orchestrator = new Orchestrator({
   llmModel,
   mute: muteAdapter,
   identity: identityRepository,
+  groupAccess: groupAccessRepository,
+  adminAccess: botAdminRepository,
   status: statusPort,
   conversationState: createConversationStateAdapter(redis),
   consent: consentRepository,
@@ -143,6 +171,40 @@ const hasMedia = (message: any): boolean =>
       message?.stickerMessage ||
       message?.documentWithCaptionMessage
   );
+
+const normalizeJid = (jid?: string | null): string => (jid ? jid.split(":")[0] : "");
+const groupAdminCache = new Map<string, { isAdmin: boolean; checkedAt: number }>();
+const GROUP_ADMIN_CACHE_TTL_MS = 3 * 60 * 1000;
+
+const getContextInfo = (message: any) =>
+  message?.extendedTextMessage?.contextInfo ??
+  message?.imageMessage?.contextInfo ??
+  message?.videoMessage?.contextInfo ??
+  message?.documentMessage?.contextInfo ??
+  message?.stickerMessage?.contextInfo ??
+  message?.audioMessage?.contextInfo ??
+  message?.buttonsResponseMessage?.contextInfo ??
+  message?.templateButtonReplyMessage?.contextInfo ??
+  undefined;
+
+const ensureBotAdminStatus = async (groupJid: string): Promise<boolean> => {
+  const cached = groupAdminCache.get(groupJid);
+  if (cached && Date.now() - cached.checkedAt < GROUP_ADMIN_CACHE_TTL_MS) return cached.isAdmin;
+  if (!socket?.user?.id) return false;
+  try {
+    const metadata = await socket.groupMetadata(groupJid);
+    const botId = normalizeJid(socket.user.id);
+    const isAdmin = Boolean(
+      metadata?.participants?.some((p: any) => normalizeJid(p.id) === botId && Boolean(p.admin || p.isAdmin || p.admin === "admin"))
+    );
+    groupAdminCache.set(groupJid, { isAdmin, checkedAt: Date.now() });
+    return isAdmin;
+  } catch (error) {
+    logger.warn(withCategory("WARN", { waGroupId: groupJid, error }), "failed to resolve group admin status");
+    groupAdminCache.set(groupJid, { isAdmin: false, checkedAt: Date.now() });
+    return false;
+  }
+};
 
 const connect = async () => {
   logger.info(withCategory("SYSTEM", { status: "WhatsApp CONNECTING" }), "WhatsApp CONNECTING");
@@ -201,6 +263,14 @@ const connect = async () => {
       const text = rawText.trim();
       const mediaPresent = hasMedia(message.message);
       if (!text && !mediaPresent) continue;
+      const botJid = socket.user?.id ? normalizeJid(socket.user.id) : undefined;
+      const contextInfo = getContextInfo(message.message);
+      const mentionedWaUserIds = (contextInfo?.mentionedJid as string[] | undefined) ?? [];
+      const quotedWaMessageId = (contextInfo as any)?.stanzaId as string | undefined;
+      const quotedWaUserId = (contextInfo as any)?.participant as string | undefined;
+      const isReplyToBot = botJid ? normalizeJid(quotedWaUserId) === botJid : false;
+      const isBotMentioned = botJid ? mentionedWaUserIds.some((jid) => normalizeJid(jid) === botJid) : false;
+      const botIsGroupAdmin = isGroup ? await ensureBotAdminStatus(remoteJid) : false;
 
       const context = await ensureTenantContext({
         waGroupId: isGroup ? remoteJid : undefined,
@@ -225,7 +295,14 @@ const connect = async () => {
         isFromBot: Boolean(message.key.fromMe),
         hasMedia: mediaPresent,
         kind: text ? "text" : mediaPresent ? "media" : "unknown",
-        rawMessageType: Object.keys(message.message ?? {})[0] ?? "unknown"
+        rawMessageType: Object.keys(message.message ?? {})[0] ?? "unknown",
+        mentionedWaUserIds,
+        isBotMentioned,
+        quotedWaMessageId,
+        quotedWaUserId,
+        isReplyToBot,
+        botIsGroupAdmin,
+        groupName: context.group?.name ?? undefined
       };
 
       const persisted = await persistInboundMessage({
@@ -278,7 +355,18 @@ const connect = async () => {
         if (action.kind === "handoff") {
           const note = action.note ?? "Handoff solicitado.";
           const to = isGroup ? remoteJid : waUserId;
-          const sent = await socket.sendMessage(to, { text: note });
+          const sent = await sendWithReplyFallback({
+            to,
+            content: { text: note },
+            quotedMessage: message,
+            logContext: {
+              tenantId: event.tenantId,
+              scope: isGroup ? "group" : "direct",
+              action: "handoff",
+              waUserId,
+              waGroupId: event.waGroupId
+            }
+          });
           await persistOutboundMessage({
             tenantId: context.tenant.id,
             userId: context.user.id,
@@ -312,7 +400,18 @@ const connect = async () => {
           const textToSend =
             action.text ??
             `Posso executar: ${action.tool.action}. Diga 'ok' para confirmar ou detalhe o que precisa.`;
-          const sent = await socket.sendMessage(to, { text: textToSend });
+          const sent = await sendWithReplyFallback({
+            to,
+            content: { text: textToSend },
+            quotedMessage: message,
+            logContext: {
+              tenantId: event.tenantId,
+              scope: isGroup ? "group" : "direct",
+              action: "ai_tool_suggestion",
+              waUserId,
+              waGroupId: event.waGroupId
+            }
+          });
           await persistOutboundMessage({
             tenantId: context.tenant.id,
             userId: context.user.id,
@@ -350,7 +449,18 @@ const connect = async () => {
             : [action.header, ...action.items.map((item) => `• ${item.title}${item.description ? ` — ${item.description}` : ""}`), action.footer]
                 .filter(Boolean)
                 .join("\n");
-        const sent = await socket.sendMessage(to, { text: textToSend });
+        const sent = await sendWithReplyFallback({
+          to,
+          content: { text: textToSend },
+          quotedMessage: message,
+          logContext: {
+            tenantId: event.tenantId,
+            scope: isGroup ? "group" : "direct",
+            action: action.kind,
+            waUserId,
+            waGroupId: event.waGroupId
+          }
+        });
         await persistOutboundMessage({
           tenantId: context.tenant.id,
           userId: context.user.id,

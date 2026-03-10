@@ -47,6 +47,11 @@ enum ConsentStatus {
   DECLINED
 }
 
+enum ChatMode {
+  ON
+  OFF
+}
+
 enum AuditAction {
   CREATE
   UPDATE
@@ -82,6 +87,7 @@ model Tenant {
   prompts       Prompt[]
   notes         Note[]
   timers        Timer[]
+  botAdmins     BotAdmin[]
 
   @@index([name])
 }
@@ -102,6 +108,10 @@ model Group {
   notes         Note[]
   timers        Timer[]
   prompts       Prompt[]
+  chatMode      ChatMode      @default(ON)
+  allowed       Boolean       @default(false)
+  botIsAdmin    Boolean       @default(false)
+  botAdminCheckedAt DateTime?
 
   @@index([tenantId])
 }
@@ -129,6 +139,7 @@ model User {
   tasks              Task[]
   notes              Note[]
   timers             Timer[]
+  botAdminEntries    BotAdmin[]
 
   @@index([tenantId])
 }
@@ -336,6 +347,20 @@ model ConversationMemory {
 
   @@index([conversationId, createdAt])
   @@index([tenantId, createdAt])
+}
+
+model BotAdmin {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  waUserId  String
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, waUserId])
+  @@index([tenantId])
+  @@index([userId])
 }
 
 model UserConsent {

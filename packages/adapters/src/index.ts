@@ -3,6 +3,7 @@ import {
   MatchType,
   PrismaClient,
   ConsentStatus,
+  ChatMode,
   ReminderStatus,
   Scope,
   TaskStatus,
@@ -364,7 +365,10 @@ export const ensureTenantContext = async (input: {
 
   if (!group && (input.waGroupId || input.onlyGroupId)) {
     const waGroupId = input.waGroupId ?? input.onlyGroupId!;
-    group = await prisma.group.create({ data: { tenantId: tenant.id, waGroupId, name: waGroupId } });
+    const shouldAutoAllow = Boolean(input.onlyGroupId && input.onlyGroupId === waGroupId);
+    group = await prisma.group.create({
+      data: { tenantId: tenant.id, waGroupId, name: waGroupId, allowed: shouldAutoAllow, chatMode: ChatMode.ON }
+    });
   }
 
   const resolvedIdentity = await resolveCanonicalUserIdentity({
@@ -1348,6 +1352,169 @@ export const identityRepository = {
       relationshipProfile: canonical.relationshipProfile ?? relationship.profile,
       permissionRole: canonical.permissionRole ?? permissionRoleTarget ?? null
     };
+  }
+};
+
+const toChatMode = (mode?: ChatMode | null): "on" | "off" => (mode === ChatMode.OFF ? "off" : "on");
+
+export const groupAccessRepository = {
+  getGroupAccess: async (input: { tenantId: string; waGroupId: string; groupName?: string | null; botIsAdmin?: boolean | null }) => {
+    let group = await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } });
+    const updates: Prisma.GroupUpdateInput = {};
+
+    if (!group) {
+      group = await prisma.group.create({
+        data: {
+          tenantId: input.tenantId,
+          waGroupId: input.waGroupId,
+          name: input.groupName ?? input.waGroupId,
+          chatMode: ChatMode.ON,
+          allowed: false,
+          botIsAdmin: Boolean(input.botIsAdmin ?? false),
+          botAdminCheckedAt: input.botIsAdmin === undefined ? null : new Date()
+        }
+      });
+    } else {
+      if (input.groupName && input.groupName !== group.name) updates.name = input.groupName;
+      if (typeof input.botIsAdmin === "boolean") {
+        updates.botIsAdmin = input.botIsAdmin;
+        updates.botAdminCheckedAt = new Date();
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      group = await prisma.group.update({ where: { id: group.id }, data: updates });
+    }
+
+    return {
+      waGroupId: group.waGroupId,
+      groupName: group.name,
+      allowed: group.allowed,
+      chatMode: toChatMode(group.chatMode),
+      botIsAdmin: group.botIsAdmin,
+      botAdminCheckedAt: group.botAdminCheckedAt
+    };
+  },
+  setAllowed: async (input: { tenantId: string; waGroupId: string; allowed: boolean; actor?: string }) => {
+    const group = await prisma.group.upsert({
+      where: { waGroupId: input.waGroupId },
+      update: { allowed: input.allowed },
+      create: { tenantId: input.tenantId, waGroupId: input.waGroupId, name: input.waGroupId, allowed: input.allowed, chatMode: ChatMode.ON }
+    });
+    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { allowed: input.allowed });
+    return {
+      waGroupId: group.waGroupId,
+      groupName: group.name,
+      allowed: group.allowed,
+      chatMode: toChatMode(group.chatMode),
+      botIsAdmin: group.botIsAdmin,
+      botAdminCheckedAt: group.botAdminCheckedAt
+    };
+  },
+  setChatMode: async (input: { tenantId: string; waGroupId: string; mode: "on" | "off"; actor?: string }) => {
+    const chatMode = input.mode === "off" ? ChatMode.OFF : ChatMode.ON;
+    const group = await prisma.group.upsert({
+      where: { waGroupId: input.waGroupId },
+      update: { chatMode },
+      create: {
+        tenantId: input.tenantId,
+        waGroupId: input.waGroupId,
+        name: input.waGroupId,
+        chatMode,
+        allowed: false,
+        botIsAdmin: false
+      }
+    });
+    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { chatMode: input.mode });
+    return {
+      waGroupId: group.waGroupId,
+      groupName: group.name,
+      allowed: group.allowed,
+      chatMode: toChatMode(group.chatMode),
+      botIsAdmin: group.botIsAdmin,
+      botAdminCheckedAt: group.botAdminCheckedAt
+    };
+  },
+  listAllowed: async (tenantId: string) => {
+    const groups = await prisma.group.findMany({ where: { tenantId, allowed: true }, orderBy: { name: "asc" } });
+    return groups.map((g) => ({
+      waGroupId: g.waGroupId,
+      groupName: g.name,
+      allowed: g.allowed,
+      chatMode: toChatMode(g.chatMode),
+      botIsAdmin: g.botIsAdmin,
+      botAdminCheckedAt: g.botAdminCheckedAt
+    }));
+  }
+};
+
+export const botAdminRepository = {
+  add: async (input: { tenantId: string; waUserId: string; displayName?: string | null; actor?: string }) => {
+    const resolved = await resolveCanonicalUserIdentity({
+      tenantId: input.tenantId,
+      waUserId: input.waUserId,
+      displayName: input.displayName ?? input.waUserId
+    });
+    const user =
+      resolved.user ??
+      (await prisma.user.create({
+        data: {
+          tenantId: input.tenantId,
+          waUserId: input.waUserId,
+          displayName: input.displayName ?? input.waUserId,
+          role: "member"
+        }
+      }));
+
+    await prisma.botAdmin.upsert({
+      where: { tenantId_waUserId: { tenantId: input.tenantId, waUserId: user.waUserId } },
+      update: { userId: user.id },
+      create: { tenantId: input.tenantId, userId: user.id, waUserId: user.waUserId }
+    });
+
+    const currentRole = (user.permissionRole ?? user.role ?? "").toUpperCase();
+    if (!["ROOT", "DONO", "OWNER"].includes(currentRole)) {
+      await prisma.user.update({ where: { id: user.id }, data: { permissionRole: "ADMIN" } });
+    }
+
+    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "BotAdmin", user.id, { action: "add_admin", waUserId: user.waUserId });
+
+    return {
+      waUserId: user.waUserId,
+      displayName: user.displayName ?? user.waUserId,
+      phoneNumber: user.phoneNumber,
+      permissionRole: currentRole && currentRole !== "MEMBER" ? currentRole : "ADMIN"
+    };
+  },
+  remove: async (input: { tenantId: string; waUserId: string; actor?: string }) => {
+    const entry = await prisma.botAdmin.findUnique({ where: { tenantId_waUserId: { tenantId: input.tenantId, waUserId: input.waUserId } } });
+    if (!entry) return false;
+    await prisma.botAdmin.delete({ where: { id: entry.id } });
+
+    const user = await prisma.user.findUnique({ where: { id: entry.userId } });
+    if (user && (user.permissionRole ?? "").toUpperCase() === "ADMIN") {
+      await prisma.user.update({ where: { id: user.id }, data: { permissionRole: null } });
+    }
+
+    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "BotAdmin", entry.id, { action: "remove_admin", waUserId: input.waUserId });
+    return true;
+  },
+  list: async (tenantId: string) => {
+    const admins = await prisma.botAdmin.findMany({ where: { tenantId }, include: { user: true }, orderBy: { createdAt: "asc" } });
+    return admins.map((a) => ({
+      waUserId: a.waUserId,
+      displayName: a.user?.displayName ?? a.waUserId,
+      phoneNumber: a.user?.phoneNumber,
+      permissionRole: a.user?.permissionRole ?? a.user?.role ?? "member",
+      createdAt: a.createdAt
+    }));
+  },
+  isAdmin: async (input: { tenantId: string; waUserId: string }) => {
+    const adminEntry = await prisma.botAdmin.findUnique({ where: { tenantId_waUserId: { tenantId: input.tenantId, waUserId: input.waUserId } } });
+    if (adminEntry) return true;
+    const user = await findUserForTenant(input.tenantId, input.waUserId);
+    const role = (user?.permissionRole ?? user?.role ?? "").toUpperCase();
+    return ["ADMIN", "ROOT", "DONO", "OWNER"].includes(role);
   }
 };
 

@@ -8,6 +8,7 @@ import {
   parseDateTimeWithZone,
   parseDurationInput
 } from "./time.js";
+import { resolveTargetUserFromMentionOrReply, requireGroupContext } from "./common/bot-common.js";
 import { Parser } from "expr-eval";
 import { DateTime } from "luxon";
 
@@ -21,6 +22,17 @@ export type RelationshipProfile =
   | "admin"
   | "member"
   | "external_contact";
+
+export type GroupChatMode = "on" | "off";
+
+export interface GroupAccessState {
+  waGroupId: string;
+  groupName?: string | null;
+  allowed: boolean;
+  chatMode: GroupChatMode;
+  botIsAdmin?: boolean;
+  botAdminCheckedAt?: Date | null;
+}
 
 export interface CanonicalIdentity {
   canonicalUserKey: string;
@@ -118,6 +130,13 @@ export interface InboundMessageEvent {
   isFromBot?: boolean;
   hasMedia?: boolean;
   rawMessageType?: string;
+  mentionedWaUserIds?: string[];
+  isBotMentioned?: boolean;
+  quotedWaMessageId?: string;
+  quotedWaUserId?: string;
+  isReplyToBot?: boolean;
+  botIsGroupAdmin?: boolean;
+  groupName?: string;
 }
 
 export interface ConversationMessage {
@@ -375,6 +394,27 @@ export type ResponseAction =
   | AiToolSuggestionAction;
 export type OrchestratorAction = ResponseAction;
 
+export interface GroupAccessPort {
+  getGroupAccess(input: { tenantId: string; waGroupId: string; groupName?: string | null; botIsAdmin?: boolean | null }): Promise<GroupAccessState>;
+  setAllowed(input: { tenantId: string; waGroupId: string; allowed: boolean; actor?: string }): Promise<GroupAccessState>;
+  setChatMode(input: { tenantId: string; waGroupId: string; mode: GroupChatMode; actor?: string }): Promise<GroupAccessState>;
+  listAllowed(tenantId: string): Promise<GroupAccessState[]>;
+}
+
+export interface AdminAccessPort {
+  add(input: { tenantId: string; waUserId: string; displayName?: string | null; actor?: string }): Promise<{
+    waUserId: string;
+    displayName?: string | null;
+    phoneNumber?: string | null;
+    permissionRole?: string | null;
+  }>;
+  remove(input: { tenantId: string; waUserId: string; actor?: string }): Promise<boolean>;
+  list(tenantId: string): Promise<
+    Array<{ waUserId: string; displayName?: string | null; phoneNumber?: string | null; permissionRole?: string | null; createdAt?: Date }>
+  >;
+  isAdmin(input: { tenantId: string; waUserId: string }): Promise<boolean>;
+}
+
 export interface FlagsRepositoryPort {
   resolveFlags(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<Record<string, string>>;
 }
@@ -571,6 +611,8 @@ export interface CorePorts {
   llmModel?: string;
   mute?: MutePort;
   identity?: IdentityPort;
+  groupAccess?: GroupAccessPort;
+  adminAccess?: AdminAccessPort;
   status?: StatusPort;
   conversationState?: ConversationStatePort;
   consent: ConsentPort;
@@ -689,6 +731,15 @@ const buildHelpText = (input?: {
     "/timer <duration>",
     "/mute <duration>|off",
     "/whoami",
+    "/userinfo (responda ou mencione)",
+    "/groupinfo",
+    "/chat on|off (grupo)",
+    "/add gp allowed_groups (grupo, admin)",
+    "/rm gp allowed_groups (grupo, admin)",
+    "/list gp allowed_groups",
+    "/add user admins <@> (admin)",
+    "/rm user admins <@>",
+    "/list user admins",
     "/status",
     "/reminder in <duration> <message> (e.g. 10m, 1h30m)",
     "/reminder at <DD-MM[-YYYY]> [HH:MM] <message>"
@@ -765,6 +816,15 @@ type PipelineContext = {
     relationshipProfile?: RelationshipProfile | null;
     relationshipReason?: string | null;
   };
+  groupAccess?: GroupAccessState;
+  groupAllowed: boolean;
+  groupChatMode: GroupChatMode;
+  botIsGroupAdmin: boolean;
+  isBotMentioned: boolean;
+  isReplyToBot: boolean;
+  mentionedWaUserIds: string[];
+  requesterIsAdmin: boolean;
+  groupPolicy?: { commandsOnly?: boolean };
   recentMessages: ConversationMessage[];
   policyMuted: boolean;
 };
@@ -807,6 +867,27 @@ export class Orchestrator {
       role: ctx.identity?.role,
       relationshipProfile: ctx.relationshipProfile
     });
+  }
+
+  private isRequesterAdmin(ctx: PipelineContext): boolean {
+    if (this.hasRootPrivilege(ctx)) return true;
+    const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase();
+    if (["ADMIN", "GROUP_ADMIN", "OWNER", "DONO"].includes(role)) return true;
+    return ctx.requesterIsAdmin;
+  }
+
+  private isAccessControlCommand(text: string): boolean {
+    const lower = text.trim().toLowerCase();
+    return (
+      lower === "/add gp allowed_groups" ||
+      lower === "/rm gp allowed_groups" ||
+      lower === "/list gp allowed_groups" ||
+      lower.startsWith("/add user admins") ||
+      lower.startsWith("/rm user admins") ||
+      lower === "/list user admins" ||
+      lower.startsWith("/chat on") ||
+      lower.startsWith("/chat off")
+    );
   }
 
   private shouldBypassConsent(ctx: PipelineContext): boolean {
@@ -879,7 +960,14 @@ export class Orchestrator {
       messageKind,
       isStatusBroadcast: Boolean(event.isStatusBroadcast || event.remoteJid === "status@broadcast"),
       isFromBot: Boolean(event.isFromBot),
-      hasMedia: Boolean(event.hasMedia)
+      hasMedia: Boolean(event.hasMedia),
+      mentionedWaUserIds: event.mentionedWaUserIds ?? [],
+      isBotMentioned: Boolean(event.isBotMentioned),
+      isReplyToBot: Boolean(event.isReplyToBot),
+      quotedWaMessageId: event.quotedWaMessageId,
+      quotedWaUserId: event.quotedWaUserId,
+      botIsGroupAdmin: event.botIsGroupAdmin,
+      groupName: event.groupName
     };
   }
 
@@ -950,6 +1038,16 @@ export class Orchestrator {
       termsVersion: this.consentTermsVersion
     });
 
+    const groupAccess =
+      event.waGroupId && this.ports.groupAccess
+        ? await this.ports.groupAccess.getGroupAccess({
+            tenantId: event.tenantId,
+            waGroupId: event.waGroupId,
+            groupName: identity?.groupName,
+            botIsAdmin: event.botIsGroupAdmin
+          })
+        : undefined;
+
     const relationship = resolveRelationshipProfile({
       waUserId: event.waUserId,
       phoneNumber: identity?.canonicalIdentity?.phoneNumber,
@@ -973,6 +1071,14 @@ export class Orchestrator {
           waUserId: event.waUserId,
           limit: memoryLimit
         });
+    const groupChatMode = groupAccess?.chatMode ?? "on";
+    const groupAllowed = event.isGroup ? (groupAccess ? Boolean(groupAccess.allowed) : true) : true;
+    const botIsGroupAdmin = event.isGroup ? Boolean(event.botIsGroupAdmin ?? groupAccess?.botIsAdmin ?? true) : true;
+    const mentionedWaUserIds = event.mentionedWaUserIds ?? [];
+    const requesterIsAdmin =
+      this.ports.adminAccess && event.waUserId
+        ? await this.ports.adminAccess.isAdmin({ tenantId: event.tenantId, waUserId: event.waUserId })
+        : false;
 
     const ctx: PipelineContext = {
       event,
@@ -995,6 +1101,14 @@ export class Orchestrator {
       bypassConsent: false,
       consentVersion: this.consentTermsVersion,
       identity,
+      groupAccess,
+      groupAllowed,
+      groupChatMode,
+      botIsGroupAdmin,
+      isBotMentioned: Boolean(event.isBotMentioned),
+      isReplyToBot: Boolean(event.isReplyToBot),
+      mentionedWaUserIds,
+      requesterIsAdmin,
       recentMessages,
       policyMuted: false
     };
@@ -1106,6 +1220,38 @@ export class Orchestrator {
       return { kind: "ai_candidate" };
     }
     return { kind: "trigger_candidate" };
+  }
+
+  private enforceGroupPolicies(ctx: PipelineContext): { stop?: ResponseAction[]; commandsOnly?: boolean } {
+    if (!ctx.event.isGroup) return { commandsOnly: false };
+    const isCommand = ctx.classification.kind === "command";
+    const isToolFollowUp = ctx.classification.kind === "tool_follow_up";
+    const isAccessCommand = this.isAccessControlCommand(ctx.event.normalizedText);
+    const isPrivileged = this.isRequesterAdmin(ctx);
+
+    if (!ctx.groupAllowed) {
+      if (isAccessCommand && isPrivileged) return { commandsOnly: true };
+      const text =
+        "Este grupo não está autorizado a usar o bot. Um admin deve enviar /add gp allowed_groups para liberar. Comandos privados continuam disponíveis.";
+      return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
+    }
+
+    if (!ctx.botIsGroupAdmin) {
+      const text = "Preciso ser admin deste grupo para funcionar. Promova o bot a admin e tente novamente.";
+      return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
+    }
+
+    if (ctx.groupChatMode === "off") {
+      if (isCommand || isToolFollowUp || isAccessCommand) return { commandsOnly: true };
+      return { stop: [{ kind: "noop", reason: "chat_mode_off" }] };
+    }
+
+    const addressed = ctx.isBotMentioned || ctx.isReplyToBot;
+    if (!isCommand && !isToolFollowUp && !addressed) {
+      return { stop: [{ kind: "noop", reason: "group_not_addressed" }] };
+    }
+
+    return { commandsOnly: false };
   }
 
   private applyPolicies(ctx: PipelineContext): { stop?: ResponseAction[] } {
@@ -1734,6 +1880,7 @@ export class Orchestrator {
   }
 
   private async runNaturalLanguageTools(ctx: PipelineContext): Promise<ResponseAction[]> {
+    if (ctx.groupPolicy?.commandsOnly) return [];
     if (ctx.policyMuted) return [];
     const intent = this.detectNaturalIntent(ctx);
     if (!intent) return [];
@@ -1947,6 +2094,7 @@ export class Orchestrator {
   }
 
   private async runGreetingStage(ctx: PipelineContext): Promise<ResponseAction[]> {
+    if (ctx.groupPolicy?.commandsOnly) return [];
     if (ctx.policyMuted) return [];
     if (ctx.consentRequired) return [];
     if (this.shouldSkipGenericGreeting(ctx)) return [];
@@ -1966,6 +2114,7 @@ export class Orchestrator {
   }
 
   private async runBusinessTriggers(ctx: PipelineContext): Promise<ResponseAction[]> {
+    if (ctx.groupPolicy?.commandsOnly) return [];
     if (ctx.policyMuted) return [];
     if (ctx.classification.kind === "command") return [];
     if (ctx.classification.kind === "tool_follow_up") return [];
@@ -2018,6 +2167,46 @@ export class Orchestrator {
 
     if (!lower.startsWith("/")) return [];
 
+    const requireAdmin = (): ResponseAction[] | null => {
+      if (this.isRequesterAdmin(ctx)) return null;
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Somente admins do bot podem usar este comando.") }];
+    };
+
+    const requireGroup = (): ResponseAction[] | null => {
+      const check = requireGroupContext(ctx.event);
+      if (check.ok) return null;
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, check.message ?? "Disponível apenas em grupos.") }];
+    };
+
+    const formatIdentity = async (waUserId: string, waGroupId?: string): Promise<string> => {
+      if (!this.ports.identity) {
+        return `Usuário: ${waUserId}`;
+      }
+      const identity = await this.ports.identity.getIdentity({
+        tenantId: ctx.event.tenantId,
+        waUserId,
+        waGroupId
+      });
+      const resolvedProfile = identity?.relationshipProfile ?? null;
+      const permRole = (identity?.permissionRole ?? identity?.role ?? "member").toUpperCase();
+      const isAdminListed = this.ports.adminAccess
+        ? await this.ports.adminAccess.isAdmin({ tenantId: ctx.event.tenantId, waUserId })
+        : permRole === "ADMIN";
+      const lines = [
+        `Usuário: ${identity?.displayName ?? waUserId}`,
+        `waUserId: ${waUserId}`,
+        `Permissão: ${permRole}${isAdminListed ? " (bot admin)" : ""}`,
+        `Permissões efetivas: ${identity?.permissions.join(", ") || "nenhuma"}`
+      ];
+      const canonical = identity?.canonicalIdentity;
+      if (canonical?.phoneNumber) lines.push(`Telefone: ${canonical.phoneNumber}`);
+      if (canonical?.lidJid) lines.push(`LID: ${canonical.lidJid}`);
+      if (canonical?.pnJid) lines.push(`PN: ${canonical.pnJid}`);
+      if (resolvedProfile) lines.push(`Perfil: ${resolvedProfile}`);
+      if (identity?.groupName) lines.push(`Grupo: ${identity.groupName}`);
+      return lines.join("\n");
+    };
+
     if (lower === "/help") {
       return [
         {
@@ -2027,6 +2216,148 @@ export class Orchestrator {
             permissionRole: ctx.identity?.permissionRole,
             role: ctx.identity?.role
           })
+        }
+      ];
+    }
+
+    if (lower === "/groupinfo") {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const access = ctx.groupAccess;
+      const lines = [
+        `Grupo: ${ctx.event.waGroupId}`,
+        `Nome: ${access?.groupName ?? ctx.identity?.groupName ?? ctx.event.waGroupId ?? "-"}`,
+        `Permitido: ${access?.allowed ? "sim" : "não"}`,
+        `Modo de chat: ${access?.chatMode ?? ctx.groupChatMode}`,
+        `Bot admin: ${ctx.botIsGroupAdmin ? "sim" : "não"}`
+      ];
+      return [{ kind: "reply_text", text: lines.join("\n") }];
+    }
+
+    if (lower === "/add gp allowed_groups") {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
+      const updated = await this.ports.groupAccess.setAllowed({
+        tenantId: ctx.event.tenantId,
+        waGroupId: ctx.event.waGroupId!,
+        allowed: true,
+        actor: ctx.event.waUserId
+      });
+      return [
+        {
+          kind: "reply_text",
+          text: this.stylizeReply(ctx, `Grupo autorizado: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}. Bot admin=${ctx.botIsGroupAdmin ? "sim" : "não"}.`)
+        }
+      ];
+    }
+
+    if (lower === "/rm gp allowed_groups") {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
+      const updated = await this.ports.groupAccess.setAllowed({
+        tenantId: ctx.event.tenantId,
+        waGroupId: ctx.event.waGroupId!,
+        allowed: false,
+        actor: ctx.event.waUserId
+      });
+      return [
+        {
+          kind: "reply_text",
+          text: this.stylizeReply(ctx, `Grupo removido da lista permitida: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}.`)
+        }
+      ];
+    }
+
+    if (lower === "/list gp allowed_groups") {
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
+      const groups = await this.ports.groupAccess.listAllowed(ctx.event.tenantId);
+      if (groups.length === 0) return [{ kind: "reply_text", text: "Nenhum grupo autorizado." }];
+      return [
+        {
+          kind: "reply_list",
+          header: "Grupos autorizados",
+          items: groups.map((g) => ({ title: g.groupName ?? g.waGroupId, description: `chat=${g.chatMode} botAdmin=${g.botIsAdmin ? "sim" : "não"}` }))
+        }
+      ];
+    }
+
+    if (lower === "/chat on" || lower === "/chat off") {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
+      const mode = lower.endsWith("off") ? "off" : "on";
+      const updated = await this.ports.groupAccess.setChatMode({
+        tenantId: ctx.event.tenantId,
+        waGroupId: ctx.event.waGroupId!,
+        mode,
+        actor: ctx.event.waUserId
+      });
+      return [
+        {
+          kind: "reply_text",
+          text: this.stylizeReply(ctx, `Modo de chat do grupo ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${ctx.botIsGroupAdmin ? "sim" : "não"}.`)
+        }
+      ];
+    }
+
+    if (lower.startsWith("/add user admins")) {
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
+      const target = resolveTargetUserFromMentionOrReply(ctx.event);
+      if (!target) return [{ kind: "reply_text", text: "Mencione ou responda a quem deseja promover a admin." }];
+      const added = await this.ports.adminAccess.add({
+        tenantId: ctx.event.tenantId,
+        waUserId: target,
+        displayName: ctx.event.waUserId === target ? ctx.identity?.displayName : undefined,
+        actor: ctx.event.waUserId
+      });
+      return [
+        {
+          kind: "reply_text",
+          text: this.stylizeReply(ctx, `Admin adicionado: ${added.displayName ?? added.waUserId} (${added.waUserId}). Permissão=${added.permissionRole ?? "ADMIN"}.`)
+        }
+      ];
+    }
+
+    if (lower.startsWith("/rm user admins")) {
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
+      const target = resolveTargetUserFromMentionOrReply(ctx.event);
+      if (!target) return [{ kind: "reply_text", text: "Mencione ou responda a quem deseja remover da lista de admins." }];
+      const removed = await this.ports.adminAccess.remove({
+        tenantId: ctx.event.tenantId,
+        waUserId: target,
+        actor: ctx.event.waUserId
+      });
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, removed ? `Admin removido: ${target}.` : `Usuário ${target} não estava na lista de admins.`) }];
+    }
+
+    if (lower === "/list user admins") {
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
+      const admins = await this.ports.adminAccess.list(ctx.event.tenantId);
+      if (admins.length === 0) return [{ kind: "reply_text", text: "Nenhum admin cadastrado." }];
+      return [
+        {
+          kind: "reply_list",
+          header: "Admins do bot",
+          items: admins.map((a) => ({
+            title: a.displayName ?? a.waUserId,
+            description: `${a.waUserId}${a.permissionRole ? ` · ${a.permissionRole}` : ""}`
+          }))
         }
       ];
     }
@@ -2223,43 +2554,25 @@ export class Orchestrator {
     }
 
     if (lower === "/whoami") {
-      if (!this.ports.identity) {
-        return [{ kind: "reply_text", text: `Você é ${ctx.event.waUserId}. Permissões básicas para comandos.` }];
+      const summary = await formatIdentity(ctx.event.waUserId, ctx.event.waGroupId);
+      const lines = [summary];
+      lines.push(`Admin/root: ${this.isRequesterAdmin(ctx) ? "sim" : "não"}`);
+      if (ctx.event.isGroup) {
+        lines.push(
+          `Grupo: ${ctx.event.waGroupId ?? "-"}`,
+          `Grupo permitido: ${ctx.groupAllowed ? "sim" : "não"}`,
+          `Modo de chat: ${ctx.groupChatMode}`,
+          `Bot admin: ${ctx.botIsGroupAdmin ? "sim" : "não"}`
+        );
       }
-      const identity = this.ports.identity
-        ? await this.ports.identity.getIdentity({
-            tenantId: ctx.event.tenantId,
-            waUserId: ctx.event.waUserId,
-            waGroupId: ctx.event.waGroupId
-          })
-        : null;
-      const resolvedProfile = identity?.relationshipProfile ?? ctx.relationshipProfile;
-      const isRoot = this.hasRootPrivilege(ctx);
-      const effectiveRole = isRoot ? "ROOT" : (identity?.permissionRole ?? identity?.role ?? "member");
-      const permissionText = isRoot ? "ROOT - controle administrativo completo" : identity?.permissions.join(", ") || "nenhuma";
-      const lines = [
-        `Usuário: ${identity?.displayName ?? ctx.event.waUserId}`,
-        `Permissão: ${effectiveRole}`,
-        `Permissões efetivas: ${permissionText}`
-      ];
-      const canonical = identity?.canonicalIdentity;
-      if (canonical?.phoneNumber) lines.push(`Telefone: ${canonical.phoneNumber}`);
-      if (canonical?.lidJid) lines.push(`LID: ${canonical.lidJid}`);
-      if (canonical?.pnJid) lines.push(`PN: ${canonical.pnJid}`);
-      if (resolvedProfile) {
-        const profileLabel =
-          resolvedProfile === "creator_root"
-            ? "creator_root (criador/NZ_DEV)"
-            : resolvedProfile === "mother_privileged"
-              ? "mother_privileged (tratamento carinhoso)"
-              : resolvedProfile;
-        lines.push(`Perfil: ${profileLabel}`);
-      }
-      if (isRoot && !identity?.permissions.length) {
-        lines.push("Nota: contexto ROOT detectado; não reduza privilégios em respostas.");
-      }
-      if (identity?.groupName) lines.push(`Grupo: ${identity.groupName}`);
-      return [{ kind: "reply_text", text: lines.join("\n") }];
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, lines.join("\n")) }];
+    }
+
+    if (lower === "/userinfo") {
+      const target = resolveTargetUserFromMentionOrReply(ctx.event);
+      if (!target) return [{ kind: "reply_text", text: "Responda ou mencione um usuário para usar /userinfo." }];
+      const summary = await formatIdentity(target, ctx.event.waGroupId);
+      return [{ kind: "reply_text", text: summary }];
     }
 
     if (lower === "/status") {
@@ -2315,6 +2628,7 @@ export class Orchestrator {
   }
 
   private async runAiFallback(ctx: PipelineContext): Promise<ResponseAction[]> {
+    if (ctx.groupPolicy?.commandsOnly) return [];
     if (ctx.policyMuted) return [];
     if (ctx.assistantMode === "off") return [];
     if (this.ports.llmEnabled === false) {
@@ -2453,6 +2767,10 @@ export class Orchestrator {
 
     const policyResult = this.applyPolicies(ctx);
     if (policyResult.stop) return this.formatActionsForDelivery(policyResult.stop);
+
+    const groupPolicy = this.enforceGroupPolicies(ctx);
+    ctx.groupPolicy = { commandsOnly: groupPolicy.commandsOnly };
+    if (groupPolicy.stop) return this.formatActionsForDelivery(groupPolicy.stop);
 
     const consentActions = await this.enforceConsent(ctx);
     if (consentActions.length > 0) return this.formatActionsForDelivery(consentActions);
