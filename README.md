@@ -16,9 +16,39 @@ npm run prisma:generate
 
 ## Run
 
+Preferred flow (handles infra + banner + prefixed logs):
+
 ```bash
-npm run dev
+npm run start:dev
 ```
+
+What it does:
+- checks Docker/Compose availability
+- ensures `postgres` and `redis` from `infra/docker-compose.yml` are running (starts them if needed)
+- waits for connectivity on 5432/6379
+- prints a compact cfonts banner (creator/company/version/env/timezone/LLM model/WA session path)
+- starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
+- writes state to `.zappy-dev/dev-stack.json` so the stop script can cleanly shut things down
+
+Stop services while keeping infra up:
+
+```bash
+npm run stop:dev
+```
+
+Stop services **and** infra (postgres/redis):
+
+```bash
+npm run stop:dev -- --with-infra
+```
+
+If you still prefer the old behavior, `npm run dev` remains available (it will print each service banner).
+
+Manual steps that remain:
+- keep `.env` up to date and run `npm run prisma:migrate` when schema changes
+- WhatsApp pairing (see below) still requires manual code entry
+
+Version note: dev tooling banner reports `beta 1.0`; expect minor changes while the flow stabilizes.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -67,8 +97,8 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Baileys low-level sync chatter is silenced in dev unless `DEBUG=trace` is set.
 
 ## Startup banner (dev)
-- Non-production banner shows app, env, timezone, LLM on/off+model, queue name, Admin API/UI URLs, WA session path, and service statuses (Redis/DB/Worker/LLM).
-- Status transitions are logged clearly: WhatsApp CONNECTING/QR READY/CONNECTED/DISCONNECTED, Redis/DB OK|FAIL, Worker OK|FAIL.
+- `npm run start:dev` prints a single cfonts banner (`Zappy Assistant ©`) with metadata: Creator (NZ_Dev©), Company (Services.NET), Version (beta 1.0), Environment, Timezone, LLM/model, WA session path. It sets `ZAPPY_SKIP_SERVICE_BANNER=1` so individual services don't repeat the banner.
+- Running a service directly (`npm run dev -w ...`) still shows the per-service startup banner with status hints (Redis/DB/Worker/LLM) and Admin URLs. Status transitions remain logged clearly: WhatsApp CONNECTING/QR READY/CONNECTED/DISCONNECTED, Redis/DB OK|FAIL, Worker OK|FAIL.
 
 ## Admin
 

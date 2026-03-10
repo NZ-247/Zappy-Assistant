@@ -322,6 +322,7 @@ export const printStartupBanner = (
     extras?: Record<string, string | number | boolean | null | undefined>;
   }
 ) => {
+  if (process.env.ZAPPY_SKIP_SERVICE_BANNER === "true" || process.env.ZAPPY_SKIP_SERVICE_BANNER === "1") return;
   if (process.env.NODE_ENV === "production" && process.env.STARTUP_BANNER !== "true") return;
   const lines = [
     "==============================================",
