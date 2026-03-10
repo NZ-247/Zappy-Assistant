@@ -136,7 +136,7 @@ export interface InboundMessageEvent {
   quotedWaUserId?: string;
   isReplyToBot?: boolean;
   botIsGroupAdmin?: boolean;
-  botAdminStatusSource?: "live" | "cache" | "fallback";
+  botAdminStatusSource?: "live" | "cache" | "fallback" | "operation";
   botAdminCheckedAt?: Date;
   botAdminCheckFailed?: boolean;
   botAdminCheckError?: string;
@@ -830,7 +830,7 @@ type PipelineContext = {
   groupAllowed: boolean;
   groupChatMode: GroupChatMode;
   botIsGroupAdmin: boolean;
-  botAdminStatusSource?: "live" | "cache" | "fallback";
+  botAdminStatusSource?: "live" | "cache" | "fallback" | "operation";
   botAdminSourceUsed?: string;
   botAdminResolutionPath?: Array<{ source: string; value?: boolean; checkedAt?: Date }>;
   botAdminCheckedAt?: Date;
@@ -867,6 +867,7 @@ export class Orchestrator {
   private readonly pendingStateTtlMs = 10 * 60 * 1000;
   private readonly greetingCooldownSeconds = 180;
   private readonly botAdminStaleMs = 3 * 60 * 1000;
+  private readonly botAdminOperationStaleMs = 10 * 60 * 1000;
   private readonly consentTermsVersion: string;
   private readonly consentLink: string;
   private readonly consentSource: string;
@@ -1099,10 +1100,11 @@ export class Orchestrator {
         });
     const groupChatMode = groupAccess?.chatMode ?? "on";
     const groupAllowed = event.isGroup ? (groupAccess ? Boolean(groupAccess.allowed) : true) : true;
-    const botAdminCheckedAtTs =
-      event.botAdminCheckedAt?.getTime?.() ?? groupAccess?.botAdminCheckedAt?.getTime?.() ?? undefined;
-    const botAdminFresh = botAdminCheckedAtTs ? now.getTime() - botAdminCheckedAtTs < this.botAdminStaleMs : false;
-    const botAdminStatusSource = event.botAdminStatusSource ?? (botAdminFresh ? "cache" : undefined);
+    const botAdminCheckedAtTs = event.botAdminCheckedAt?.getTime?.() ?? groupAccess?.botAdminCheckedAt?.getTime?.() ?? undefined;
+    const botAdminEventSource = event.botAdminStatusSource;
+    const botAdminFreshWindow = botAdminEventSource === "operation" ? this.botAdminOperationStaleMs : this.botAdminStaleMs;
+    const botAdminFresh = botAdminCheckedAtTs ? now.getTime() - botAdminCheckedAtTs < botAdminFreshWindow : false;
+    const botAdminStatusSource = botAdminEventSource ?? (botAdminFresh ? "cache" : undefined);
     const botAdminResolutionPath: Array<{ source: string; value?: boolean; checkedAt?: Date }> = [];
     if (event.isGroup) {
       if (typeof event.botIsGroupAdmin === "boolean") {
@@ -1304,35 +1306,29 @@ export class Orchestrator {
     }
 
     const requiresGroupAdmin = isCommand && this.commandRequiresGroupAdmin(ctx.classification.commandName);
-    if (requiresGroupAdmin && (ctx.botAdminCheckFailed || !ctx.botIsGroupAdmin)) {
-      if (process.env.NODE_ENV !== "production") {
-        this.ports.logger?.debug?.(
-          {
-            category: "BOT_ADMIN_GUARD",
-            tenantId: ctx.event.tenantId,
-            waGroupId: ctx.event.waGroupId,
-            command: ctx.classification.commandName,
-            guard: "requires_group_admin",
-            decision: "deny",
-            botIsAdmin: ctx.botIsGroupAdmin,
-            sourceUsed: ctx.botAdminSourceUsed,
-            statusSource: ctx.botAdminStatusSource,
-            eventBotIsAdmin: ctx.event.botIsGroupAdmin,
-            eventBotAdminSource: ctx.event.botAdminStatusSource,
-            groupBotIsAdmin: ctx.groupAccess?.botIsAdmin,
-            groupBotCheckedAt: ctx.groupAccess?.botAdminCheckedAt?.toISOString?.(),
-            botAdminCheckedAt: ctx.botAdminCheckedAt?.toISOString?.(),
-            resolutionPath: ctx.botAdminResolutionPath?.map((c) => ({ source: c.source, value: c.value })),
-            checkFailed: ctx.botAdminCheckFailed,
-            checkError: ctx.botAdminCheckError
-          },
-          "bot admin guard blocked command"
-        );
-      }
-      const text = ctx.botAdminCheckFailed
-        ? "Não consegui confirmar se sou admin deste grupo agora (falha ao ler os metadados). Tente novamente em alguns segundos ou verifique minhas permissões."
-        : "Preciso ser admin deste grupo para concluir este comando. Promova o bot a admin e tente novamente.";
-      return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
+    if (requiresGroupAdmin && (ctx.botAdminCheckFailed || !ctx.botIsGroupAdmin) && process.env.NODE_ENV !== "production") {
+      this.ports.logger?.debug?.(
+        {
+          category: "BOT_ADMIN_GUARD",
+          tenantId: ctx.event.tenantId,
+          waGroupId: ctx.event.waGroupId,
+          command: ctx.classification.commandName,
+          guard: "requires_group_admin",
+          decision: "proceed_operation_first",
+          botIsAdmin: ctx.botIsGroupAdmin,
+          sourceUsed: ctx.botAdminSourceUsed,
+          statusSource: ctx.botAdminStatusSource,
+          eventBotIsAdmin: ctx.event.botIsGroupAdmin,
+          eventBotAdminSource: ctx.event.botAdminStatusSource,
+          groupBotIsAdmin: ctx.groupAccess?.botIsAdmin,
+          groupBotCheckedAt: ctx.groupAccess?.botAdminCheckedAt?.toISOString?.(),
+          botAdminCheckedAt: ctx.botAdminCheckedAt?.toISOString?.(),
+          resolutionPath: ctx.botAdminResolutionPath?.map((c) => ({ source: c.source, value: c.value })),
+          checkFailed: ctx.botAdminCheckFailed,
+          checkError: ctx.botAdminCheckError
+        },
+        "bot admin pre-check bypassed (operation-first)"
+      );
     }
 
     if (!isCommand && !isToolFollowUp && !addressed) {
@@ -2255,10 +2251,40 @@ export class Orchestrator {
     return profile && profile !== "member" ? `${role} (${profile})` : role;
   }
 
+  private formatGroupAccessBotAdmin(group: GroupAccessState, now: Date): string {
+    const checkedAt = group.botAdminCheckedAt ?? undefined;
+    const isFresh = checkedAt ? now.getTime() - checkedAt.getTime() < this.botAdminStaleMs : false;
+    if (typeof group.botIsAdmin === "boolean" && isFresh) return group.botIsAdmin ? "verified yes" : "verified no";
+    if (typeof group.botIsAdmin === "boolean") return group.botIsAdmin ? "yes (stale)" : "no (stale)";
+    return "unknown";
+  }
+
+  private formatBotAdminStatus(ctx: PipelineContext): { label: string; detail?: string } {
+    if (!ctx.event.isGroup) return { label: "n/a" };
+
+    const source = ctx.botAdminStatusSource ?? ctx.botAdminSourceUsed ?? "unknown";
+    const checkedAt = ctx.botAdminCheckedAt ?? ctx.groupAccess?.botAdminCheckedAt ?? undefined;
+    const usedOptimisticDefault = (ctx.botAdminSourceUsed ?? "").startsWith("default");
+    const window = source === "operation" ? this.botAdminOperationStaleMs : this.botAdminStaleMs;
+    const isFresh = checkedAt ? ctx.now.getTime() - checkedAt.getTime() < window : false;
+
+    if (!ctx.botAdminCheckFailed && !usedOptimisticDefault && typeof ctx.botIsGroupAdmin === "boolean" && isFresh) {
+      return { label: ctx.botIsGroupAdmin ? "verified yes" : source === "operation" ? "verified no" : "likely no", detail: source };
+    }
+
+    if (ctx.botAdminCheckFailed) {
+      return { label: "unknown (metadata unavailable)", detail: ctx.botAdminCheckError ?? source };
+    }
+
+    return { label: "unknown / not recently verified", detail: isFresh ? source : undefined };
+  }
+
   private buildHelpResponse(ctx: PipelineContext): string {
     const isRoot = this.hasRootPrivilege(ctx);
     const commands = buildCommandList(isRoot);
     const requester = this.formatRequesterLabel(ctx);
+    const botAdminStatus = this.formatBotAdminStatus(ctx);
+    const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
 
     if (!ctx.event.isGroup) {
       const base = buildHelpText({
@@ -2272,11 +2298,6 @@ export class Orchestrator {
     const groupLabel = ctx.identity?.groupName ?? ctx.groupAccess?.groupName ?? ctx.event.waGroupId ?? "grupo";
     const aiActive = ctx.assistantMode !== "off" && ctx.groupChatMode === "on";
     const aiLabel = aiActive ? "ativo (menções/respostas)" : "restrito";
-    const botAdminLabel = ctx.botAdminCheckFailed
-      ? "indeterminado (falha ao atualizar)"
-      : ctx.botIsGroupAdmin
-        ? "sim"
-        : "não";
     const lines = [
       `Grupo: ${groupLabel}`,
       `ID: ${ctx.event.waGroupId ?? "-"}`,
@@ -2288,8 +2309,6 @@ export class Orchestrator {
     ];
     const missing: string[] = [];
     if (!ctx.groupAllowed) missing.push("Grupo não autorizado (use /add gp allowed_groups).");
-    if (ctx.botAdminCheckFailed) missing.push("Status de admin do bot não pôde ser confirmado agora.");
-    else if (!ctx.botIsGroupAdmin) missing.push("Bot não é admin do grupo.");
     if (ctx.groupChatMode === "off") missing.push("Chat do bot está OFF (use /chat on).");
     if (ctx.assistantMode === "off") missing.push("AI desativada (assistant_mode=off).");
     if (missing.length > 0) {
@@ -2304,7 +2323,8 @@ export class Orchestrator {
   private async runCommandRouter(ctx: PipelineContext): Promise<ResponseAction[]> {
     const cmd = ctx.event.normalizedText;
     const lower = cmd.toLowerCase();
-    const botAdminLabel = ctx.botAdminCheckFailed ? "indeterminado" : ctx.botIsGroupAdmin ? "sim" : "não";
+    const botAdminStatus = this.formatBotAdminStatus(ctx);
+    const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
 
     if (!lower.startsWith("/")) return [];
 
@@ -2334,6 +2354,40 @@ export class Orchestrator {
       const check = requireGroupContext(ctx.event);
       if (check.ok) return null;
       return [{ kind: "reply_text", text: this.stylizeReply(ctx, check.message ?? "Disponível apenas em grupos.") }];
+    };
+
+    const enforceBotAdminForOperation = (command: string): ResponseAction[] | null => {
+      if (!ctx.event.isGroup) return null;
+      if (!this.commandRequiresGroupAdmin(command)) return null;
+      if (ctx.botAdminStatusSource === "operation") {
+        if (ctx.botIsGroupAdmin === true) return null;
+        if (ctx.botIsGroupAdmin === false) {
+          return [
+            {
+              kind: "reply_text",
+              text: this.stylizeReply(ctx, "Preciso ser admin do grupo para executar este comando. Promova o bot e tente novamente.")
+            }
+          ];
+        }
+        return [
+          {
+            kind: "reply_text",
+            text: this.stylizeReply(ctx, "Não consegui confirmar se sou admin agora. Tente novamente em instantes.")
+          }
+        ];
+      }
+      return null;
+    };
+
+    const botAdminWarning = (command: string): string | null => {
+      if (!ctx.event.isGroup) return null;
+      if (!this.commandRequiresGroupAdmin(command)) return null;
+      if (ctx.botAdminStatusSource === "operation") return null;
+      if (ctx.botAdminCheckFailed) return "Aviso: status de admin não foi verificado agora; confirme se o bot é admin.";
+      if (typeof ctx.botIsGroupAdmin === "boolean" && ctx.botIsGroupAdmin === false) {
+        return "Aviso: metadata sugere que o bot não é admin; se falhar, torne o bot admin e repita.";
+      }
+      return null;
     };
 
     const formatIdentity = async (waUserId: string, waGroupId?: string): Promise<string> => {
@@ -2393,6 +2447,8 @@ export class Orchestrator {
       if (groupCheck) return groupCheck;
       const adminCheck = requireAdmin();
       if (adminCheck) return adminCheck;
+      const botAdminGuard = enforceBotAdminForOperation(lower);
+      if (botAdminGuard) return botAdminGuard;
       if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
       const updated = await this.ports.groupAccess.setAllowed({
         tenantId: ctx.event.tenantId,
@@ -2400,10 +2456,16 @@ export class Orchestrator {
         allowed: true,
         actor: ctx.event.waUserId
       });
+      const warning = botAdminWarning(lower);
       return [
         {
           kind: "reply_text",
-          text: this.stylizeReply(ctx, `Grupo autorizado: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}. Bot admin=${botAdminLabel}.`)
+          text: this.stylizeReply(
+            ctx,
+            `Grupo autorizado: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}. Bot admin=${botAdminLabel}.${
+              warning ? ` ${warning}` : ""
+            }`
+          )
         }
       ];
     }
@@ -2413,6 +2475,8 @@ export class Orchestrator {
       if (groupCheck) return groupCheck;
       const adminCheck = requireAdmin();
       if (adminCheck) return adminCheck;
+      const botAdminGuard = enforceBotAdminForOperation(lower);
+      if (botAdminGuard) return botAdminGuard;
       if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
       const updated = await this.ports.groupAccess.setAllowed({
         tenantId: ctx.event.tenantId,
@@ -2420,10 +2484,16 @@ export class Orchestrator {
         allowed: false,
         actor: ctx.event.waUserId
       });
+      const warning = botAdminWarning(lower);
       return [
         {
           kind: "reply_text",
-          text: this.stylizeReply(ctx, `Grupo removido da lista permitida: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}.`)
+          text: this.stylizeReply(
+            ctx,
+            `Grupo removido da lista permitida: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}.${
+              warning ? ` ${warning}` : ""
+            }`
+          )
         }
       ];
     }
@@ -2438,7 +2508,10 @@ export class Orchestrator {
         {
           kind: "reply_list",
           header: "Grupos autorizados",
-          items: groups.map((g) => ({ title: g.groupName ?? g.waGroupId, description: `chat=${g.chatMode} botAdmin=${g.botIsAdmin ? "sim" : "não"}` }))
+          items: groups.map((g) => ({
+            title: g.groupName ?? g.waGroupId,
+            description: `chat=${g.chatMode} botAdmin=${this.formatGroupAccessBotAdmin(g, ctx.now)}`
+          }))
         }
       ];
     }
@@ -2448,6 +2521,8 @@ export class Orchestrator {
       if (groupCheck) return groupCheck;
       const adminCheck = requireAdmin();
       if (adminCheck) return adminCheck;
+      const botAdminGuard = enforceBotAdminForOperation(lower);
+      if (botAdminGuard) return botAdminGuard;
       if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
       if (process.env.NODE_ENV !== "production") {
         this.ports.logger?.debug?.(
@@ -2474,10 +2549,16 @@ export class Orchestrator {
         mode,
         actor: ctx.event.waUserId
       });
+      const warning = botAdminWarning(lower);
       return [
         {
           kind: "reply_text",
-          text: this.stylizeReply(ctx, `Modo de chat do grupo ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${botAdminLabel}.`)
+          text: this.stylizeReply(
+            ctx,
+            `Modo de chat do grupo ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${botAdminLabel}.${
+              warning ? ` ${warning}` : ""
+            }`
+          )
         }
       ];
     }

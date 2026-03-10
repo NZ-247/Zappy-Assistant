@@ -7,17 +7,17 @@
 
 ## Group scope & chat modes
 - Group traffic is **direction-first**: if a group message is not a command, mention, or reply-to-bot, it is ignored silently.
-- A group must be **allowed**; bot admin is required only for commands flagged as needing group-admin power (e.g. `/chat on|off`, allowed-group commands). Warnings are never emitted for plain, non-command chatter.
+- A group must be **allowed**; user permissions + command scope are the gates. Bot-admin metadata is **not** a hard gate anymore.
 - Per-group chat mode: `ON` (default) or `OFF`.
   - `chat=OFF`: only prefix commands and backend/system flows are processed; mentions/replies without commands are ignored.
   - `chat=ON`: AI/triggers in groups run only when the bot is mentioned (`@`) or the user replies to a bot message.
 - Direct (1:1) chats are not affected.
 
-## Bot admin status refresh
-- On every inbound group message, the gateway refreshes bot admin status from live WhatsApp group metadata when stale or previously false.
-- Group participant updates that involve the bot (`group-participants.update`) also trigger an immediate refresh.
-- `Group.botIsAdmin` and `botAdminCheckedAt` are auto-repaired in the database when the live state says the bot is admin.
-- If metadata fetch fails, a concise warning is logged and the previous known state is kept (no user-facing spam).
+## Bot admin status (informational only)
+- LID group metadata is unreliable; false negatives caused admin commands to be blocked. Pre-gating on `botIsAdmin=false` was removed.
+- Admin-required actions now run **operation-first**: we try an actual admin-only Baileys call (e.g., `groupInviteCode`) and decide from the real result.
+- Metadata is still fetched for context/diagnostics but no longer blocks execution; status is labeled as `verified yes`, `verified no`, or `unknown / not recently verified`.
+- Participant updates (`group-participants.update`) still refresh status, but a failed/late metadata refresh no longer stops commands.
 
 ## Contextual /help
 - In groups, `/help` starts with a status block: group name/id, allowed flag, bot admin flag, chat mode, AI status, requester role/profile, and any missing prerequisites.
@@ -44,8 +44,8 @@
 - Functions: resolveTargetUserFromMentionOrReply, requireGroupContext, shouldRespondInGroupChat, shouldReplyToMessage, buildQuotedReplyOptions, resolveAllowedGroupAccess, resolveBotAdminAccess.
 
 ## Manual smoke tests
-1. Bot is admin in group → no false “promova a admin” warning on normal traffic.
-2. Plain non-directed group message → ignored silently (no admin warning).
-3. `/help` in group → contextual status block (allowed/chat/admin/AI/requester) followed by command list.
-4. Command that requires bot group-admin (e.g., `/chat on` in a non-admin group) → warning appears instead of proceeding.
-5. Mention or reply-to-bot still triggers AI/commands as expected when chat=ON.
+1. Allowed group + bot actually admin → `/chat off` succeeds.
+2. Allowed group + bot not admin → `/chat off` fails with a clear admin-required message (from the actual operation result).
+3. `/help` and `/groupinfo` do not hard-block or mislead when metadata says bot is not admin (stale/unknown paths are labeled).
+4. `allowed_groups` gating still works.
+5. Reply-to-origin still works for all replies.

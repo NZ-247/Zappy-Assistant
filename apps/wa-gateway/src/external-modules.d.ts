@@ -14,6 +14,7 @@ declare module "baileys" {
   export interface BaileysSocket {
     user?: { id?: string };
     requestPairingCode(phone: string): Promise<string>;
+    groupInviteCode(jid: string): Promise<string>;
     sendMessage(
       to: string,
       message: { text: string },
