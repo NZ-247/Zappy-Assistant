@@ -1017,13 +1017,67 @@ export class Orchestrator {
     return !(await this.ports.cooldown.canFire(key, this.dedupTtlSeconds));
   }
 
+  private normalizeGreetingText(text: string): string {
+    return text
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+  }
+
+  private isGreetingPattern(pattern: string): boolean {
+    const normalized = this.normalizeGreetingText(pattern);
+    const greetings = new Set(["oi", "oii", "ola", "bom dia", "boa tarde", "boa noite"]);
+    return greetings.has(normalized);
+  }
+
   private isGreetingMessage(text: string): boolean {
-    const normalized = text.trim().toLowerCase().replace(/[!.,]/g, "");
+    const normalized = this.normalizeGreetingText(text);
     if (!normalized) return false;
-    const greetingTokens = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "salve", "eai", "e aí"];
-    if (normalized.split(/\s+/).length > 6) return false;
-    if (normalized.includes("?")) return false;
-    return greetingTokens.some((token) => normalized === token || normalized.startsWith(`${token} `));
+    const tokens = normalized.split(" ");
+    if (tokens.length > 2) return false;
+    const singleGreetings = new Set(["oi", "oii", "ola"]);
+    const duoGreetings = new Set(["bom dia", "boa tarde", "boa noite"]);
+    if (tokens.length === 1) return singleGreetings.has(tokens[0]);
+    const joined = tokens.join(" ");
+    return duoGreetings.has(joined);
+  }
+
+  private getPriorMessages(ctx: PipelineContext): ConversationMessage[] {
+    const history = ctx.recentMessages ?? [];
+    if (history.length === 0) return [];
+    const last = history[history.length - 1];
+    const sameAsCurrent = last.role === "user" && last.content?.trim?.() === ctx.event.text?.trim?.();
+    return sameAsCurrent ? history.slice(0, -1) : history;
+  }
+
+  private hasConversationContext(ctx: PipelineContext): boolean {
+    const prior = this.getPriorMessages(ctx);
+    return prior.length > 0;
+  }
+
+  private isPrivilegedChat(ctx: PipelineContext): boolean {
+    if (this.hasRootPrivilege(ctx)) return true;
+    return ["creator_root", "mother_privileged", "delegated_owner"].includes(ctx.relationshipProfile);
+  }
+
+  private isSmallTalkFollowUp(ctx: PipelineContext): boolean {
+    if (!this.hasConversationContext(ctx)) return false;
+    const normalized = this.normalizeGreetingText(ctx.event.normalizedText);
+    if (!normalized) return false;
+    const smallTalkTokens = new Set(["bele", "beleza", "ta", "t", "joia", "kk", "kkk"]);
+    const tokens = normalized.split(" ");
+    if (tokens.length > 3) return false;
+    return tokens.every((token) => smallTalkTokens.has(token)) || smallTalkTokens.has(normalized);
+  }
+
+  private shouldSkipGenericGreeting(ctx: PipelineContext): boolean {
+    if (this.isPrivilegedChat(ctx)) return true;
+    if (this.hasConversationContext(ctx)) return true;
+    if (this.isSmallTalkFollowUp(ctx)) return true;
+    return false;
   }
 
   private isEchoFromAssistant(ctx: PipelineContext): boolean {
@@ -1895,7 +1949,7 @@ export class Orchestrator {
   private async runGreetingStage(ctx: PipelineContext): Promise<ResponseAction[]> {
     if (ctx.policyMuted) return [];
     if (ctx.consentRequired) return [];
-    if (ctx.relationshipProfile === "creator_root") return [];
+    if (this.shouldSkipGenericGreeting(ctx)) return [];
     if (ctx.classification.kind !== "trigger_candidate" && ctx.classification.kind !== "ai_candidate") return [];
     if (!this.isGreetingMessage(ctx.event.normalizedText)) return [];
 
@@ -1916,6 +1970,7 @@ export class Orchestrator {
     if (ctx.classification.kind === "command") return [];
     if (ctx.classification.kind === "tool_follow_up") return [];
     if (ctx.classification.kind === "ignored_event" || ctx.classification.kind === "system_event") return [];
+    const suppressGreeting = this.shouldSkipGenericGreeting(ctx);
 
     const triggers = await this.ports.triggersRepository.findActiveByScope({
       tenantId: ctx.event.tenantId,
@@ -1930,6 +1985,11 @@ export class Orchestrator {
       if (!trigger.enabled) continue;
       if (!isMatch(ctx.event.normalizedText, trigger)) continue;
       if (trigger.name.toLowerCase().includes("fun") && ctx.funMode !== "on") continue;
+      const isGreetingTrigger = this.isGreetingPattern(trigger.pattern);
+      if (isGreetingTrigger) {
+        if (suppressGreeting) continue;
+        if (!this.isGreetingMessage(ctx.event.normalizedText)) continue;
+      }
 
       const scopePart = ctx.event.waGroupId ?? ctx.event.waUserId;
       const key = `cooldown:${trigger.id}:${scopePart}`;
