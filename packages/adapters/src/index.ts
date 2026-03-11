@@ -4,13 +4,15 @@ import {
   PrismaClient,
   ConsentStatus,
   ChatMode,
+  FunMode,
   ReminderStatus,
   Scope,
   TaskStatus,
   TimerStatus,
   type MessageDirection,
   type Prisma,
-  type User
+  type User,
+  type Group
 } from "@prisma/client";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
@@ -367,7 +369,16 @@ export const ensureTenantContext = async (input: {
     const waGroupId = input.waGroupId ?? input.onlyGroupId!;
     const shouldAutoAllow = Boolean(input.onlyGroupId && input.onlyGroupId === waGroupId);
     group = await prisma.group.create({
-      data: { tenantId: tenant.id, waGroupId, name: waGroupId, allowed: shouldAutoAllow, chatMode: ChatMode.ON }
+      data: {
+        tenantId: tenant.id,
+        waGroupId,
+        name: waGroupId,
+        allowed: shouldAutoAllow,
+        chatMode: ChatMode.ON,
+        isOpen: true,
+        welcomeEnabled: false,
+        moderationConfig: {}
+      }
     });
   }
 
@@ -1042,8 +1053,8 @@ export const markTimerMessage = async (input: { timerId: string; messageId?: str
 };
 
 export const createMuteAdapter = (redis: Redis) => ({
-  getMuteState: async (input: { tenantId: string; scope: Scope; scopeId: string }) => {
-    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}`;
+  getMuteState: async (input: { tenantId: string; scope: Scope; scopeId: string; waUserId?: string }) => {
+    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}${input.waUserId ? `:${input.waUserId}` : ""}`;
     const raw = await redis.get(key);
     if (!raw) return null;
     const until = new Date(raw);
@@ -1054,15 +1065,15 @@ export const createMuteAdapter = (redis: Redis) => ({
     }
     return { until };
   },
-  mute: async (input: { tenantId: string; scope: Scope; scopeId: string; durationMs: number; now: Date }) => {
-    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}`;
+  mute: async (input: { tenantId: string; scope: Scope; scopeId: string; durationMs: number; now: Date; waUserId?: string }) => {
+    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}${input.waUserId ? `:${input.waUserId}` : ""}`;
     const until = new Date(input.now.getTime() + input.durationMs);
     const ttlSeconds = Math.max(1, Math.round(input.durationMs / 1000));
     await redis.set(key, until.toISOString(), "EX", ttlSeconds);
     return { until };
   },
-  unmute: async (input: { tenantId: string; scope: Scope; scopeId: string }) => {
-    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}`;
+  unmute: async (input: { tenantId: string; scope: Scope; scopeId: string; waUserId?: string }) => {
+    const key = `mute:${input.tenantId}:${input.scope}:${input.scopeId}${input.waUserId ? `:${input.waUserId}` : ""}`;
     await redis.del(key);
   }
 });
@@ -1356,6 +1367,45 @@ export const identityRepository = {
 };
 
 const toChatMode = (mode?: ChatMode | null): "on" | "off" => (mode === ChatMode.OFF ? "off" : "on");
+const toFunMode = (mode?: FunMode | null): "on" | "off" | undefined => {
+  if (!mode) return undefined;
+  return mode === FunMode.ON ? "on" : "off";
+};
+
+type ModerationConfig = {
+  antiLink?: boolean;
+  autoDeleteLinks?: boolean;
+  antiSpam?: boolean;
+  tempMuteSeconds?: number;
+};
+
+const normalizeModerationConfig = (value: Prisma.JsonValue | null | undefined): ModerationConfig => {
+  if (!value || typeof value !== "object") return {};
+  const source = value as Record<string, unknown>;
+  return {
+    antiLink: Boolean(source.antiLink),
+    autoDeleteLinks: Boolean(source.autoDeleteLinks),
+    antiSpam: Boolean(source.antiSpam),
+    tempMuteSeconds: typeof source.tempMuteSeconds === "number" ? source.tempMuteSeconds : undefined
+  };
+};
+
+const mapGroupToAccessState = (group: Group) => ({
+  waGroupId: group.waGroupId,
+  groupName: group.name,
+  description: group.description,
+  allowed: group.allowed,
+  chatMode: toChatMode(group.chatMode),
+  isOpen: group.isOpen,
+  welcomeEnabled: group.welcomeEnabled,
+  welcomeText: group.welcomeText,
+  fixedMessageText: group.fixedMessageText,
+  rulesText: group.rulesText,
+  funMode: toFunMode(group.funMode),
+  moderation: normalizeModerationConfig(group.moderationConfig),
+  botIsAdmin: group.botIsAdmin,
+  botAdminCheckedAt: group.botAdminCheckedAt
+});
 
 export const groupAccessRepository = {
   getGroupAccess: async (input: { tenantId: string; waGroupId: string; groupName?: string | null; botIsAdmin?: boolean | null }) => {
@@ -1369,6 +1419,9 @@ export const groupAccessRepository = {
           waGroupId: input.waGroupId,
           name: input.groupName ?? input.waGroupId,
           chatMode: ChatMode.ON,
+          isOpen: true,
+          welcomeEnabled: false,
+          moderationConfig: {},
           allowed: false,
           botIsAdmin: Boolean(input.botIsAdmin ?? false),
           botAdminCheckedAt: input.botIsAdmin === undefined ? null : new Date()
@@ -1386,30 +1439,25 @@ export const groupAccessRepository = {
       group = await prisma.group.update({ where: { id: group.id }, data: updates });
     }
 
-    return {
-      waGroupId: group.waGroupId,
-      groupName: group.name,
-      allowed: group.allowed,
-      chatMode: toChatMode(group.chatMode),
-      botIsAdmin: group.botIsAdmin,
-      botAdminCheckedAt: group.botAdminCheckedAt
-    };
+    return mapGroupToAccessState(group);
   },
   setAllowed: async (input: { tenantId: string; waGroupId: string; allowed: boolean; actor?: string }) => {
     const group = await prisma.group.upsert({
       where: { waGroupId: input.waGroupId },
       update: { allowed: input.allowed },
-      create: { tenantId: input.tenantId, waGroupId: input.waGroupId, name: input.waGroupId, allowed: input.allowed, chatMode: ChatMode.ON }
+      create: {
+        tenantId: input.tenantId,
+        waGroupId: input.waGroupId,
+        name: input.waGroupId,
+        allowed: input.allowed,
+        chatMode: ChatMode.ON,
+        isOpen: true,
+        welcomeEnabled: false,
+        moderationConfig: {}
+      }
     });
     await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { allowed: input.allowed });
-    return {
-      waGroupId: group.waGroupId,
-      groupName: group.name,
-      allowed: group.allowed,
-      chatMode: toChatMode(group.chatMode),
-      botIsAdmin: group.botIsAdmin,
-      botAdminCheckedAt: group.botAdminCheckedAt
-    };
+    return mapGroupToAccessState(group);
   },
   setChatMode: async (input: { tenantId: string; waGroupId: string; mode: "on" | "off"; actor?: string }) => {
     const chatMode = input.mode === "off" ? ChatMode.OFF : ChatMode.ON;
@@ -1422,29 +1470,84 @@ export const groupAccessRepository = {
         name: input.waGroupId,
         chatMode,
         allowed: false,
+        isOpen: true,
+        welcomeEnabled: false,
+        moderationConfig: {},
         botIsAdmin: false
       }
     });
     await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { chatMode: input.mode });
-    return {
-      waGroupId: group.waGroupId,
-      groupName: group.name,
-      allowed: group.allowed,
-      chatMode: toChatMode(group.chatMode),
-      botIsAdmin: group.botIsAdmin,
-      botAdminCheckedAt: group.botAdminCheckedAt
+    return mapGroupToAccessState(group);
+  },
+  updateSettings: async (input: {
+    tenantId: string;
+    waGroupId: string;
+    settings: {
+      chatMode?: "on" | "off";
+      isOpen?: boolean;
+      welcomeEnabled?: boolean;
+      welcomeText?: string | null;
+      fixedMessageText?: string | null;
+      rulesText?: string | null;
+      funMode?: "on" | "off" | null;
+      moderation?: ModerationConfig;
+      groupName?: string | null;
+      description?: string | null;
     };
+    actor?: string;
+  }) => {
+    const existing = await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } });
+    const updates: Prisma.GroupUpdateInput = {};
+    if (input.settings.chatMode) updates.chatMode = input.settings.chatMode === "off" ? ChatMode.OFF : ChatMode.ON;
+    if (typeof input.settings.isOpen === "boolean") updates.isOpen = input.settings.isOpen;
+    if (typeof input.settings.welcomeEnabled === "boolean") updates.welcomeEnabled = input.settings.welcomeEnabled;
+    if ("welcomeText" in input.settings) updates.welcomeText = input.settings.welcomeText ?? null;
+    if ("fixedMessageText" in input.settings) updates.fixedMessageText = input.settings.fixedMessageText ?? null;
+    if ("rulesText" in input.settings) updates.rulesText = input.settings.rulesText ?? null;
+    if ("funMode" in input.settings) {
+      updates.funMode =
+        input.settings.funMode === undefined ? undefined : input.settings.funMode === null ? null : input.settings.funMode === "on" ? FunMode.ON : FunMode.OFF;
+    }
+    if (input.settings.moderation) {
+      const base = normalizeModerationConfig(existing?.moderationConfig);
+      updates.moderationConfig = { ...base, ...(input.settings.moderation ?? {}) } as Prisma.InputJsonValue;
+    }
+    if ("groupName" in input.settings && input.settings.groupName !== undefined) updates.name = input.settings.groupName ?? undefined;
+    if ("description" in input.settings) updates.description = input.settings.description ?? undefined;
+
+    const group = await prisma.group.upsert({
+      where: { waGroupId: input.waGroupId },
+      update: updates,
+      create: {
+        tenantId: input.tenantId,
+        waGroupId: input.waGroupId,
+        name: input.settings.groupName ?? input.waGroupId,
+        description: input.settings.description,
+        chatMode: input.settings.chatMode === "off" ? ChatMode.OFF : ChatMode.ON,
+        isOpen: input.settings.isOpen ?? true,
+        welcomeEnabled: input.settings.welcomeEnabled ?? false,
+        welcomeText: input.settings.welcomeText ?? null,
+        fixedMessageText: input.settings.fixedMessageText ?? null,
+        rulesText: input.settings.rulesText ?? null,
+        funMode:
+          input.settings.funMode === undefined
+            ? null
+            : input.settings.funMode === null
+              ? null
+              : input.settings.funMode === "on"
+                ? FunMode.ON
+                : FunMode.OFF,
+        moderationConfig: (input.settings.moderation ?? {}) as Prisma.InputJsonValue,
+        allowed: false,
+        botIsAdmin: false
+      }
+    });
+    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { settings: input.settings });
+    return mapGroupToAccessState(group);
   },
   listAllowed: async (tenantId: string) => {
     const groups = await prisma.group.findMany({ where: { tenantId, allowed: true }, orderBy: { name: "asc" } });
-    return groups.map((g) => ({
-      waGroupId: g.waGroupId,
-      groupName: g.name,
-      allowed: g.allowed,
-      chatMode: toChatMode(g.chatMode),
-      botIsAdmin: g.botIsAdmin,
-      botAdminCheckedAt: g.botAdminCheckedAt
-    }));
+    return groups.map((g) => mapGroupToAccessState(g));
   }
 };
 

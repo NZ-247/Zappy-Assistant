@@ -52,6 +52,11 @@ enum ChatMode {
   OFF
 }
 
+enum FunMode {
+  ON
+  OFF
+}
+
 enum AuditAction {
   CREATE
   UPDATE
@@ -98,6 +103,7 @@ model Group {
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name          String
   waGroupId     String         @unique
+  description   String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   conversations Conversation[]
@@ -109,6 +115,13 @@ model Group {
   timers        Timer[]
   prompts       Prompt[]
   chatMode      ChatMode      @default(ON)
+  isOpen        Boolean       @default(true)
+  welcomeEnabled Boolean      @default(false)
+  welcomeText   String?
+  fixedMessageText String?
+  rulesText     String?
+  funMode       FunMode?
+  moderationConfig Json?      @default("{}")
   allowed       Boolean       @default(false)
   botIsAdmin    Boolean       @default(false)
   botAdminCheckedAt DateTime?

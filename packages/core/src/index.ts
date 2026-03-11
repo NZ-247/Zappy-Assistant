@@ -24,12 +24,28 @@ export type RelationshipProfile =
   | "external_contact";
 
 export type GroupChatMode = "on" | "off";
+export type GroupFunMode = "on" | "off";
+
+export interface GroupModerationSettings {
+  antiLink?: boolean;
+  autoDeleteLinks?: boolean;
+  antiSpam?: boolean;
+  tempMuteSeconds?: number | null;
+}
 
 export interface GroupAccessState {
   waGroupId: string;
   groupName?: string | null;
+  description?: string | null;
   allowed: boolean;
   chatMode: GroupChatMode;
+  isOpen?: boolean;
+  welcomeEnabled?: boolean;
+  welcomeText?: string | null;
+  fixedMessageText?: string | null;
+  rulesText?: string | null;
+  funMode?: GroupFunMode;
+  moderation?: GroupModerationSettings;
   botIsAdmin?: boolean;
   botAdminCheckedAt?: Date | null;
 }
@@ -135,6 +151,8 @@ export interface InboundMessageEvent {
   quotedWaMessageId?: string;
   quotedWaUserId?: string;
   isReplyToBot?: boolean;
+  senderIsGroupAdmin?: boolean;
+  messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };
   botIsGroupAdmin?: boolean;
   botAdminStatusSource?: "live" | "cache" | "fallback" | "operation";
   botAdminCheckedAt?: Date;
@@ -388,6 +406,34 @@ export interface AiToolSuggestionAction {
   text?: string;
 }
 
+export type GroupAdminOperation =
+  | "set_subject"
+  | "set_description"
+  | "set_picture_from_quote"
+  | "set_open"
+  | "set_closed";
+
+export interface GroupAdminAction {
+  kind: "group_admin_action";
+  operation: GroupAdminOperation;
+  waGroupId: string;
+  actorWaUserId: string;
+  text?: string;
+  quotedWaMessageId?: string;
+}
+
+export type ModerationActionKind = "ban" | "kick" | "mute" | "unmute" | "hidetag" | "delete_message";
+
+export interface ModerationAction {
+  kind: "moderation_action";
+  action: ModerationActionKind;
+  waGroupId: string;
+  targetWaUserId?: string;
+  durationMs?: number;
+  text?: string;
+  messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };
+}
+
 export type ResponseAction =
   | ReplyTextAction
   | ReplyListAction
@@ -395,13 +441,29 @@ export type ResponseAction =
   | NoopAction
   | ErrorAction
   | HandoffAction
-  | AiToolSuggestionAction;
+  | AiToolSuggestionAction
+  | GroupAdminAction
+  | ModerationAction;
 export type OrchestratorAction = ResponseAction;
+
+export type GroupSettingsUpdate = Partial<{
+  chatMode: GroupChatMode;
+  isOpen: boolean;
+  welcomeEnabled: boolean;
+  welcomeText: string | null;
+  fixedMessageText: string | null;
+  rulesText: string | null;
+  funMode: GroupFunMode | null;
+  moderation: GroupModerationSettings;
+  groupName: string | null;
+  description: string | null;
+}>;
 
 export interface GroupAccessPort {
   getGroupAccess(input: { tenantId: string; waGroupId: string; groupName?: string | null; botIsAdmin?: boolean | null }): Promise<GroupAccessState>;
   setAllowed(input: { tenantId: string; waGroupId: string; allowed: boolean; actor?: string }): Promise<GroupAccessState>;
   setChatMode(input: { tenantId: string; waGroupId: string; mode: GroupChatMode; actor?: string }): Promise<GroupAccessState>;
+  updateSettings(input: { tenantId: string; waGroupId: string; settings: GroupSettingsUpdate; actor?: string }): Promise<GroupAccessState>;
   listAllowed(tenantId: string): Promise<GroupAccessState[]>;
 }
 
@@ -551,9 +613,9 @@ export interface PromptPort {
 }
 
 export interface MutePort {
-  getMuteState(input: { tenantId: string; scope: Scope; scopeId: string }): Promise<{ until: Date } | null>;
-  mute(input: { tenantId: string; scope: Scope; scopeId: string; durationMs: number; now: Date }): Promise<{ until: Date }>;
-  unmute(input: { tenantId: string; scope: Scope; scopeId: string }): Promise<void>;
+  getMuteState(input: { tenantId: string; scope: Scope; scopeId: string; waUserId?: string }): Promise<{ until: Date } | null>;
+  mute(input: { tenantId: string; scope: Scope; scopeId: string; durationMs: number; now: Date; waUserId?: string }): Promise<{ until: Date }>;
+  unmute(input: { tenantId: string; scope: Scope; scopeId: string; waUserId?: string }): Promise<void>;
 }
 
 export interface IdentityPort {
@@ -704,6 +766,12 @@ const evaluateExpression = (expression: string): number => {
   return result;
 };
 
+const containsLink = (text: string): boolean => {
+  const linkRegex = /(https?:\/\/\S+)|(www\.\S+)|(t\.me\/\S+)|(wa\.me\/\d+)|([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i;
+  const domainRegex = /\b[a-z0-9.-]+\.[a-z]{2,}(\/\S*)?/i;
+  return linkRegex.test(text) || domainRegex.test(text);
+};
+
 const buildCommandList = (isRoot: boolean): string[] => {
   const commands = [
     "/help",
@@ -720,13 +788,28 @@ const buildCommandList = (isRoot: boolean): string[] => {
     "/whoami",
     "/userinfo (responda ou mencione)",
     "/groupinfo",
+    "/rules (grupo)",
+    "/fix (grupo)",
     "/chat on|off (grupo)",
+    "/set gp chat on|off (grupo, admin)",
+    "/set gp open|close (grupo, admin)",
+    "/set gp name <texto>",
+    "/set gp dcr <texto>",
+    "/set gp img (responda imagem)",
+    "/set gp fix <texto>",
+    "/set gp rules <texto>",
+    "/set gp welcome on|off|text <texto>",
     "/add gp allowed_groups (grupo, admin)",
     "/rm gp allowed_groups (grupo, admin)",
     "/list gp allowed_groups",
     "/add user admins <@> (admin)",
     "/rm user admins <@>",
     "/list user admins",
+    "/ban <@> (grupo, admin)",
+    "/kick <@> (grupo, admin)",
+    "/mute <@> <duração> (grupo, admin)",
+    "/unmute <@> (grupo, admin)",
+    "/hidetag <texto> (grupo, admin)",
     "/status",
     "/reminder in <duration> <message> (e.g. 10m, 1h30m)",
     "/reminder at <DD-MM[-YYYY]> [HH:MM] <message>"
@@ -811,6 +894,7 @@ type PipelineContext = {
   memoryLimit: number;
   classification: MessageClassification;
   muteInfo?: { until: Date } | null;
+  userMuteInfo?: { until: Date } | null;
   conversationState: ConversationStateRecord;
   consent?: UserConsentRecord | null;
   consentRequired: boolean;
@@ -829,6 +913,12 @@ type PipelineContext = {
   groupAccess?: GroupAccessState;
   groupAllowed: boolean;
   groupChatMode: GroupChatMode;
+  groupIsOpen?: boolean;
+  groupWelcomeEnabled?: boolean;
+  groupWelcomeText?: string | null;
+  groupFixedMessageText?: string | null;
+  groupRulesText?: string | null;
+  groupModeration?: GroupModerationSettings;
   botIsGroupAdmin: boolean;
   botAdminStatusSource?: "live" | "cache" | "fallback" | "operation";
   botAdminSourceUsed?: string;
@@ -840,6 +930,7 @@ type PipelineContext = {
   isReplyToBot: boolean;
   mentionedWaUserIds: string[];
   requesterIsAdmin: boolean;
+  requesterIsGroupAdmin?: boolean;
   groupPolicy?: { commandsOnly?: boolean };
   recentMessages: ConversationMessage[];
   policyMuted: boolean;
@@ -875,7 +966,7 @@ export class Orchestrator {
   constructor(ports: CorePorts) {
     this.ports = ports;
     this.consentTermsVersion = ports.consentTermsVersion ?? "2026-03";
-    this.consentLink = ports.consentLink ?? "https://services.net.br/politics";
+    this.consentLink = ports.consentLink ?? "https://services.net.br/politicas";
     this.consentSource = ports.consentSource ?? "wa-gateway";
   }
 
@@ -889,6 +980,7 @@ export class Orchestrator {
 
   private isRequesterAdmin(ctx: PipelineContext): boolean {
     if (this.hasRootPrivilege(ctx)) return true;
+    if (ctx.requesterIsGroupAdmin) return true;
     const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase();
     if (["ADMIN", "GROUP_ADMIN", "OWNER", "DONO"].includes(role)) return true;
     return ctx.requesterIsAdmin;
@@ -903,6 +995,7 @@ export class Orchestrator {
       lower.startsWith("/add user admins") ||
       lower.startsWith("/rm user admins") ||
       lower === "/list user admins" ||
+      lower.startsWith("/set gp chat") ||
       lower.startsWith("/chat on") ||
       lower.startsWith("/chat off")
     );
@@ -912,6 +1005,10 @@ export class Orchestrator {
     if (!commandName) return false;
     const cmd = commandName.toLowerCase();
     if (cmd.startsWith("/chat")) return true;
+    if (cmd.startsWith("/set gp chat")) return true;
+    if (cmd.startsWith("/set gp open") || cmd.startsWith("/set gp close")) return true;
+    if (cmd.startsWith("/set gp name") || cmd.startsWith("/set gp dcr") || cmd.startsWith("/set gp img")) return true;
+    if (cmd.startsWith("/ban") || cmd.startsWith("/kick") || cmd.startsWith("/hidetag")) return true;
     if (cmd.startsWith("/add gp allowed_groups")) return true;
     if (cmd.startsWith("/rm gp allowed_groups")) return true;
     return false;
@@ -1030,13 +1127,23 @@ export class Orchestrator {
       | "professional"
       | "fun"
       | "mixed";
-    const funMode = (flags.fun_mode ?? this.ports.defaultFunMode ?? "off") as "off" | "on";
+    const funModeFromFlags = (flags.fun_mode ?? this.ports.defaultFunMode ?? "off") as "off" | "on";
+    let funMode = funModeFromFlags;
     const downloadsMode = (flags.downloads_mode ?? "off") as "off" | "allowlist" | "on";
 
     const scope = this.getScope(event);
     const muteInfo = this.ports.mute
       ? await this.ports.mute.getMuteState({ tenantId: event.tenantId, scope: scope.scope, scopeId: scope.scopeId })
       : null;
+    const userMuteInfo =
+      this.ports.mute && event.waGroupId
+        ? await this.ports.mute.getMuteState({
+            tenantId: event.tenantId,
+            scope: "GROUP",
+            scopeId: event.waGroupId,
+            waUserId: event.waUserId
+          })
+        : null;
     let conversationState =
       (await this.ports.conversationState?.getState({
         tenantId: event.tenantId,
@@ -1074,6 +1181,9 @@ export class Orchestrator {
             botIsAdmin: event.botIsGroupAdmin
           })
         : undefined;
+    if (groupAccess?.funMode) {
+      funMode = groupAccess.funMode;
+    }
 
     const relationship = resolveRelationshipProfile({
       waUserId: event.waUserId,
@@ -1131,6 +1241,7 @@ export class Orchestrator {
       this.ports.adminAccess && event.waUserId
         ? await this.ports.adminAccess.isAdmin({ tenantId: event.tenantId, waUserId: event.waUserId })
         : false;
+    const requesterIsGroupAdmin = Boolean(event.senderIsGroupAdmin);
 
     const ctx: PipelineContext = {
       event,
@@ -1147,6 +1258,7 @@ export class Orchestrator {
       memoryLimit,
       classification: { kind: "ignored_event" },
       muteInfo,
+      userMuteInfo,
       conversationState,
       consent,
       consentRequired: false,
@@ -1156,6 +1268,12 @@ export class Orchestrator {
       groupAccess,
       groupAllowed,
       groupChatMode,
+      groupIsOpen: groupAccess?.isOpen ?? true,
+      groupWelcomeEnabled: groupAccess?.welcomeEnabled,
+      groupWelcomeText: groupAccess?.welcomeText ?? null,
+      groupFixedMessageText: groupAccess?.fixedMessageText ?? null,
+      groupRulesText: groupAccess?.rulesText ?? null,
+      groupModeration: groupAccess?.moderation,
       botIsGroupAdmin,
       botAdminStatusSource,
       botAdminSourceUsed,
@@ -1167,6 +1285,7 @@ export class Orchestrator {
       isReplyToBot: Boolean(event.isReplyToBot),
       mentionedWaUserIds,
       requesterIsAdmin,
+      requesterIsGroupAdmin,
       recentMessages,
       policyMuted: false
     };
@@ -1367,9 +1486,43 @@ export class Orchestrator {
     if (ctx.conversationState.state === "HANDOFF_ACTIVE") {
       return { stop: [{ kind: "handoff", target: "human", note: "Handoff ativo para este chat." }] };
     }
-    const muteActive = ctx.muteInfo && ctx.muteInfo.until.getTime() > ctx.now.getTime();
+    const muteActive =
+      (ctx.muteInfo && ctx.muteInfo.until.getTime() > ctx.now.getTime()) ||
+      (ctx.userMuteInfo && ctx.userMuteInfo.until.getTime() > ctx.now.getTime());
     if (muteActive) ctx.policyMuted = true;
     return {};
+  }
+
+  private enforceModeration(ctx: PipelineContext): ResponseAction[] {
+    if (!ctx.event.isGroup) return [];
+    if (!ctx.groupModeration) return [];
+    const actions: ResponseAction[] = [];
+    const isAdmin = this.isRequesterAdmin(ctx);
+
+    if (ctx.groupModeration.antiLink && !isAdmin && containsLink(ctx.event.normalizedText)) {
+      if (ctx.groupModeration.autoDeleteLinks && ctx.event.messageKey) {
+        actions.push({
+          kind: "moderation_action",
+          action: "delete_message",
+          waGroupId: ctx.event.waGroupId!,
+          messageKey: ctx.event.messageKey
+        });
+      }
+      const warning = this.stylizeReply(ctx, "Links não são permitidos neste grupo.");
+      actions.push({ kind: "reply_text", text: warning });
+      if (ctx.groupModeration.tempMuteSeconds && ctx.event.waGroupId) {
+        actions.push({
+          kind: "moderation_action",
+          action: "mute",
+          waGroupId: ctx.event.waGroupId,
+          targetWaUserId: ctx.event.waUserId,
+          durationMs: ctx.groupModeration.tempMuteSeconds * 1000
+        });
+      }
+      return actions;
+    }
+
+    return actions;
   }
 
   private normalizeConsentInput(text: string): string {
@@ -2143,8 +2296,9 @@ export class Orchestrator {
     await this.clearConversationState(ctx);
     return actions;
   }
-  private buildMuteText(muteInfo: { until: Date } | null | undefined, timezone: string): string {
+  private buildMuteText(muteInfo: { until: Date } | null | undefined, timezone: string, scoped?: boolean): string {
     const until = muteInfo?.until ? formatDateTimeInZone(muteInfo.until, timezone) : "(desconhecido)";
+    if (scoped) return `🤫 Você está silenciado neste grupo até ${until}.`;
     return `🤫 Estou em silêncio até ${until}. Envie /mute off para reativar.`;
   }
 
@@ -2328,6 +2482,8 @@ export class Orchestrator {
       `ID: ${ctx.event.waGroupId ?? "-"}`,
       `Permitido: ${ctx.groupAllowed ? "sim" : "não"}`,
       `Bot admin: ${botAdminLabel}`,
+      `Abertura: ${ctx.groupIsOpen ? "aberto" : "fechado"}`,
+      `Welcome: ${ctx.groupWelcomeEnabled ? "on" : "off"}`,
       `Chat: ${ctx.groupChatMode.toUpperCase()}`,
       `AI: ${aiLabel}`,
       `Você: ${requester}`
@@ -2465,6 +2621,159 @@ export class Orchestrator {
         `Bot admin: ${botAdminLabel}`
       ];
       return [{ kind: "reply_text", text: lines.join("\n") }];
+    }
+
+    if (lower === "/rules") {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const rules = ctx.groupRulesText ?? ctx.groupAccess?.rulesText;
+      if (!rules) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Regras não configuradas.") }];
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, rules) }];
+    }
+
+    if (lower === "/fix" || lower === "/fixed") {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const fixed = ctx.groupFixedMessageText ?? ctx.groupAccess?.fixedMessageText;
+      if (!fixed) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Mensagem fixa não configurada.") }];
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, fixed) }];
+    }
+
+    if (lower.startsWith("/set gp ")) {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      const botAdminGuard = enforceBotAdminForOperation(lower);
+      if (botAdminGuard) return botAdminGuard;
+      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Controle de grupo não está configurado.") }];
+
+      const args = cmd.replace(/^\/set gp\s+/i, "");
+      const [sub, ...restTokens] = args.split(/\s+/);
+      const restText = args.replace(/^\S+\s*/, "").trim();
+      const normalizedSub = (sub ?? "").toLowerCase();
+
+      if (normalizedSub === "chat") {
+        const mode = restTokens[0] === "off" ? "off" : restTokens[0] === "on" ? "on" : null;
+        if (!mode) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Use: /set gp chat on|off") }];
+        const updated = await this.ports.groupAccess.setChatMode({
+          tenantId: ctx.event.tenantId,
+          waGroupId: ctx.event.waGroupId!,
+          mode,
+          actor: ctx.event.waUserId
+        });
+        const warning = botAdminWarning(lower);
+        return [
+          {
+            kind: "reply_text",
+            text: this.stylizeReply(
+              ctx,
+              `Modo de chat ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${botAdminLabel}.${warning ? ` ${warning}` : ""}`
+            )
+          }
+        ];
+      }
+
+      if (normalizedSub === "open" || normalizedSub === "close") {
+        const operation: GroupAdminOperation = normalizedSub === "open" ? "set_open" : "set_closed";
+        return [
+          {
+            kind: "group_admin_action",
+            operation,
+            waGroupId: ctx.event.waGroupId!,
+            actorWaUserId: ctx.event.waUserId
+          }
+        ];
+      }
+
+      if (normalizedSub === "name") {
+        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Informe o novo nome do grupo.") }];
+        return [
+          {
+            kind: "group_admin_action",
+            operation: "set_subject",
+            waGroupId: ctx.event.waGroupId!,
+            actorWaUserId: ctx.event.waUserId,
+            text: restText
+          }
+        ];
+      }
+
+      if (normalizedSub === "dcr") {
+        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Informe a nova descrição.") }];
+        return [
+          {
+            kind: "group_admin_action",
+            operation: "set_description",
+            waGroupId: ctx.event.waGroupId!,
+            actorWaUserId: ctx.event.waUserId,
+            text: restText
+          }
+        ];
+      }
+
+      if (normalizedSub === "img") {
+        return [
+          {
+            kind: "group_admin_action",
+            operation: "set_picture_from_quote",
+            waGroupId: ctx.event.waGroupId!,
+            actorWaUserId: ctx.event.waUserId,
+            quotedWaMessageId: ctx.event.quotedWaMessageId
+          }
+        ];
+      }
+
+      if (normalizedSub === "fix") {
+        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto fixo após o comando.") }];
+        const updated = await this.ports.groupAccess.updateSettings({
+          tenantId: ctx.event.tenantId,
+          waGroupId: ctx.event.waGroupId!,
+          actor: ctx.event.waUserId,
+          settings: { fixedMessageText: restText }
+        });
+        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Mensagem fixa atualizada.${updated.fixedMessageText ? "" : " (vazia)"}`) }];
+      }
+
+      if (normalizedSub === "rules") {
+        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto das regras após o comando.") }];
+        await this.ports.groupAccess.updateSettings({
+          tenantId: ctx.event.tenantId,
+          waGroupId: ctx.event.waGroupId!,
+          actor: ctx.event.waUserId,
+          settings: { rulesText: restText }
+        });
+        return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Regras atualizadas.") }];
+      }
+
+      if (normalizedSub === "welcome") {
+        const mode = restTokens[0]?.toLowerCase();
+        if (mode === "on" || mode === "off") {
+          const updated = await this.ports.groupAccess.updateSettings({
+            tenantId: ctx.event.tenantId,
+            waGroupId: ctx.event.waGroupId!,
+            actor: ctx.event.waUserId,
+            settings: { welcomeEnabled: mode === "on" }
+          });
+          return [
+            { kind: "reply_text", text: this.stylizeReply(ctx, `Mensagem de boas-vindas ${updated.welcomeEnabled ? "ativada" : "desativada"}.`) }
+          ];
+        }
+        if (mode === "text") {
+          const text = restTokens.slice(1).join(" ").trim();
+          if (!text) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Informe o texto após 'welcome text'.") }];
+          await this.ports.groupAccess.updateSettings({
+            tenantId: ctx.event.tenantId,
+            waGroupId: ctx.event.waGroupId!,
+            actor: ctx.event.waUserId,
+            settings: { welcomeText: text }
+          });
+          return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Texto de boas-vindas atualizado.") }];
+        }
+        return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Use: /set gp welcome on|off ou /set gp welcome text <mensagem>.") }];
+      }
+
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Comando /set gp não reconhecido.") }];
     }
 
     if (lower === "/add gp allowed_groups") {
@@ -2636,6 +2945,89 @@ export class Orchestrator {
             title: a.displayName ?? a.waUserId,
             description: `${a.waUserId}${a.permissionRole ? ` · ${a.permissionRole}` : ""}`
           }))
+        }
+      ];
+    }
+
+    if (lower.startsWith("/ban") || lower.startsWith("/kick")) {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      const botAdminGuard = enforceBotAdminForOperation(lower);
+      if (botAdminGuard) return botAdminGuard;
+      const target = resolveTargetUserFromMentionOrReply(ctx.event) ?? cmd.replace(/^(\/ban|\/kick)\s+/i, "").trim();
+      if (!target) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Mencione ou responda quem deseja remover.") }];
+      const actionKind: ModerationActionKind = lower.startsWith("/ban") ? "ban" : "kick";
+      return [
+        {
+          kind: "moderation_action",
+          action: actionKind,
+          waGroupId: ctx.event.waGroupId!,
+          targetWaUserId: target
+        }
+      ];
+    }
+
+    if (ctx.event.isGroup && lower.startsWith("/mute ")) {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const rawArgs = cmd.replace(/^(\/mute)\s+/i, "").trim();
+      const tokens = rawArgs.split(/\s+/).filter(Boolean);
+      const mentionTarget = resolveTargetUserFromMentionOrReply(ctx.event);
+      const tokenTarget = tokens.length > 1 ? tokens.shift() : undefined;
+      const target = mentionTarget ?? tokenTarget;
+      const durationToken = tokens[0];
+      if (!target || !durationToken) {
+        // Fall back to existing mute command (scope mute) when no target/duration provided.
+      } else {
+        const adminCheck = requireAdmin();
+        if (adminCheck) return adminCheck;
+        const botAdminGuard = enforceBotAdminForOperation(lower);
+        if (botAdminGuard) return botAdminGuard;
+        const duration = parseDurationInput(durationToken);
+        if (!duration) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Duração inválida. Ex: 30m, 1h.") }];
+        return [
+          {
+            kind: "moderation_action",
+            action: "mute",
+            waGroupId: ctx.event.waGroupId!,
+            targetWaUserId: target,
+            durationMs: duration.milliseconds
+          }
+        ];
+      }
+    }
+
+    if (ctx.event.isGroup && lower.startsWith("/unmute")) {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      const botAdminGuard = enforceBotAdminForOperation(lower);
+      if (botAdminGuard) return botAdminGuard;
+      const target = resolveTargetUserFromMentionOrReply(ctx.event) ?? cmd.replace(/^(\/unmute)\s+/i, "").trim();
+      if (!target) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Mencione ou responda quem deseja reativar.") }];
+      return [
+        { kind: "moderation_action", action: "unmute", waGroupId: ctx.event.waGroupId!, targetWaUserId: target }
+      ];
+    }
+
+    if (ctx.event.isGroup && lower.startsWith("/hidetag")) {
+      const groupCheck = requireGroup();
+      if (groupCheck) return groupCheck;
+      const adminCheck = requireAdmin();
+      if (adminCheck) return adminCheck;
+      const botAdminGuard = enforceBotAdminForOperation(lower);
+      if (botAdminGuard) return botAdminGuard;
+      const text = cmd.replace(/^(\/hidetag)\s*/i, "").trim();
+      if (!text) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto após /hidetag.") }];
+      return [
+        {
+          kind: "moderation_action",
+          action: "hidetag",
+          waGroupId: ctx.event.waGroupId!,
+          text
         }
       ];
     }
@@ -3069,6 +3461,9 @@ export class Orchestrator {
     const policyResult = this.applyPolicies(ctx);
     if (policyResult.stop) return this.formatActionsForDelivery(policyResult.stop);
 
+    const moderationActions = this.enforceModeration(ctx);
+    if (moderationActions.length > 0) return this.formatActionsForDelivery(moderationActions);
+
     const groupPolicy = this.enforceGroupPolicies(ctx);
     ctx.groupPolicy = { commandsOnly: groupPolicy.commandsOnly };
     if (groupPolicy.stop) return this.formatActionsForDelivery(groupPolicy.stop);
@@ -3097,7 +3492,8 @@ export class Orchestrator {
     if (aiActions.length > 0) return this.formatActionsForDelivery(aiActions);
 
     if (ctx.policyMuted) {
-      return this.formatActionsForDelivery([{ kind: "reply_text", text: this.buildMuteText(ctx.muteInfo, ctx.timezone) }]);
+      const activeMute = ctx.userMuteInfo ?? ctx.muteInfo;
+      return this.formatActionsForDelivery([{ kind: "reply_text", text: this.buildMuteText(activeMute, ctx.timezone, Boolean(ctx.userMuteInfo)) }]);
     }
 
     return this.formatActionsForDelivery([{ kind: "noop", reason: "no_action" }]);

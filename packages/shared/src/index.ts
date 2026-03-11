@@ -25,7 +25,7 @@ const envSchema = z.object({
   ASSISTANT_MODE_DEFAULT: z.enum(["off", "professional", "fun", "mixed"]).default("professional"),
   FUN_MODE_DEFAULT: z.enum(["off", "on"]).default("off"),
   CONSENT_TERMS_VERSION: z.string().default("2026-03"),
-  CONSENT_LINK: z.string().default("https://services.net.br/politics"),
+  CONSENT_LINK: z.string().default("https://services.net.br/politicas"),
   CONSENT_SOURCE: z.string().default("wa-gateway")
 });
 

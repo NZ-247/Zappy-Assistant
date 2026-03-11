@@ -54,9 +54,36 @@
 - Mention or reply-to-bot marks the message as directed: it is routed to AI/tool-intent; if it maps to an existing command/module the tool flow runs, otherwise persona-based AI answers.
 - Command prefixes (`/`) continue to bypass mention/reply requirements.
 
+## Group settings & `/set gp`
+- Persisted per group: `chatMode`, `isOpen` (open/closed), `welcomeEnabled`, `welcomeText`, `fixedMessageText`, `rulesText`, `funMode`, `moderationConfig` (anti-link/auto-delete/temp mute hooks, anti-spam placeholder).
+- Group-only, requester must be ROOT/DONO/group admin/bot-admin. Bot-admin-sensitive ops run **operation-first** (actual WA operation decides).
+- Commands:
+  - `/set gp chat on|off`
+  - `/set gp open` / `/set gp close` (announcement toggle)
+  - `/set gp name <text>`
+  - `/set gp dcr <text>`
+  - `/set gp img` (reply to an image)
+  - `/set gp fix <text>`
+  - `/set gp rules <text>`
+  - `/set gp welcome on|off`
+  - `/set gp welcome text <text>`
+
+## Moderation base
+- Commands (group only, admin required): `/ban`, `/kick`, `/mute <user> <duration>`, `/unmute <user>`, `/hidetag <text>`.
+- Per-user mute is scoped to the group and enforced in the pipeline; muted users get a quoted reply when blocked.
+- Anti-link hooks: if `moderationConfig.antiLink` + `autoDeleteLinks` are on, links from non-admins are deleted and a warning is sent; optional `tempMuteSeconds` applies a temporary mute.
+- All moderation replies quote the origin message and follow operation-first admin checks.
+
+## Welcome / fixed / rules
+- Welcome automation: when `welcomeEnabled`, a welcome message is sent on `group-participants.update` (non-bot joins); template supports `{{user}}` and `{{group}}`.
+- Stored texts: `welcomeText`, `fixedMessageText`, `rulesText` are persisted per group.
+- Commands: `/rules` returns rules text; `/fix` returns the fixed message.
+
 ## Manual smoke tests
-1. Plain group text → ignored.
-2. Explicit `@bot` mention via WhatsApp UI → bot replies.
-3. Reply to a previous bot message → bot replies.
-4. Mention + natural-language reminder request → routed to reminder/tool behavior.
-5. Reply-to-bot + follow-up task request → routed correctly.
+1) `/set gp chat on|off` works.
+2) `/set gp dcr` updates description.
+3) `/set gp img` works from quoted image.
+4) `/set gp close/open` works when bot has admin rights.
+5) `/hidetag` works.
+6) Welcome on/off and welcome text work.
+7) Moderation commands reply to origin message.

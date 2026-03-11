@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } from "baileys";
+import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState, downloadMediaMessage } from "baileys";
 import { Boom } from "@hapi/boom";
 import { Orchestrator, type InboundMessageEvent } from "@zappy/core";
 import { attemptGroupAdminAction, type AdminActionResultKind } from "./admin-actions.js";
@@ -248,9 +248,30 @@ const hasMedia = (message: any): boolean =>
 const isBotAdminCommand = (text: string): boolean => {
   const lower = text.trim().toLowerCase();
   if (lower.startsWith("/chat ")) return true;
+  if (lower.startsWith("/set gp ")) return true;
   if (lower === "/add gp allowed_groups") return true;
   if (lower === "/rm gp allowed_groups") return true;
+  if (lower.startsWith("/ban") || lower.startsWith("/kick") || lower.startsWith("/hidetag") || lower.startsWith("/unmute")) return true;
+  if (lower.startsWith("/mute ")) return true;
   return false;
+};
+
+const isGroupAdminCommand = (text: string): boolean => {
+  const lower = text.trim().toLowerCase();
+  return (
+    lower.startsWith("/set gp ") ||
+    lower.startsWith("/add gp allowed_groups") ||
+    lower.startsWith("/rm gp allowed_groups") ||
+    lower.startsWith("/add user admins") ||
+    lower.startsWith("/rm user admins") ||
+    lower.startsWith("/list user admins") ||
+    lower.startsWith("/chat ") ||
+    lower.startsWith("/ban") ||
+    lower.startsWith("/kick") ||
+    lower.startsWith("/mute ") ||
+    lower.startsWith("/unmute") ||
+    lower.startsWith("/hidetag")
+  );
 };
 
 type BotAdminStatus = {
@@ -412,6 +433,21 @@ const ensureBotAdminStatus = async (
   return status;
 };
 
+const resolveSenderGroupAdmin = async (groupJid: string, waUserId: string): Promise<boolean | undefined> => {
+  if (!socket) return undefined;
+  try {
+    const meta = await socket.groupMetadata(groupJid);
+    const target = normalizeJid(waUserId);
+    const participant = meta?.participants?.find((p: any) => normalizeJid(p.id) === target);
+    if (!participant) return undefined;
+    const adminFlag = (participant.admin ?? "").toString().toLowerCase();
+    return adminFlag === "admin" || adminFlag === "superadmin";
+  } catch (error) {
+    logger.debug(withCategory("WARN", { action: "resolve_sender_admin", waGroupId: groupJid, waUserId, error }), "failed to resolve sender admin");
+    return undefined;
+  }
+};
+
 const refreshBotAdminState = async (input: {
   waGroupId: string;
   tenantId?: string;
@@ -513,26 +549,84 @@ const connect = async () => {
   (socket.ev as any).on("group-participants.update", async (update: { id?: string; participants?: string[]; action?: string }) => {
     try {
       const botId = socket?.user?.id ? normalizeJid(socket.user.id) : undefined;
-      if (!botId || !update?.id) return;
+      if (!update?.id) return;
       const participants = (update.participants ?? []).map((p) => normalizeJid(p));
-      const involvesBot = participants.includes(botId);
-      if (!involvesBot) return;
+      const involvesBot = botId ? participants.includes(botId) : false;
 
       const groupRecord = await prisma.group.findUnique({ where: { waGroupId: update.id } });
-      const status = await refreshBotAdminState({
-        waGroupId: update.id,
-        tenantId: groupRecord?.tenantId,
-        groupName: groupRecord?.name,
-        force: true,
-        origin: "participants.update",
-        operationFirst: true
-      });
-      logger.info(
-        withCategory("SYSTEM", { waGroupId: update.id, botIsAdmin: status.isAdmin, source: "participants.update" }),
-        "refreshed bot admin status"
-      );
+      if (involvesBot) {
+        const status = await refreshBotAdminState({
+          waGroupId: update.id,
+          tenantId: groupRecord?.tenantId,
+          groupName: groupRecord?.name,
+          force: true,
+          origin: "participants.update",
+          operationFirst: true
+        });
+        logger.info(
+          withCategory("SYSTEM", { waGroupId: update.id, botIsAdmin: status.isAdmin, source: "participants.update" }),
+          "refreshed bot admin status"
+        );
+      }
+
+      if (update.action === "add") {
+        const newMembers = participants.filter((p) => p !== botId);
+        if (newMembers.length === 0) return;
+
+        let tenantId = groupRecord?.tenantId;
+        let groupName = groupRecord?.name ?? update.id;
+        if (!tenantId) {
+          const context = await ensureTenantContext({
+            waGroupId: update.id,
+            waUserId: newMembers[0],
+            defaultTenantName: env.DEFAULT_TENANT_NAME,
+            onlyGroupId: env.ONLY_GROUP_ID,
+            remoteJid: update.id,
+            userName: null
+          });
+          tenantId = context.tenant.id;
+          groupName = context.group?.name ?? update.id;
+        }
+
+        const access = tenantId
+          ? await groupAccessRepository.getGroupAccess({
+              tenantId,
+              waGroupId: update.id,
+              groupName,
+              botIsAdmin: groupRecord?.botIsAdmin ?? undefined
+            })
+          : null;
+
+        if (access?.welcomeEnabled) {
+          const names = newMembers.map((p) => stripUser(p) ?? p).join(", ");
+          const base = access.welcomeText ?? "Bem-vindo(a), {{user}}!";
+          let text = base.replace(/{{user}}/g, names).replace(/{{group}}/g, access.groupName ?? update.id);
+          if (access.rulesText) text += `\n\nRegras:\n${access.rulesText}`;
+          if (access.fixedMessageText) text += `\n\n${access.fixedMessageText}`;
+
+          const sent = await sendWithReplyFallback({
+            to: update.id,
+            content: { text },
+            quotedMessage: undefined,
+            logContext: { tenantId: tenantId ?? "unknown", scope: "group", action: "welcome", waUserId: newMembers[0], waGroupId: update.id }
+          });
+
+          if (tenantId) {
+            await persistOutboundMessage({
+              tenantId,
+              userId: undefined,
+              groupId: groupRecord?.id,
+              waUserId: newMembers[0],
+              waGroupId: update.id,
+              text,
+              waMessageId: sent?.key?.id,
+              rawJson: sent
+            });
+          }
+        }
+      }
     } catch (error) {
-      logger.warn(withCategory("WARN", { waGroupId: update?.id, error }), "failed to refresh bot admin after participant update");
+      logger.warn(withCategory("WARN", { waGroupId: update?.id, error }), "failed to handle participant update");
     }
   });
 
@@ -618,6 +712,7 @@ const connect = async () => {
 
       const lastAdminCheck = context.group?.botAdminCheckedAt?.getTime?.() ?? 0;
       const adminCommand = isGroup && text.startsWith("/") && isBotAdminCommand(text);
+      const senderIsGroupAdmin = isGroup ? await resolveSenderGroupAdmin(remoteJid, waUserId) : undefined;
       const adminStatusStaleMs = GROUP_ADMIN_OPERATION_CACHE_TTL_MS;
       const shouldForceAdminRefresh =
         isGroup &&
@@ -640,6 +735,12 @@ const connect = async () => {
       const botAdminError = botAdminStatus?.error ?? botAdminStatus?.metadataError ?? botAdminStatus?.actionErrorMessage;
       const botAdminCheckFailed =
         botAdminStatus?.source === "fallback" || botAdminStatus?.actionResultKind === "failed_metadata_unavailable";
+      const messageKey = {
+        id: message.key.id ?? `${Date.now()}`,
+        remoteJid: message.key.remoteJid,
+        fromMe: message.key.fromMe,
+        participant: message.key.participant
+      };
 
       const event: InboundMessageEvent = {
         tenantId: context.tenant.id,
@@ -661,12 +762,14 @@ const connect = async () => {
         quotedWaMessageId,
         quotedWaUserId,
         isReplyToBot,
+        senderIsGroupAdmin,
         botIsGroupAdmin,
         botAdminStatusSource: botAdminStatus?.source,
         botAdminCheckFailed,
         botAdminCheckError: botAdminError,
         botAdminCheckedAt,
-        groupName: context.group?.name ?? message.pushName ?? remoteJid ?? undefined
+        groupName: context.group?.name ?? message.pushName ?? remoteJid ?? undefined,
+        messageKey
       };
 
       const persisted = await persistInboundMessage({
@@ -799,6 +902,309 @@ const connect = async () => {
               waMessageId: sent.key.id,
               action: "ai_tool_suggestion",
               textPreview: textToSend.slice(0, 80)
+            }),
+            "outbound message"
+          );
+          continue;
+        }
+        if (action.kind === "group_admin_action") {
+          const to = remoteJid;
+          let replyText = "";
+          let inferredBotAdmin: boolean | undefined;
+          let success = false;
+
+          if (!socket) {
+            replyText = "Socket não pronto para executar a ação de admin.";
+          } else {
+            const sock = socket as any;
+            const op = action.operation;
+            const run = async () => {
+              if (op === "set_subject") return sock.groupUpdateSubject(remoteJid, action.text ?? "");
+              if (op === "set_description") return sock.groupUpdateDescription(remoteJid, action.text ?? "");
+              if (op === "set_open") return sock.groupSettingUpdate(remoteJid, "not_announcement");
+              if (op === "set_closed") return sock.groupSettingUpdate(remoteJid, "announcement");
+              if (op === "set_picture_from_quote") {
+                const quoted = contextInfo?.quotedMessage;
+                if (!quoted) throw new Error("quoted_image_missing");
+                const quotedKey = {
+                  remoteJid,
+                  id: action.quotedWaMessageId ?? quotedWaMessageId ?? message.key.id ?? `${Date.now()}`,
+                  fromMe: false,
+                  participant: quotedWaUserId ?? undefined
+                };
+                const buffer = await downloadMediaMessage(
+                  { key: quotedKey, message: quoted } as any,
+                  "buffer",
+                  {},
+                  { logger: baileysLogger, reuploadRequest: sock.updateMediaMessage }
+                );
+                return sock.updateProfilePicture(remoteJid, buffer as any, "image");
+              }
+              throw new Error("operacao_nao_suportada");
+            };
+
+            const opResult = await attemptGroupAdminAction({ actionName: action.operation, groupJid: remoteJid, run });
+            inferredBotAdmin =
+              opResult.kind === "success"
+                ? true
+                : opResult.kind === "failed_not_admin" || opResult.kind === "failed_not_authorized"
+                  ? false
+                  : undefined;
+            success = opResult.kind === "success";
+
+            if (success && context.group) {
+              const settings =
+                op === "set_subject"
+                  ? { groupName: action.text ?? context.group.name }
+                  : op === "set_description"
+                    ? { description: action.text ?? null }
+                    : op === "set_open"
+                      ? { isOpen: true }
+                      : op === "set_closed"
+                        ? { isOpen: false }
+                        : {};
+              if (Object.keys(settings).length > 0) {
+                await groupAccessRepository.updateSettings({
+                  tenantId: context.tenant.id,
+                  waGroupId: remoteJid,
+                  actor: action.actorWaUserId,
+                  settings
+                });
+              }
+            }
+
+            switch (op) {
+              case "set_subject":
+                replyText = success ? `Nome do grupo atualizado para \"${action.text}\".` : `Não consegui alterar o nome: ${opResult.errorMessage ?? opResult.kind}.`;
+                break;
+              case "set_description":
+                replyText = success ? "Descrição do grupo atualizada." : `Não consegui alterar a descrição: ${opResult.errorMessage ?? opResult.kind}.`;
+                break;
+              case "set_open":
+                replyText = success ? "Grupo reaberto. Todos podem enviar mensagens." : `Não consegui reabrir: ${opResult.errorMessage ?? opResult.kind}.`;
+                break;
+              case "set_closed":
+                replyText = success ? "Grupo fechado. Apenas admins podem enviar mensagens." : `Não consegui fechar: ${opResult.errorMessage ?? opResult.kind}.`;
+                break;
+              case "set_picture_from_quote":
+                if (opResult.kind === "success") replyText = "Foto do grupo atualizada.";
+                else if (opResult.errorMessage === "quoted_image_missing") replyText = "Responda a uma imagem para usar como foto.";
+                else replyText = `Não consegui atualizar a foto: ${opResult.errorMessage ?? opResult.kind}.`;
+                break;
+              default:
+                replyText = success ? "Ação concluída." : "Ação não concluída.";
+            }
+
+            if (context.group && inferredBotAdmin !== undefined) {
+              await groupAccessRepository.getGroupAccess({
+                tenantId: context.tenant.id,
+                waGroupId: remoteJid,
+                groupName: context.group?.name ?? remoteJid,
+                botIsAdmin: inferredBotAdmin
+              });
+            }
+          }
+
+          const sent = await sendWithReplyFallback({
+            to,
+            content: { text: replyText },
+            quotedMessage: message,
+            logContext: {
+              tenantId: event.tenantId,
+              scope: "group",
+              action: "group_admin_action",
+              waUserId,
+              waGroupId: event.waGroupId
+            }
+          });
+          await persistOutboundMessage({
+            tenantId: context.tenant.id,
+            userId: context.user.id,
+            groupId: context.group?.id,
+            waUserId,
+            waGroupId: event.waGroupId,
+            text: replyText,
+            waMessageId: sent.key.id,
+            rawJson: sent
+          });
+          logger.info(
+            withCategory("WA-OUT", {
+              tenantId: event.tenantId,
+              scope: "group",
+              waUserId,
+              phoneNumber: canonical?.phoneNumber,
+              normalizedPhone,
+              permissionRole,
+              relationshipProfile,
+              waGroupId: event.waGroupId,
+              waMessageId: sent.key.id,
+              action: "group_admin_action",
+              textPreview: replyText.slice(0, 80)
+            }),
+            "outbound message"
+          );
+          continue;
+        }
+        if (action.kind === "moderation_action") {
+          let replyText = "";
+          let inferredBotAdmin: boolean | undefined;
+          let shouldPersist = true;
+          const sock = socket as any;
+          if (action.action === "delete_message") {
+            if (socket && action.messageKey) {
+              try {
+                await sock.sendMessage(event.waGroupId ?? remoteJid, { delete: action.messageKey } as any);
+              } catch (error) {
+                logger.warn(withCategory("WARN", { action: "delete_message", waGroupId: event.waGroupId, error }), "failed to delete message");
+              }
+            }
+            shouldPersist = false;
+            replyText = "";
+          } else if (action.action === "hidetag") {
+            const meta = socket ? await socket.groupMetadata(event.waGroupId ?? remoteJid) : null;
+            const mentions = meta?.participants?.map((p: any) => normalizeJid(p.id)) ?? [];
+            const sent = await sendWithReplyFallback({
+              to: event.waGroupId ?? remoteJid,
+              content: { text: action.text ?? "", mentions },
+              quotedMessage: message,
+              logContext: {
+                tenantId: event.tenantId,
+                scope: "group",
+                action: "hidetag",
+                waUserId,
+                waGroupId: event.waGroupId
+              }
+            });
+            await persistOutboundMessage({
+              tenantId: context.tenant.id,
+              userId: context.user.id,
+              groupId: context.group?.id,
+              waUserId,
+              waGroupId: event.waGroupId,
+              text: action.text ?? "",
+              waMessageId: sent.key.id,
+              rawJson: sent
+            });
+            logger.info(
+              withCategory("WA-OUT", {
+                tenantId: event.tenantId,
+                scope: "group",
+                waUserId,
+                phoneNumber: canonical?.phoneNumber,
+                normalizedPhone,
+                permissionRole,
+                relationshipProfile,
+                waGroupId: event.waGroupId,
+                waMessageId: sent.key.id,
+                action: "hidetag",
+                textPreview: (action.text ?? "").slice(0, 80)
+              }),
+              "outbound message"
+            );
+            continue;
+          } else if (action.action === "ban" || action.action === "kick") {
+            const target = action.targetWaUserId ? normalizeJid(action.targetWaUserId) : undefined;
+            if (!target) {
+              replyText = "Usuário alvo não informado.";
+            } else if (!socket) {
+              replyText = "Socket não pronto para moderar.";
+            } else {
+              const opResult = await attemptGroupAdminAction({
+                actionName: action.action,
+                groupJid: event.waGroupId ?? remoteJid,
+                run: () => sock.groupParticipantsUpdate(event.waGroupId ?? remoteJid, [target], "remove")
+              });
+              inferredBotAdmin =
+                opResult.kind === "success"
+                  ? true
+                  : opResult.kind === "failed_not_admin" || opResult.kind === "failed_not_authorized"
+                    ? false
+                    : undefined;
+              replyText =
+                opResult.kind === "success"
+                  ? `Usuário ${target} removido.`
+                  : `Não consegui remover: ${opResult.errorMessage ?? opResult.kind}.`;
+            }
+          } else if (action.action === "mute") {
+            const target = action.targetWaUserId ? normalizeJid(action.targetWaUserId) : undefined;
+            if (!target || !action.durationMs) {
+              replyText = "Informe usuário e duração para aplicar mute.";
+            } else {
+              const until = await muteAdapter.mute({
+                tenantId: context.tenant.id,
+                scope: "GROUP",
+                scopeId: event.waGroupId ?? remoteJid,
+                waUserId: target,
+                durationMs: action.durationMs,
+                now: new Date()
+              });
+              const fmt = new Intl.DateTimeFormat("pt-BR", {
+                timeZone: env.BOT_TIMEZONE,
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit"
+              }).format(until.until);
+              replyText = `Usuário ${target} silenciado até ${fmt}.`;
+            }
+          } else if (action.action === "unmute") {
+            const target = action.targetWaUserId ? normalizeJid(action.targetWaUserId) : undefined;
+            if (!target) replyText = "Informe quem deve ser reativado.";
+            else {
+              await muteAdapter.unmute({ tenantId: context.tenant.id, scope: "GROUP", scopeId: event.waGroupId ?? remoteJid, waUserId: target });
+              replyText = `Silêncio removido para ${target}.`;
+            }
+          }
+
+          if (!replyText && !shouldPersist) continue;
+
+          if (context.group && inferredBotAdmin !== undefined) {
+            await groupAccessRepository.getGroupAccess({
+              tenantId: context.tenant.id,
+              waGroupId: remoteJid,
+              groupName: context.group?.name ?? remoteJid,
+              botIsAdmin: inferredBotAdmin
+            });
+          }
+
+          const sent = await sendWithReplyFallback({
+            to: event.waGroupId ?? remoteJid,
+            content: { text: replyText },
+            quotedMessage: message,
+            logContext: {
+              tenantId: event.tenantId,
+              scope: "group",
+              action: action.action,
+              waUserId,
+              waGroupId: event.waGroupId
+            }
+          });
+          if (shouldPersist) {
+            await persistOutboundMessage({
+              tenantId: context.tenant.id,
+              userId: context.user.id,
+              groupId: context.group?.id,
+              waUserId,
+              waGroupId: event.waGroupId,
+              text: replyText,
+              waMessageId: sent.key.id,
+              rawJson: sent
+            });
+          }
+          logger.info(
+            withCategory("WA-OUT", {
+              tenantId: event.tenantId,
+              scope: "group",
+              waUserId,
+              phoneNumber: canonical?.phoneNumber,
+              normalizedPhone,
+              permissionRole,
+              relationshipProfile,
+              waGroupId: event.waGroupId,
+              waMessageId: sent.key.id,
+              action: action.action,
+              textPreview: replyText.slice(0, 80)
             }),
             "outbound message"
           );
