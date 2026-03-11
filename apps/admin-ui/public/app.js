@@ -68,3 +68,6 @@ async function createTrigger() {
 async function loadLogs() { setData(await api("/admin/logs?limit=100")); }
 async function loadStatus() { setData(await api("/admin/status")); }
 async function loadMessages() { setData(await api("/admin/messages?limit=50")); }
+async function loadCommands() { setData(await api("/admin/commands?limit=50")); }
+async function loadQueues() { setData(await api("/admin/queues")); }
+async function loadMetrics() { setData(await api("/admin/metrics/summary")); }

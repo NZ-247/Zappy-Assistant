@@ -9,7 +9,9 @@ import {
   persistOutboundMessage,
   prisma,
   updateReminderStatus,
-  updateTimerStatus
+  updateTimerStatus,
+  createMetricsRecorder,
+  createAuditTrail
 } from "@zappy/adapters";
 import { ReminderStatus, TimerStatus } from "@prisma/client";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
@@ -17,6 +19,8 @@ import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/
 const env = loadEnv();
 const logger = createLogger("worker");
 const connection = createRedisConnection(env.REDIS_URL);
+const metrics = createMetricsRecorder(connection);
+const auditTrail = createAuditTrail();
 const heartbeat = setInterval(() => void markWorkerHeartbeat(connection), 10_000);
 void markWorkerHeartbeat(connection);
 
@@ -89,8 +93,27 @@ const worker = new Worker(
           waMessageId: sent.id,
           rawJson: sent.raw
         });
+        await metrics.increment("reminders_sent_total");
+        await auditTrail.record({
+          kind: "reminder",
+          tenantId: reminder.tenantId ?? "",
+          waUserId: reminder.waUserId ?? to,
+          waGroupId: reminder.waGroupId ?? undefined,
+          reminderId: reminder.id,
+          status: "sent",
+          message: reminder.message
+        });
       } catch (error) {
         await updateReminderStatus(reminder.id, ReminderStatus.FAILED);
+        await auditTrail.record({
+          kind: "reminder",
+          tenantId: reminder.tenantId ?? "",
+          waUserId: reminder.waUserId ?? "",
+          waGroupId: reminder.waGroupId ?? undefined,
+          reminderId: reminder.id,
+          status: "failed",
+          message: reminder.message
+        });
         logger.error({ reminderId, error }, "failed to process reminder");
         throw error;
       }

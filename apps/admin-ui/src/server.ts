@@ -23,6 +23,10 @@ await app.register(fastifyStatic, {
 app.get("/", (_, reply) => reply.sendFile("index.html"));
 app.get("/triggers", (_, reply) => reply.sendFile("triggers.html"));
 app.get("/logs", (_, reply) => reply.sendFile("logs.html"));
+app.get("/status", (_, reply) => reply.sendFile("status.html"));
+app.get("/messages", (_, reply) => reply.sendFile("messages.html"));
+app.get("/commands", (_, reply) => reply.sendFile("commands.html"));
+app.get("/queues", (_, reply) => reply.sendFile("queues.html"));
 app.post(
   "/inform",
   { logLevel: "silent" },

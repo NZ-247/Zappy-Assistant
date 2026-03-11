@@ -28,7 +28,9 @@ import {
   type ReminderCreateInput,
   type TimerCreateInput,
   type ConversationState,
-  type RelationshipProfile
+  type RelationshipProfile,
+  type MetricKey,
+  type AuditEvent
 } from "@zappy/core";
 import type { FeatureFlagInput, TriggerInput } from "@zappy/shared";
 import { createLogger } from "@zappy/shared";
@@ -37,6 +39,39 @@ export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
 export const createQueue = (queueName: string, redisUrl: string) =>
   new Queue(queueName, { connection: createRedisConnection(redisUrl) as unknown as any });
+
+const metricKeys: MetricKey[] = [
+  "messages_received_total",
+  "commands_executed_total",
+  "trigger_matches_total",
+  "ai_requests_total",
+  "ai_failures_total",
+  "reminders_created_total",
+  "reminders_sent_total",
+  "moderation_actions_total",
+  "onboarding_pending_total",
+  "onboarding_accepted_total"
+];
+
+export const createMetricsRecorder = (redis: Redis) => {
+  const key = (metric: MetricKey) => `metrics:${metric}`;
+  return {
+    increment: async (metric: MetricKey, by = 1) => {
+      if (!by) return;
+      await redis.incrby(key(metric), by);
+    },
+    getSnapshot: async (metrics: MetricKey[] = metricKeys) => {
+      const keys = metrics.map(key);
+      const values = await redis.mget(keys);
+      const snapshot: Record<MetricKey, number> = {} as Record<MetricKey, number>;
+      metrics.forEach((metric, idx) => {
+        const raw = values?.[idx];
+        snapshot[metric] = raw ? Number(raw) : 0;
+      });
+      return snapshot;
+    }
+  };
+};
 
 const scopeOrder: Scope[] = [Scope.USER, Scope.GROUP, Scope.TENANT, Scope.GLOBAL];
 
@@ -587,6 +622,129 @@ export const auditLogRepository = {
   list: (limit: number) => prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: limit })
 };
 
+export const commandLogRepository = {
+  record: async (input: {
+    tenantId: string;
+    waUserId: string;
+    waGroupId?: string;
+    conversationId?: string | null;
+    command: string;
+    inputText?: string | null;
+    resultSummary?: string | null;
+    status: string;
+    metadata?: unknown;
+  }) =>
+    prisma.commandLog.create({
+      data: {
+        tenantId: input.tenantId,
+        waUserId: input.waUserId,
+        waGroupId: input.waGroupId,
+        conversationId: input.conversationId ?? null,
+        command: input.command,
+        inputText: input.inputText ?? null,
+        resultSummary: input.resultSummary ?? null,
+        status: input.status,
+        metadata: (input.metadata as Prisma.JsonValue) ?? undefined
+      }
+    }),
+  list: (limit: number) =>
+    prisma.commandLog.findMany({
+      orderBy: { createdAt: "desc" },
+      take: limit
+    })
+};
+
+export const createAuditTrail = () => ({
+  record: async (event: AuditEvent): Promise<void> => {
+    if (event.kind === "command") {
+      await commandLogRepository.record({
+        tenantId: event.tenantId,
+        waUserId: event.waUserId,
+        waGroupId: event.waGroupId,
+        conversationId: event.conversationId,
+        command: event.command,
+        inputText: event.inputText,
+        resultSummary: event.resultSummary,
+        status: event.status,
+        metadata: event.metadata
+      });
+      return;
+    }
+
+    if (event.kind === "trigger") {
+      await writeAudit(
+        event.actor ?? event.waUserId ?? "system",
+        AuditAction.PROCESS,
+        "Trigger",
+        event.triggerId ?? event.triggerName ?? "unknown",
+        {
+          triggerName: event.triggerName,
+          triggerId: event.triggerId,
+          waUserId: event.waUserId,
+          waGroupId: event.waGroupId,
+          conversationId: event.conversationId,
+          tenantId: event.tenantId
+        }
+      );
+      return;
+    }
+
+    if (event.kind === "consent") {
+      await writeAudit(event.actor ?? event.waUserId ?? "system", AuditAction.PROCESS, "Consent", event.waUserId, {
+        status: event.status,
+        version: event.version,
+        waGroupId: event.waGroupId,
+        tenantId: event.tenantId
+      });
+      return;
+    }
+
+    if (event.kind === "reminder") {
+      await writeAudit(event.actor ?? event.waUserId ?? "system", AuditAction.PROCESS, "Reminder", event.reminderId, {
+        status: event.status,
+        waUserId: event.waUserId,
+        waGroupId: event.waGroupId,
+        tenantId: event.tenantId,
+        message: event.message
+      });
+      return;
+    }
+
+    if (event.kind === "moderation") {
+      await writeAudit(event.actor ?? event.waUserId ?? "system", AuditAction.PROCESS, "Moderation", event.waGroupId ?? event.tenantId, {
+        action: event.action,
+        targetWaUserId: event.targetWaUserId,
+        success: event.success,
+        result: event.result,
+        tenantId: event.tenantId
+      });
+      return;
+    }
+
+    if (event.kind === "settings") {
+      await writeAudit(event.actor ?? event.waUserId ?? "system", AuditAction.UPDATE, "Setting", `${event.scope}:${event.key}`, {
+        value: event.value,
+        waGroupId: event.waGroupId,
+        tenantId: event.tenantId,
+        scope: event.scope,
+        action: event.action
+      });
+      return;
+    }
+
+    if (event.kind === "role_change") {
+      await writeAudit(event.actor ?? event.waUserId ?? "system", AuditAction.UPDATE, "RoleChange", event.targetWaUserId, {
+        action: event.action,
+        role: event.role,
+        scope: event.scope,
+        tenantId: event.tenantId,
+        waGroupId: event.waGroupId
+      });
+      return;
+    }
+  }
+});
+
 export const coreFlagsRepository = {
   resolveFlags: async (input: { tenantId: string; waGroupId?: string; waUserId: string }) => {
     const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
@@ -1021,7 +1179,11 @@ export const markGatewayHeartbeat = async (redis: Redis, isConnected: boolean) =
 
 export const getGatewayHeartbeat = async (redis: Redis) => {
   const raw = await redis.get("gateway:heartbeat");
-  return raw ? (JSON.parse(raw) as { isConnected: boolean; at: string }) : { isConnected: false, at: null };
+  if (!raw) return { isConnected: false, at: null, online: false, ageSeconds: null as number | null };
+  const parsed = JSON.parse(raw) as { isConnected: boolean; at: string };
+  const ageSeconds = parsed.at ? Math.round((Date.now() - new Date(parsed.at).getTime()) / 1000) : null;
+  const online = ageSeconds !== null ? ageSeconds < 30 : false;
+  return { ...parsed, ageSeconds, online };
 };
 
 export const markWorkerHeartbeat = async (redis: Redis) => {
@@ -1030,7 +1192,11 @@ export const markWorkerHeartbeat = async (redis: Redis) => {
 
 export const getWorkerHeartbeat = async (redis: Redis) => {
   const raw = await redis.get("worker:heartbeat");
-  return raw ? (JSON.parse(raw) as { ok: boolean; at: string }) : { ok: false, at: null };
+  if (!raw) return { ok: false, at: null, online: false, ageSeconds: null as number | null };
+  const parsed = JSON.parse(raw) as { ok: boolean; at: string };
+  const ageSeconds = parsed.at ? Math.round((Date.now() - new Date(parsed.at).getTime()) / 1000) : null;
+  const online = ageSeconds !== null ? ageSeconds < 30 : false;
+  return { ...parsed, ageSeconds, online };
 };
 
 export const getRecentMessages = (limit: number) =>
@@ -1628,7 +1794,7 @@ export const createStatusPort = (deps: {
   llmConfigured: boolean;
 }) => ({
   getStatus: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
-    const [dbOk, redisOk, gateway, worker, waiting, active, delayed, tasksOpen, remindersScheduled, timersScheduled] = await Promise.all([
+    const [dbOk, redisOk, gateway, worker, jobCounts, tasksOpen, remindersScheduled, timersScheduled] = await Promise.all([
       prisma
         .$queryRaw`SELECT 1`
         .then(() => true)
@@ -1639,22 +1805,26 @@ export const createStatusPort = (deps: {
         .catch(() => false),
       getGatewayHeartbeat(deps.redis),
       getWorkerHeartbeat(deps.redis),
-      deps.queue.getWaitingCount(),
-      deps.queue.getActiveCount(),
-      deps.queue.getDelayedCount(),
+      deps.queue.getJobCounts("waiting", "active", "completed", "failed", "delayed"),
       tasksRepository.countOpen({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId }),
       remindersRepository.countScheduled({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId }),
       timersRepository.countScheduled({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId })
     ]);
 
     return {
-      gateway: { ok: gateway.isConnected, at: gateway.at },
-      worker: { ok: worker.ok, at: worker.at },
+      gateway: { ok: gateway.isConnected, at: gateway.at, online: gateway.online, ageSeconds: gateway.ageSeconds },
+      worker: { ok: worker.ok, at: worker.at, online: worker.online, ageSeconds: worker.ageSeconds },
       db: { ok: dbOk },
       redis: { ok: redisOk },
       llm: { enabled: deps.llmEnabled, ok: deps.llmEnabled ? deps.llmConfigured : false, reason: deps.llmEnabled && !deps.llmConfigured ? "missing-key" : undefined },
       counts: { tasksOpen, remindersScheduled, timersScheduled },
-      queue: { waiting, active, delayed }
+      queue: {
+        waiting: jobCounts.waiting ?? 0,
+        active: jobCounts.active ?? 0,
+        completed: jobCounts.completed ?? 0,
+        failed: jobCounts.failed ?? 0,
+        delayed: jobCounts.delayed ?? 0
+      }
     };
   }
 });

@@ -3,10 +3,12 @@ import {
   auditLogRepository,
   createQueue,
   createRedisConnection,
+  createMetricsRecorder,
   featureFlagRepository,
   getGatewayHeartbeat,
   getWorkerHeartbeat,
   getRecentMessages,
+  commandLogRepository,
   prisma,
   triggerRepository
 } from "@zappy/adapters";
@@ -15,6 +17,7 @@ import { createLogger, featureFlagSchema, loadEnv, printStartupBanner, triggerSc
 const env = loadEnv();
 const logger = createLogger("assistant-api");
 const redis = createRedisConnection(env.REDIS_URL);
+const metrics = createMetricsRecorder(redis);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const app = Fastify({ loggerInstance: logger });
 
@@ -94,11 +97,45 @@ app.get("/admin/messages", async (request) => {
   return getRecentMessages(Number.isNaN(limit) ? 50 : limit);
 });
 
-app.get("/admin/status", async () => {
-  const heartbeat = await getGatewayHeartbeat(redis);
+app.get("/admin/commands", async (request) => {
+  const limit = Number.parseInt((request.query as { limit?: string }).limit ?? "50", 10);
+  return commandLogRepository.list(Number.isNaN(limit) ? 50 : limit);
+});
+
+app.get("/admin/queues", async () => {
+  const counts = await queue.getJobCounts("waiting", "active", "completed", "failed", "delayed");
   const worker = await getWorkerHeartbeat(redis);
-  const [waiting, active, failed, delayed] = await Promise.all([queue.getWaitingCount(), queue.getActiveCount(), queue.getFailedCount(), queue.getDelayedCount()]);
-  return { gateway: heartbeat, worker, queue: { waiting, active, failed, delayed } };
+  return { queues: [{ name: queue.name, counts }], worker };
+});
+
+app.get("/admin/metrics/summary", async () => metrics.getSnapshot());
+
+app.get("/admin/status", async () => {
+  const [gateway, worker, dbOk, redisOk, jobCounts] = await Promise.all([
+    getGatewayHeartbeat(redis),
+    getWorkerHeartbeat(redis),
+    prisma
+      .$queryRaw`SELECT 1`
+      .then(() => true)
+      .catch(() => false),
+    redis
+      .ping()
+      .then(() => true)
+      .catch(() => false),
+    queue.getJobCounts("waiting", "active", "completed", "failed", "delayed")
+  ]);
+  const llmConfigured = Boolean(env.OPENAI_API_KEY);
+  return {
+    services: {
+      gateway: { online: gateway.online, connected: gateway.isConnected, lastHeartbeat: gateway.at, ageSeconds: gateway.ageSeconds },
+      worker: { online: worker.online, lastHeartbeat: worker.at, ageSeconds: worker.ageSeconds }
+    },
+    db: { ok: dbOk },
+    redis: { ok: redisOk },
+    llm: { enabled: env.LLM_ENABLED, configured: llmConfigured, ok: env.LLM_ENABLED ? llmConfigured : false },
+    bot: { connected: gateway.isConnected, lastHeartbeat: gateway.at },
+    queue: { name: queue.name, ...jobCounts }
+  };
 });
 
 const start = async () => {

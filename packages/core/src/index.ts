@@ -131,6 +131,94 @@ export interface MessageClassification {
   commandName?: string;
 }
 
+export type MetricKey =
+  | "messages_received_total"
+  | "commands_executed_total"
+  | "trigger_matches_total"
+  | "ai_requests_total"
+  | "ai_failures_total"
+  | "reminders_created_total"
+  | "reminders_sent_total"
+  | "moderation_actions_total"
+  | "onboarding_pending_total"
+  | "onboarding_accepted_total";
+
+export type AuditEvent =
+  | {
+      kind: "command";
+      tenantId: string;
+      conversationId?: string;
+      waUserId: string;
+      waGroupId?: string;
+      command: string;
+      inputText?: string;
+      resultSummary?: string;
+      status: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      kind: "trigger";
+      tenantId: string;
+      conversationId?: string;
+      waUserId: string;
+      waGroupId?: string;
+      triggerId?: string;
+      triggerName?: string;
+      actor?: string;
+    }
+  | {
+      kind: "consent";
+      tenantId: string;
+      waUserId: string;
+      waGroupId?: string;
+      status: "PENDING" | "ACCEPTED" | "DECLINED";
+      version: string;
+      actor?: string;
+    }
+  | {
+      kind: "reminder";
+      tenantId: string;
+      waUserId: string;
+      waGroupId?: string;
+      reminderId: string;
+      status: "scheduled" | "sent" | "failed";
+      message?: string;
+      actor?: string;
+    }
+  | {
+      kind: "moderation";
+      tenantId: string;
+      waUserId: string;
+      waGroupId?: string;
+      action: string;
+      targetWaUserId?: string;
+      success?: boolean;
+      result?: string;
+      actor?: string;
+    }
+  | {
+      kind: "settings";
+      tenantId: string;
+      waUserId: string;
+      waGroupId?: string;
+      scope: Scope;
+      key: string;
+      value?: string;
+      action: string;
+      actor?: string;
+    }
+  | {
+      kind: "role_change";
+      tenantId: string;
+      waUserId: string;
+      waGroupId?: string;
+      targetWaUserId: string;
+      role: string;
+      action: string;
+      scope?: Scope;
+      actor?: string;
+    };
+
 export interface InboundMessageEvent {
   tenantId: string;
   conversationId?: string;
@@ -660,6 +748,14 @@ export interface LoggerPort {
   error?(obj: unknown, msg?: string, ...args: unknown[]): void;
 }
 
+export interface MetricsPort {
+  increment(key: MetricKey, by?: number): Promise<void>;
+}
+
+export interface AuditPort {
+  record(event: AuditEvent): Promise<void>;
+}
+
 export interface CorePorts {
   flagsRepository: FlagsRepositoryPort;
   triggersRepository: TriggersRepositoryPort;
@@ -696,6 +792,8 @@ export interface CorePorts {
   consentTermsVersion?: string;
   consentLink?: string;
   consentSource?: string;
+  metrics?: MetricsPort;
+  audit?: AuditPort;
 }
 
 const renderTemplate = (template: string, vars: Record<string, string>): string => {
@@ -968,6 +1066,24 @@ export class Orchestrator {
     this.consentTermsVersion = ports.consentTermsVersion ?? "2026-03";
     this.consentLink = ports.consentLink ?? "https://services.net.br/politicas";
     this.consentSource = ports.consentSource ?? "wa-gateway";
+  }
+
+  private async bumpMetric(key: MetricKey, by = 1): Promise<void> {
+    if (!this.ports.metrics) return;
+    try {
+      await this.ports.metrics.increment(key, by);
+    } catch (error) {
+      this.ports.logger?.debug?.({ err: error, metric: key }, "metric increment failed");
+    }
+  }
+
+  private async recordAudit(event: AuditEvent): Promise<void> {
+    if (!this.ports.audit) return;
+    try {
+      await this.ports.audit.record(event);
+    } catch (error) {
+      this.ports.logger?.warn?.({ err: error, eventKind: event.kind }, "audit record failed");
+    }
   }
 
   private hasRootPrivilege(ctx: PipelineContext): boolean {
@@ -1592,6 +1708,15 @@ export class Orchestrator {
           source: this.consentSource,
           timestamp: ctx.now
         });
+        await this.recordAudit({
+          kind: "consent",
+          tenantId: ctx.event.tenantId,
+          waUserId: ctx.event.waUserId,
+          waGroupId: ctx.event.waGroupId,
+          status: "PENDING",
+          version: this.consentTermsVersion
+        });
+        await this.bumpMetric("onboarding_pending_total");
       }
       await this.setConsentWaitingState(ctx);
     };
@@ -1605,6 +1730,15 @@ export class Orchestrator {
         source: this.consentSource,
         timestamp: ctx.now
       });
+      await this.recordAudit({
+        kind: "consent",
+        tenantId: ctx.event.tenantId,
+        waUserId: ctx.event.waUserId,
+        waGroupId: ctx.event.waGroupId,
+        status: "ACCEPTED",
+        version: this.consentTermsVersion
+      });
+      await this.bumpMetric("onboarding_accepted_total");
       ctx.consentRequired = false;
       await this.clearConversationState(ctx);
       ctx.conversationState = { state: "NONE", updatedAt: ctx.now };
@@ -1619,6 +1753,14 @@ export class Orchestrator {
         termsVersion: this.consentTermsVersion,
         source: this.consentSource,
         timestamp: ctx.now
+      });
+      await this.recordAudit({
+        kind: "consent",
+        tenantId: ctx.event.tenantId,
+        waUserId: ctx.event.waUserId,
+        waGroupId: ctx.event.waGroupId,
+        status: "DECLINED",
+        version: this.consentTermsVersion
       });
       await this.setConsentWaitingState(ctx);
       return [
@@ -2407,6 +2549,17 @@ export class Orchestrator {
       const key = `cooldown:${trigger.id}:${scopePart}`;
       const canFire = await this.ports.cooldown.canFire(key, Math.max(1, trigger.cooldownSeconds));
       if (!canFire) continue;
+
+      await this.recordAudit({
+        kind: "trigger",
+        tenantId: ctx.event.tenantId,
+        waUserId: ctx.event.waUserId,
+        waGroupId: ctx.event.waGroupId,
+        conversationId: ctx.event.conversationId,
+        triggerId: trigger.id,
+        triggerName: trigger.name
+      });
+      await this.bumpMetric("trigger_matches_total");
 
       return [
         {
@@ -3307,6 +3460,7 @@ export class Orchestrator {
 
     if (this.ports.aiAssistant) {
       try {
+        await this.bumpMetric("ai_requests_total");
         const result = await this.ports.aiAssistant.generate({
           tenantId: ctx.event.tenantId,
           conversationId: ctx.event.conversationId,
@@ -3365,6 +3519,7 @@ export class Orchestrator {
         }
         return this.guardAiResponses(ctx, [{ kind: "reply_text", text: result.text ?? this.llmUnavailableText }]);
       } catch (error) {
+        await this.bumpMetric("ai_failures_total");
         this.ports.logger?.warn?.(
           { err: error, tenantId: ctx.event.tenantId, waGroupId: ctx.event.waGroupId, waUserId: ctx.event.waUserId },
           "ai assistant failed"
@@ -3385,6 +3540,7 @@ export class Orchestrator {
     const system = relationshipNote ? `${relationshipNote}\n${systemBase}` : systemBase;
 
     try {
+      await this.bumpMetric("ai_requests_total");
       const llmText = await this.ports.llm.chat({
         system,
         messages: [...ctx.recentMessages, { role: "user", content: ctx.event.text }]
@@ -3406,6 +3562,7 @@ export class Orchestrator {
       );
       return [{ kind: "reply_text", text: sanitized }];
     } catch (error) {
+      await this.bumpMetric("ai_failures_total");
       const payload = {
         tenantId: ctx.event.tenantId,
         waUserId: ctx.event.waUserId,
@@ -3425,6 +3582,7 @@ export class Orchestrator {
 
   async handleInboundMessage(event: InboundMessageEvent): Promise<ResponseAction[]> {
     const normalized = this.normalizeEvent(event);
+    await this.bumpMetric("messages_received_total");
     const rate = await this.enforceRateLimits(normalized);
     if (!rate.allowed) return this.formatActionsForDelivery(rate.action ? [rate.action] : [{ kind: "noop", reason: "rate_limit" }]);
 
@@ -3478,6 +3636,36 @@ export class Orchestrator {
     if (triggerActions.length > 0) return this.formatActionsForDelivery(triggerActions);
 
     const commandActions = await this.runCommandRouter(ctx);
+    if (ctx.classification.kind === "command") {
+      const hasError = commandActions.some((a) => a.kind === "error");
+      const summary = commandActions.length === 0 ? "noop" : commandActions.map((a) => a.kind).join(",");
+      await this.recordAudit({
+        kind: "command",
+        tenantId: ctx.event.tenantId,
+        waUserId: ctx.event.waUserId,
+        waGroupId: ctx.event.waGroupId,
+        conversationId: ctx.event.conversationId,
+        command: ctx.event.normalizedText.split(/\s+/)[0] ?? ctx.event.normalizedText,
+        inputText: ctx.event.text,
+        resultSummary: summary,
+        status: hasError ? "error" : "ok",
+        metadata: { classification: ctx.classification.kind }
+      });
+      await this.bumpMetric("commands_executed_total");
+      for (const action of commandActions) {
+        if (action.kind === "enqueue_job" && action.jobType === "reminder") {
+          await this.bumpMetric("reminders_created_total");
+          await this.recordAudit({
+            kind: "reminder",
+            tenantId: ctx.event.tenantId,
+            waUserId: ctx.event.waUserId,
+            waGroupId: ctx.event.waGroupId,
+            reminderId: String(action.payload?.id ?? action.payload?.reminderId ?? "unknown"),
+            status: "scheduled"
+          });
+        }
+      }
+    }
     if (commandActions.length > 0) return this.formatActionsForDelivery(commandActions);
 
     if (ctx.classification.kind === "tool_follow_up") {

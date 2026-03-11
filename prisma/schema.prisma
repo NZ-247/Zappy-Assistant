@@ -76,6 +76,24 @@ enum MessageDirection {
   OUTBOUND
 }
 
+model CommandLog {
+  id             String   @id @default(uuid())
+  tenantId       String
+  conversationId String?
+  waUserId       String
+  waGroupId      String?
+  command        String
+  inputText      String?
+  resultSummary  String?
+  status         String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([waUserId, createdAt])
+  @@index([waGroupId, createdAt])
+}
+
 model Tenant {
   id            String         @id @default(uuid())
   name          String

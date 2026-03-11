@@ -11,6 +11,8 @@ import {
   createRateLimitAdapter,
   createRedisConnection,
   createStatusPort,
+  createMetricsRecorder,
+  createAuditTrail,
   ensureTenantContext,
   identityRepository,
   markGatewayHeartbeat,
@@ -40,6 +42,7 @@ const env = loadEnv();
 const logger = createLogger("wa-gateway");
 const baileysLogger = logger.child({ name: "baileys", module: "baileys" }, { level: process.env.DEBUG === "trace" ? "debug" : "warn" });
 const redis = createRedisConnection(env.REDIS_URL);
+const metrics = createMetricsRecorder(redis);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const queueAdapter = createQueueAdapter(queue);
 const llmConfigured = Boolean(env.OPENAI_API_KEY);
@@ -52,6 +55,7 @@ const baseSystemPrompt = buildBaseSystemPrompt({
 const llmAdapter = createOpenAiAdapter(env.OPENAI_API_KEY, llmModel);
 const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
 const muteAdapter = createMuteAdapter(redis);
+const auditTrail = createAuditTrail();
 const aiService = new AiService({
   llm: llmAdapter,
   memory: conversationMemoryRepository as any,
@@ -195,6 +199,7 @@ let socket: ReturnType<typeof makeWASocket> | null = null;
 const heartbeat = setInterval(() => {
   void markGatewayHeartbeat(redis, Boolean(socket?.user));
 }, 10_000);
+void markGatewayHeartbeat(redis, false);
 
 const orchestrator = new Orchestrator({
   flagsRepository: coreFlagsRepository,
@@ -229,7 +234,9 @@ const orchestrator = new Orchestrator({
   llmMemoryMessages: env.LLM_MEMORY_MESSAGES,
   consentTermsVersion: env.CONSENT_TERMS_VERSION,
   consentLink: env.CONSENT_LINK,
-  consentSource: env.CONSENT_SOURCE
+  consentSource: env.CONSENT_SOURCE,
+  metrics,
+  audit: auditTrail
 });
 
 const getText = (message: any): string =>
@@ -1049,6 +1056,8 @@ const connect = async () => {
           let replyText = "";
           let inferredBotAdmin: boolean | undefined;
           let shouldPersist = true;
+          let success = true;
+          let resultLabel = "";
           const sock = socket as any;
           if (action.action === "delete_message") {
             if (socket && action.messageKey) {
@@ -1056,6 +1065,8 @@ const connect = async () => {
                 await sock.sendMessage(event.waGroupId ?? remoteJid, { delete: action.messageKey } as any);
               } catch (error) {
                 logger.warn(withCategory("WARN", { action: "delete_message", waGroupId: event.waGroupId, error }), "failed to delete message");
+                success = false;
+                resultLabel = "delete_failed";
               }
             }
             shouldPersist = false;
@@ -1101,13 +1112,16 @@ const connect = async () => {
               }),
               "outbound message"
             );
+            resultLabel = "hidetag";
             continue;
           } else if (action.action === "ban" || action.action === "kick") {
             const target = action.targetWaUserId ? normalizeJid(action.targetWaUserId) : undefined;
             if (!target) {
               replyText = "Usuário alvo não informado.";
+              success = false;
             } else if (!socket) {
               replyText = "Socket não pronto para moderar.";
+              success = false;
             } else {
               const opResult = await attemptGroupAdminAction({
                 actionName: action.action,
@@ -1124,11 +1138,14 @@ const connect = async () => {
                 opResult.kind === "success"
                   ? `Usuário ${target} removido.`
                   : `Não consegui remover: ${opResult.errorMessage ?? opResult.kind}.`;
+              success = opResult.kind === "success";
+              resultLabel = opResult.kind;
             }
           } else if (action.action === "mute") {
             const target = action.targetWaUserId ? normalizeJid(action.targetWaUserId) : undefined;
             if (!target || !action.durationMs) {
               replyText = "Informe usuário e duração para aplicar mute.";
+              success = false;
             } else {
               const until = await muteAdapter.mute({
                 tenantId: context.tenant.id,
@@ -1147,13 +1164,17 @@ const connect = async () => {
                 minute: "2-digit"
               }).format(until.until);
               replyText = `Usuário ${target} silenciado até ${fmt}.`;
+              resultLabel = "muted";
             }
           } else if (action.action === "unmute") {
             const target = action.targetWaUserId ? normalizeJid(action.targetWaUserId) : undefined;
-            if (!target) replyText = "Informe quem deve ser reativado.";
-            else {
+            if (!target) {
+              replyText = "Informe quem deve ser reativado.";
+              success = false;
+            } else {
               await muteAdapter.unmute({ tenantId: context.tenant.id, scope: "GROUP", scopeId: event.waGroupId ?? remoteJid, waUserId: target });
               replyText = `Silêncio removido para ${target}.`;
+              resultLabel = "unmuted";
             }
           }
 
@@ -1208,6 +1229,17 @@ const connect = async () => {
             }),
             "outbound message"
           );
+          await metrics.increment("moderation_actions_total");
+          await auditTrail.record({
+            kind: "moderation",
+            tenantId: event.tenantId,
+            waUserId,
+            waGroupId: event.waGroupId,
+            action: action.action,
+            targetWaUserId: action.targetWaUserId,
+            success,
+            result: resultLabel || replyText || undefined
+          });
           continue;
         }
         if (action.kind !== "reply_text" && action.kind !== "reply_list") continue;
