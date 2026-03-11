@@ -1274,6 +1274,9 @@ export class Orchestrator {
     if (event.normalizedText.startsWith("/")) {
       return { kind: "command", commandName: event.normalizedText.split(/\s+/)[0] };
     }
+    if (event.isGroup && (ctx.isBotMentioned || ctx.isReplyToBot)) {
+      return { kind: "ai_candidate", reason: "addressed_in_group" };
+    }
     if (event.normalizedText.length > 120 || event.normalizedText.includes("?") || event.normalizedText.split(/\s+/).length > 6) {
       return { kind: "ai_candidate" };
     }
@@ -1288,6 +1291,28 @@ export class Orchestrator {
     const addressed = ctx.isBotMentioned || ctx.isReplyToBot;
     const directedToBot = isCommand || isToolFollowUp || addressed;
     const isPrivileged = this.isRequesterAdmin(ctx);
+    const routingReason = isCommand
+      ? "prefix"
+      : ctx.isBotMentioned
+        ? "mention"
+        : ctx.isReplyToBot
+          ? "reply"
+          : isToolFollowUp
+            ? "follow_up"
+            : "none";
+
+    if (ctx.event.isGroup && process.env.NODE_ENV !== "production") {
+      const textPreview = ctx.event.normalizedText?.slice(0, 120)?.replace(/"/g, '\\"') ?? "";
+      const routeLine = [
+        "[GROUP_ROUTE]",
+        `directedToBot=${directedToBot}`,
+        `reason=${routingReason}`,
+        `mention=${ctx.isBotMentioned}`,
+        `reply=${ctx.isReplyToBot}`,
+        `text="${textPreview}"`
+      ].join(" ");
+      this.ports.logger?.debug?.(routeLine);
+    }
 
     if (!directedToBot) {
       return { stop: [{ kind: "noop", reason: "group_not_addressed" }] };

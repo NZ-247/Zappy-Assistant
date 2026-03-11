@@ -34,6 +34,7 @@ import {
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
 import qrcodeTerminal from "qrcode-terminal";
+import { buildBotAliases, jidMatchesBot, normalizeJid, normalizeLidJid, stripUser } from "./bot-alias.js";
 
 const env = loadEnv();
 const logger = createLogger("wa-gateway");
@@ -93,6 +94,77 @@ const reportStartupStatus = async () => {
     withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }),
     redisOk ? "Redis OK" : "Redis FAIL"
   );
+};
+
+const BOT_SELF_LID_KEY_BASE = "bot:self:lid";
+let botSelfLid: string | null = null;
+let botSelfLidLoaded = false;
+let botSelfLidKey = `${BOT_SELF_LID_KEY_BASE}:${env.DEFAULT_BOT_NAME ?? "default"}`;
+
+const setBotSelfLidKey = (botJid?: string | null) => {
+  const suffix = stripUser(botJid ?? "") || env.DEFAULT_BOT_NAME || "default";
+  const nextKey = `${BOT_SELF_LID_KEY_BASE}:${suffix}`;
+  if (nextKey !== botSelfLidKey) {
+    botSelfLidKey = nextKey;
+    botSelfLidLoaded = false;
+  }
+};
+
+const loadBotSelfLid = async (): Promise<string | null> => {
+  if (botSelfLidLoaded) return botSelfLid;
+  const stored = await redis.get(botSelfLidKey);
+  botSelfLid = normalizeLidJid(stored);
+  botSelfLidLoaded = true;
+  return botSelfLid;
+};
+
+const learnBotSelfLid = async (candidate: string | null | undefined, reason: string): Promise<string | null> => {
+  const lid = normalizeLidJid(candidate);
+  if (!lid) return null;
+  await loadBotSelfLid();
+  if (botSelfLid === lid) return botSelfLid;
+  botSelfLid = lid;
+  botSelfLidLoaded = true;
+  await redis.set(botSelfLidKey, lid);
+  if (process.env.NODE_ENV !== "production") {
+    logger.debug(
+      withCategory("SYSTEM", { action: "learn_bot_lid", lid, reason, key: botSelfLidKey }),
+      "learned bot self LID alias"
+    );
+  }
+  return botSelfLid;
+};
+
+const getBotSelfLid = async (): Promise<string | null> => {
+  await loadBotSelfLid();
+  return botSelfLid;
+};
+
+const maybeLearnBotLidFromQuote = async (input: {
+  quotedWaMessageId?: string;
+  quotedParticipantRaw?: string;
+  quotedMessage?: any;
+}) => {
+  const candidate = normalizeLidJid(input.quotedParticipantRaw);
+  if (!candidate) return null;
+
+  const quotedFromMe = Boolean(input.quotedMessage?.key?.fromMe);
+  let outboundMatch = false;
+  if (input.quotedWaMessageId) {
+    try {
+      outboundMatch = Boolean(
+        await prisma.message.findFirst({
+          where: { waMessageId: input.quotedWaMessageId, direction: "OUTBOUND" },
+          select: { id: true }
+        })
+      );
+    } catch (error) {
+      logger.warn(withCategory("WARN", { action: "lookup_quoted_outbound", error }), "failed to verify quoted outbound message");
+    }
+  }
+
+  if (!quotedFromMe && !outboundMatch) return null;
+  return learnBotSelfLid(candidate, quotedFromMe ? "quote_from_me" : "quote_outbound_lookup");
 };
 
 type OutboundSendInput = {
@@ -172,15 +244,6 @@ const hasMedia = (message: any): boolean =>
       message?.stickerMessage ||
       message?.documentWithCaptionMessage
   );
-
-const normalizeJid = (jid?: string | null): string => {
-  if (!jid) return "";
-  const [userWithDevice, server] = jid.split("@");
-  if (!server) return jid;
-  const user = userWithDevice.includes(":") ? userWithDevice.split(":")[0] : userWithDevice;
-  const normalizedServer = server === "c.us" ? "s.whatsapp.net" : server;
-  return `${user}@${normalizedServer}`;
-};
 
 const isBotAdminCommand = (text: string): boolean => {
   const lower = text.trim().toLowerCase();
@@ -412,6 +475,10 @@ const refreshBotAdminState = async (input: {
 const connect = async () => {
   logger.info(withCategory("SYSTEM", { status: "WhatsApp CONNECTING" }), "WhatsApp CONNECTING");
   const { state, saveCreds } = await useMultiFileAuthState(env.WA_SESSION_PATH);
+  const initialCreds = (state as any)?.creds?.me;
+  setBotSelfLidKey(normalizeJid(initialCreds?.id));
+  await loadBotSelfLid();
+  await learnBotSelfLid(initialCreds?.lid, "creds.me.lid");
   const { version } = await fetchLatestBaileysVersion();
 
   socket = makeWASocket({ auth: state, version, printQRInTerminal: false, logger: baileysLogger });
@@ -433,7 +500,12 @@ const connect = async () => {
       logger.warn(withCategory("WARN", { status: "WhatsApp DISCONNECTED", shouldReconnect }), "WhatsApp DISCONNECTED");
       if (shouldReconnect) void connect();
     } else if (connection === "open") {
-      logger.info(withCategory("SYSTEM", { status: "WhatsApp CONNECTED", user: socket?.user?.id }), "WhatsApp CONNECTED");
+      const botId = socket?.user?.id ? normalizeJid(socket.user.id) : undefined;
+      setBotSelfLidKey(botId);
+      await loadBotSelfLid();
+      const liveCreds = (socket as any)?.authState?.creds?.me;
+      await learnBotSelfLid(liveCreds?.lid, "connection.open.me.lid");
+      logger.info(withCategory("SYSTEM", { status: "WhatsApp CONNECTED", user: socket?.user?.id, botLid: botSelfLid }), "WhatsApp CONNECTED");
       await markGatewayHeartbeat(redis, true);
     }
   });
@@ -493,13 +565,47 @@ const connect = async () => {
       const mediaPresent = hasMedia(message.message);
       if (!text && !mediaPresent) continue;
       const botJid = socket.user?.id ? normalizeJid(socket.user.id) : undefined;
+      setBotSelfLidKey(botJid);
+      const storedBotLid = await getBotSelfLid();
       const contextInfo = getContextInfo(message.message);
-      const mentionedWaUserIds = ((contextInfo?.mentionedJid as string[] | undefined) ?? []).map((jid) => normalizeJid(jid));
+      const mentionedRaw = (contextInfo?.mentionedJid as string[] | undefined) ?? [];
+      const mentionedWaUserIds = mentionedRaw.map((jid) => normalizeJid(jid));
       const quotedWaMessageId = (contextInfo as any)?.stanzaId as string | undefined;
       const quotedWaUserIdRaw = (contextInfo as any)?.participant as string | undefined;
       const quotedWaUserId = quotedWaUserIdRaw ? normalizeJid(quotedWaUserIdRaw) : undefined;
-      const isReplyToBot = botJid ? normalizeJid(quotedWaUserIdRaw) === botJid : false;
-      const isBotMentioned = botJid ? mentionedWaUserIds.includes(botJid) : false;
+      const quotedRemoteJid = (contextInfo as any)?.remoteJid as string | undefined;
+      const quotedMessageExists = Boolean((contextInfo as any)?.quotedMessage);
+      await maybeLearnBotLidFromQuote({
+        quotedWaMessageId,
+        quotedParticipantRaw: quotedWaUserIdRaw,
+        quotedMessage: (contextInfo as any)?.quotedMessage
+      });
+      const botLid = botSelfLid ?? storedBotLid;
+      const botAliases = buildBotAliases({ pnJid: socket.user?.id, lidJid: botLid });
+      const isReplyToBot = botAliases.some((alias) => jidMatchesBot(quotedWaUserIdRaw, alias));
+      const isBotMentioned = botAliases.length > 0 ? mentionedWaUserIds.some((jid) => botAliases.some((alias) => jidMatchesBot(jid, alias))) : false;
+
+      if (isGroup && process.env.NODE_ENV !== "production") {
+        const textPreview = text.slice(0, 120);
+        const line = [
+          "[GROUP_DEBUG]",
+          `text="${textPreview.replace(/"/g, '\\"')}"`,
+          `remoteJid="${remoteJid}"`,
+          `participant="${message.key.participant ?? ""}"`,
+          `mentionedRaw=[${mentionedRaw.join(",")}]`,
+          `mentionedNorm=[${mentionedWaUserIds.join(",")}]`,
+          `botAliases=[${botAliases.join(",")}]`,
+          `mentionMatched=${isBotMentioned}`,
+          `quotedExists=${quotedMessageExists}`,
+          `quotedParticipantRaw="${quotedWaUserIdRaw ?? ""}"`,
+          `quotedParticipantNorm="${quotedWaUserId ?? ""}"`,
+          `quotedRemoteJid="${quotedRemoteJid ?? ""}"`,
+          `replyMatched=${isReplyToBot}`,
+          `isBotMentioned=${isBotMentioned}`,
+          `isReplyToBot=${isReplyToBot}`
+        ].join(" ");
+        logger.debug(line);
+      }
 
       const context = await ensureTenantContext({
         waGroupId: isGroup ? remoteJid : undefined,

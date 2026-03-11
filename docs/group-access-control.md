@@ -19,6 +19,12 @@
 - Metadata is still fetched for context/diagnostics but no longer blocks execution; status is labeled as `verified yes`, `verified no`, or `unknown / not recently verified`.
 - Participant updates (`group-participants.update`) still refresh status, but a failed/late metadata refresh no longer stops commands.
 
+## Mention & reply detection
+- Mentions come from `contextInfo.mentionedJid`; values are normalized (strip device suffix, normalize domain) and compared against bot aliases (raw, normalized, user-only).
+- Reply-to-bot uses `contextInfo.participant` of the quoted message plus stanza id; same normalization and alias matching rules apply.
+- Debug logs (dev only) include remoteJid, participant, mention arrays (raw/normalized), quoted ids, and bot aliases used for comparison.
+- LID/PN variants are handled by comparing both full JIDs and user-only identifiers.
+
 ## Contextual /help
 - In groups, `/help` starts with a status block: group name/id, allowed flag, bot admin flag, chat mode, AI status, requester role/profile, and any missing prerequisites.
 - The command list is shown after the status block; direct chats keep the leaner help text but include requester context when relevant.
@@ -43,9 +49,14 @@
 - Located at `packages/core/src/common/bot-common.ts`.
 - Functions: resolveTargetUserFromMentionOrReply, requireGroupContext, shouldRespondInGroupChat, shouldReplyToMessage, buildQuotedReplyOptions, resolveAllowedGroupAccess, resolveBotAdminAccess.
 
+## Group chat routing (chat=ON)
+- Plain group messages with no mention/reply are ignored quietly.
+- Mention or reply-to-bot marks the message as directed: it is routed to AI/tool-intent; if it maps to an existing command/module the tool flow runs, otherwise persona-based AI answers.
+- Command prefixes (`/`) continue to bypass mention/reply requirements.
+
 ## Manual smoke tests
-1. Allowed group + bot actually admin → `/chat off` succeeds.
-2. Allowed group + bot not admin → `/chat off` fails with a clear admin-required message (from the actual operation result).
-3. `/help` and `/groupinfo` do not hard-block or mislead when metadata says bot is not admin (stale/unknown paths are labeled).
-4. `allowed_groups` gating still works.
-5. Reply-to-origin still works for all replies.
+1. Plain group text → ignored.
+2. Explicit `@bot` mention via WhatsApp UI → bot replies.
+3. Reply to a previous bot message → bot replies.
+4. Mention + natural-language reminder request → routed to reminder/tool behavior.
+5. Reply-to-bot + follow-up task request → routed correctly.
