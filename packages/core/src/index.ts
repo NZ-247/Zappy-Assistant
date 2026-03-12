@@ -24,6 +24,8 @@ import { handleModerationCommand } from "./modules/moderation/presentation/comma
 import { handleReminderCommand } from "./modules/reminders/presentation/commands/reminder-commands.js";
 import { handleTaskCommand } from "./modules/tasks/presentation/commands/task-commands.js";
 import { handleNoteCommand } from "./modules/notes/presentation/commands/note-commands.js";
+import { checkConsentGate } from "./modules/consent/application/use-cases/check-consent-gate.js";
+import { enforceConsent } from "./modules/consent/application/use-cases/enforce-consent.js";
 import {
   createTask as createTaskUseCase,
   listTasks as listTasksUseCase,
@@ -430,19 +432,6 @@ export class Orchestrator {
     return false;
   }
 
-  private shouldBypassConsent(ctx: PipelineContext): boolean {
-    const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase();
-    const privilegedRoles = ["ROOT", "DONO", "OWNER", "ADMIN", "PRIVILEGED", "INTERNAL"];
-    if (privilegedRoles.includes(role)) return true;
-    if (
-      ctx.relationshipProfile === "creator_root" ||
-      ctx.relationshipProfile === "mother_privileged" ||
-      ctx.relationshipProfile === "delegated_owner"
-    )
-      return true;
-    return false;
-  }
-
   private getScope(event: InboundMessageEvent): { scope: Scope; scopeId: string } {
     return event.waGroupId ? { scope: "GROUP", scopeId: event.waGroupId } : { scope: "USER", scopeId: event.waUserId };
   }
@@ -706,11 +695,19 @@ export class Orchestrator {
       policyMuted: false
     };
 
-    ctx.bypassConsent = this.shouldBypassConsent(ctx);
-    ctx.consentRequired =
-      !ctx.bypassConsent &&
-      (!consent || consent.termsVersion !== this.consentTermsVersion || consent.status !== "ACCEPTED");
-    if (!ctx.consentRequired && ctx.conversationState.state === "WAITING_CONSENT") {
+    const consentGate = checkConsentGate({
+      consent,
+      consentVersion: this.consentTermsVersion,
+      permissionRole: identity?.permissionRole,
+      role: identity?.role,
+      relationshipProfile: relationship.profile,
+      conversationState
+    });
+
+    ctx.bypassConsent = consentGate.bypassConsent;
+    ctx.consentRequired = consentGate.consentRequired;
+
+    if (consentGate.shouldClearConversationState) {
       await this.clearConversationState(ctx);
       ctx.conversationState = { state: "NONE", updatedAt: now };
     }
@@ -941,154 +938,6 @@ export class Orchestrator {
     }
 
     return actions;
-  }
-
-  private normalizeConsentInput(text: string): string {
-    return text
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .trim()
-      .toLowerCase();
-  }
-
-  private buildConsentOnboardingText(): string {
-    return [
-      "Olá, seja bem-vindo!",
-      "Sou Zappy, assistente digital da Services.NET.",
-      "",
-      "Antes de prosseguir, recomendamos que leia e aceite nossos Termos de Compromisso e a Política de Privacidade disponíveis em:",
-      this.consentLink,
-      "",
-      "Para continuar, responda com: SIM",
-      "Se não concordar, responda com: NÃO"
-    ].join("\n");
-  }
-
-  private buildConsentReminderText(): string {
-    return `Para continuar, preciso do seu consentimento. Leia: ${this.consentLink}. Responda SIM para aceitar ou NÃO para recusar.`;
-  }
-
-  private buildConsentAcceptedText(): string {
-    return "Obrigado! Consentimento registrado. Sou Zappy, assistente digital da Services.NET. Posso ajudar com suporte, orçamento, agendamento ou dúvidas.";
-  }
-
-  private async setConsentWaitingState(ctx: PipelineContext): Promise<void> {
-    if (!this.ports.conversationState) {
-      ctx.conversationState = { state: "WAITING_CONSENT", updatedAt: ctx.now };
-      return;
-    }
-    const expiresAt = new Date(ctx.now.getTime() + this.pendingStateTtlMs);
-    await this.ports.conversationState.setState({
-      tenantId: ctx.event.tenantId,
-      waGroupId: ctx.event.waGroupId,
-      waUserId: ctx.event.waUserId,
-      state: "WAITING_CONSENT",
-      context: { termsVersion: this.consentTermsVersion },
-      expiresAt
-    });
-    ctx.conversationState = { state: "WAITING_CONSENT", context: { termsVersion: this.consentTermsVersion }, updatedAt: ctx.now, expiresAt };
-  }
-
-  private async enforceConsent(ctx: PipelineContext): Promise<ResponseAction[]> {
-    if (ctx.bypassConsent) return [];
-    const needsConsent = ctx.consentRequired || ctx.classification.kind === "consent_pending";
-    if (!needsConsent) return [];
-
-    const normalized = this.normalizeConsentInput(ctx.event.normalizedText);
-    const isYes = /^sim\b/.test(normalized) || normalized === "yes";
-    const isNo = /^(nao\b|nao aceito|nao quero|nao concordo)/.test(normalized);
-    const wantsTerms = normalized.includes("terms") || normalized.includes("termos") || normalized.includes("politica") || normalized.includes("politics");
-    const prefixedHelp = `${this.commandPrefix.toLowerCase()}help`;
-    const prefixedAjuda = `${this.commandPrefix.toLowerCase()}ajuda`;
-    const wantsHelp = normalized === "ajuda" || normalized === "help" || normalized === prefixedHelp || normalized === prefixedAjuda;
-
-    const ensurePending = async () => {
-      if (!ctx.consent || ctx.consent.status !== "PENDING" || ctx.consent.termsVersion !== this.consentTermsVersion) {
-        ctx.consent = await this.ports.consent.setConsentStatus({
-          tenantId: ctx.event.tenantId,
-          waUserId: ctx.event.waUserId,
-          status: "PENDING",
-          termsVersion: this.consentTermsVersion,
-          source: this.consentSource,
-          timestamp: ctx.now
-        });
-        await this.recordAudit({
-          kind: "consent",
-          tenantId: ctx.event.tenantId,
-          waUserId: ctx.event.waUserId,
-          waGroupId: ctx.event.waGroupId,
-          status: "PENDING",
-          version: this.consentTermsVersion
-        });
-        await this.bumpMetric("onboarding_pending_total");
-      }
-      await this.setConsentWaitingState(ctx);
-    };
-
-    if (isYes) {
-      ctx.consent = await this.ports.consent.setConsentStatus({
-        tenantId: ctx.event.tenantId,
-        waUserId: ctx.event.waUserId,
-        status: "ACCEPTED",
-        termsVersion: this.consentTermsVersion,
-        source: this.consentSource,
-        timestamp: ctx.now
-      });
-      await this.recordAudit({
-        kind: "consent",
-        tenantId: ctx.event.tenantId,
-        waUserId: ctx.event.waUserId,
-        waGroupId: ctx.event.waGroupId,
-        status: "ACCEPTED",
-        version: this.consentTermsVersion
-      });
-      await this.bumpMetric("onboarding_accepted_total");
-      ctx.consentRequired = false;
-      await this.clearConversationState(ctx);
-      ctx.conversationState = { state: "NONE", updatedAt: ctx.now };
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.buildConsentAcceptedText(), { suggestNext: "organizar suporte, orçamento, agendamento ou dúvidas" }) }];
-    }
-
-    if (isNo) {
-      ctx.consent = await this.ports.consent.setConsentStatus({
-        tenantId: ctx.event.tenantId,
-        waUserId: ctx.event.waUserId,
-        status: "DECLINED",
-        termsVersion: this.consentTermsVersion,
-        source: this.consentSource,
-        timestamp: ctx.now
-      });
-      await this.recordAudit({
-        kind: "consent",
-        tenantId: ctx.event.tenantId,
-        waUserId: ctx.event.waUserId,
-        waGroupId: ctx.event.waGroupId,
-        status: "DECLINED",
-        version: this.consentTermsVersion
-      });
-      await this.setConsentWaitingState(ctx);
-      return [
-        {
-          kind: "reply_text",
-          text: this.stylizeReply(ctx, `Entendido. Não vou prosseguir sem seu consentimento. Se mudar de ideia, envie SIM após ler: ${this.consentLink}.`)
-        }
-      ];
-    }
-
-    if (wantsTerms) {
-      await ensurePending();
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Termos de Compromisso e Política de Privacidade: ${this.consentLink}. Responda SIM para aceitar ou NÃO para recusar.`) }];
-    }
-
-    if (wantsHelp) {
-      await ensurePending();
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.buildConsentReminderText()) }];
-    }
-
-    await ensurePending();
-    const message =
-      ctx.conversationState.state === "WAITING_CONSENT" ? this.buildConsentReminderText() : this.buildConsentOnboardingText();
-    return [{ kind: "reply_text", text: this.stylizeReply(ctx, message) }];
   }
 
   private formatList(action: ReplyListAction): string {
@@ -2570,8 +2419,24 @@ export class Orchestrator {
     ctx.groupPolicy = { commandsOnly: groupPolicy.commandsOnly };
     if (groupPolicy.stop) return this.formatActionsForDelivery(groupPolicy.stop);
 
-    const consentActions = await this.enforceConsent(ctx);
-    if (consentActions.length > 0) return this.formatActionsForDelivery(consentActions);
+    const consentResult = await enforceConsent(ctx, {
+      consentPort: this.ports.consent,
+      conversationState: this.ports.conversationState,
+      audit: this.ports.audit,
+      metrics: this.ports.metrics,
+      logger: this.ports.logger,
+      consentLink: this.consentLink,
+      consentVersion: this.consentTermsVersion,
+      consentSource: this.consentSource,
+      commandPrefix: this.commandPrefix,
+      pendingStateTtlMs: this.pendingStateTtlMs,
+      now: ctx.now,
+      stylizeReply: (text, options) => this.stylizeReply(ctx, text, options)
+    });
+    if (consentResult.consent) ctx.consent = consentResult.consent;
+    if (consentResult.consentRequired !== undefined) ctx.consentRequired = consentResult.consentRequired;
+    if (consentResult.conversationState) ctx.conversationState = consentResult.conversationState;
+    if (consentResult.actions.length > 0) return this.formatActionsForDelivery(consentResult.actions);
 
     const greetingActions = await this.runGreetingStage(ctx);
     if (greetingActions.length > 0) return this.formatActionsForDelivery(greetingActions);
