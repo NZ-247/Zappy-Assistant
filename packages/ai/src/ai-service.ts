@@ -7,7 +7,8 @@ import type { AiServiceConfig, ConversationMemoryPort, LoggerLike, PromptBuilder
 const DEFAULT_CONFIG: AiServiceConfig = {
   enabled: false,
   personaId: DEFAULT_PERSONA_ID,
-  memoryWindow: 10
+  memoryWindow: 10,
+  commandPrefix: "/"
 };
 
 const TOOL_INTENT_HINTS: Array<{ action: ToolAction; patterns: RegExp[]; reason: string }> = [
@@ -41,14 +42,14 @@ export class AiService {
   private readonly memory: ConversationMemoryPort;
   private readonly config: AiServiceConfig;
   private readonly logger?: LoggerLike;
-  private readonly unavailableText =
-    "No momento o assistente inteligente está desabilitado. Use /help, /task ou /reminder para continuar.";
+  private readonly unavailableText: string;
 
   constructor(input: { llm?: LlmPort; memory?: ConversationMemoryPort; config?: Partial<AiServiceConfig>; logger?: LoggerLike }) {
     this.llm = input.llm;
     this.memory = input.memory ?? new NoopConversationMemory();
     this.config = { ...DEFAULT_CONFIG, ...(input.config ?? {}) };
     this.logger = input.logger;
+    this.unavailableText = this.buildUnavailableText();
   }
 
   async generate(input: AiAssistantInput): Promise<AiResponse> {
@@ -124,5 +125,10 @@ export class AiService {
     } catch (error) {
       this.logger?.warn?.({ err: error, conversationId: input.conversationId }, "failed to append ai memory");
     }
+  }
+
+  private buildUnavailableText(): string {
+    const prefix = this.config.commandPrefix ?? "/";
+    return `No momento o assistente inteligente está desabilitado. Use ${prefix}help, ${prefix}task ou ${prefix}reminder para continuar.`;
   }
 }

@@ -59,7 +59,12 @@ const auditTrail = createAuditTrail();
 const aiService = new AiService({
   llm: llmAdapter,
   memory: conversationMemoryRepository as any,
-  config: { enabled: env.LLM_ENABLED, personaId: env.LLM_PERSONA, memoryWindow: env.LLM_MEMORY_MESSAGES },
+  config: {
+    enabled: env.LLM_ENABLED,
+    personaId: env.LLM_PERSONA,
+    memoryWindow: env.LLM_MEMORY_MESSAGES,
+    commandPrefix: env.BOT_PREFIX
+  },
   logger
 });
 
@@ -230,6 +235,7 @@ const orchestrator = new Orchestrator({
   llmEnabled: env.LLM_ENABLED,
   logger,
   timezone: env.BOT_TIMEZONE,
+  commandPrefix: env.BOT_PREFIX,
   baseSystemPrompt,
   llmMemoryMessages: env.LLM_MEMORY_MESSAGES,
   consentTermsVersion: env.CONSENT_TERMS_VERSION,
@@ -252,32 +258,41 @@ const hasMedia = (message: any): boolean =>
       message?.documentWithCaptionMessage
   );
 
+const commandPrefix = env.BOT_PREFIX ?? "/";
+const stripCommandPrefix = (text: string): string => {
+  const trimmed = text.trim();
+  return trimmed.startsWith(commandPrefix) ? trimmed.slice(commandPrefix.length) : trimmed;
+};
+const hasCommandPrefix = (text: string): boolean => text.trim().startsWith(commandPrefix);
+
 const isBotAdminCommand = (text: string): boolean => {
-  const lower = text.trim().toLowerCase();
-  if (lower.startsWith("/chat ")) return true;
-  if (lower.startsWith("/set gp ")) return true;
-  if (lower === "/add gp allowed_groups") return true;
-  if (lower === "/rm gp allowed_groups") return true;
-  if (lower.startsWith("/ban") || lower.startsWith("/kick") || lower.startsWith("/hidetag") || lower.startsWith("/unmute")) return true;
-  if (lower.startsWith("/mute ")) return true;
+  if (!hasCommandPrefix(text)) return false;
+  const lower = stripCommandPrefix(text).toLowerCase();
+  if (lower.startsWith("chat ")) return true;
+  if (lower.startsWith("set gp ")) return true;
+  if (lower === "add gp allowed_groups") return true;
+  if (lower === "rm gp allowed_groups") return true;
+  if (lower.startsWith("ban") || lower.startsWith("kick") || lower.startsWith("hidetag") || lower.startsWith("unmute")) return true;
+  if (lower.startsWith("mute ")) return true;
   return false;
 };
 
 const isGroupAdminCommand = (text: string): boolean => {
-  const lower = text.trim().toLowerCase();
+  if (!hasCommandPrefix(text)) return false;
+  const lower = stripCommandPrefix(text).toLowerCase();
   return (
-    lower.startsWith("/set gp ") ||
-    lower.startsWith("/add gp allowed_groups") ||
-    lower.startsWith("/rm gp allowed_groups") ||
-    lower.startsWith("/add user admins") ||
-    lower.startsWith("/rm user admins") ||
-    lower.startsWith("/list user admins") ||
-    lower.startsWith("/chat ") ||
-    lower.startsWith("/ban") ||
-    lower.startsWith("/kick") ||
-    lower.startsWith("/mute ") ||
-    lower.startsWith("/unmute") ||
-    lower.startsWith("/hidetag")
+    lower.startsWith("set gp ") ||
+    lower.startsWith("add gp allowed_groups") ||
+    lower.startsWith("rm gp allowed_groups") ||
+    lower.startsWith("add user admins") ||
+    lower.startsWith("rm user admins") ||
+    lower.startsWith("list user admins") ||
+    lower.startsWith("chat ") ||
+    lower.startsWith("ban") ||
+    lower.startsWith("kick") ||
+    lower.startsWith("mute ") ||
+    lower.startsWith("unmute") ||
+    lower.startsWith("hidetag")
   );
 };
 

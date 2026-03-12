@@ -119,6 +119,7 @@ export interface AiServiceConfig {
   enabled: boolean;
   personaId: PersonaId;
   memoryWindow: number;
+  commandPrefix?: string;
 }
 
 export type PromptBuilderFn = (input: PromptBuilderInput) => Promise<PromptBuilderOutput> | PromptBuilderOutput;

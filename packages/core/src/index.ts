@@ -3,14 +3,24 @@ import {
   DEFAULT_REMINDER_TIME,
   formatDateTimeInZone,
   getDayRange,
-  isTimeLike,
   normalizeTimezone,
   parseDateTimeWithZone,
   parseDurationInput
 } from "./time.js";
 import { resolveTargetUserFromMentionOrReply, requireGroupContext } from "./common/bot-common.js";
+import { formatCommand, hasCommandPrefix as hasPrefix, normalizeCommandPrefix, stripCommandPrefix as stripPrefix } from "./commands/utils.js";
+import { createCommandRegistry } from "./commands/registry.js";
+import type { CommandRegistry } from "./commands/types.js";
+import { parseCommandText } from "./commands/parser.js";
+import { handleGroupCommand } from "./modules/groups/presentation/commands/group-commands.js";
+import { handleModerationCommand } from "./modules/moderation/presentation/commands/moderation-commands.js";
+import { handleReminderCommand } from "./modules/reminders/presentation/commands/reminder-commands.js";
 import { Parser } from "expr-eval";
 import { DateTime } from "luxon";
+
+export { createCommandRegistry } from "./commands/registry.js";
+export type { CommandDefinition, CommandMatch, CommandRegistry, CommandScope, CommandRequiredRole } from "./commands/types.js";
+export { formatCommand, normalizeCommandPrefix } from "./commands/utils.js";
 
 export type Scope = "GLOBAL" | "TENANT" | "GROUP" | "USER";
 export type MatchType = "CONTAINS" | "REGEX" | "STARTS_WITH";
@@ -129,6 +139,7 @@ export interface MessageClassification {
   kind: MessageClassificationKind;
   reason?: string;
   commandName?: string;
+  commandKnown?: boolean;
 }
 
 export type MetricKey =
@@ -786,6 +797,7 @@ export interface CorePorts {
   defaultFunMode?: "off" | "on";
   llmEnabled?: boolean;
   timezone?: string;
+  commandPrefix?: string;
   defaultReminderTime?: string;
   baseSystemPrompt?: string;
   llmMemoryMessages?: number;
@@ -816,45 +828,6 @@ const isMatch = (text: string, trigger: TriggerRule): boolean => {
   }
 };
 
-const parseReminder = (
-  text: string,
-  options: { now: Date; timezone: string; defaultReminderTime: string }
-): { remindAt: Date; message: string; pretty: string } | null => {
-  const inMatch = text.match(/^\/reminder\s+in\s+(\S+)\s+(.+)$/i);
-  if (inMatch) {
-    const duration = parseDurationInput(inMatch[1]);
-    const message = inMatch[2]?.trim();
-    if (!duration || !message) return null;
-    const { date, pretty } = addDurationToNow({ durationMs: duration.milliseconds, timezone: options.timezone, now: options.now });
-    return { remindAt: date, message, pretty };
-  }
-
-  const atMatch = text.match(/^\/reminder\s+at\s+(.+)$/i);
-  if (!atMatch) return null;
-
-  const tokens = atMatch[1].trim().split(/\s+/);
-  if (tokens.length < 2) return null;
-
-  const dateToken = tokens.shift()!;
-  let timeToken: string | undefined;
-  if (tokens.length >= 1 && isTimeLike(tokens[0])) {
-    timeToken = tokens.shift();
-  }
-  const message = tokens.join(" ").trim();
-  if (!message) return null;
-
-  const parsed = parseDateTimeWithZone({
-    dateToken,
-    timeToken,
-    timezone: options.timezone,
-    now: options.now,
-    defaultTime: options.defaultReminderTime
-  });
-  if (!parsed) return null;
-
-  return { remindAt: parsed.date, message, pretty: parsed.pretty };
-};
-
 const truncate = (text: string, max = 60): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
 
 const evaluateExpression = (expression: string): number => {
@@ -870,54 +843,55 @@ const containsLink = (text: string): boolean => {
   return linkRegex.test(text) || domainRegex.test(text);
 };
 
-const buildCommandList = (isRoot: boolean): string[] => {
+const buildCommandList = (prefix: string, isRoot: boolean): string[] => {
+  const cmd = (body: string) => formatCommand(prefix, body);
   const commands = [
-    "/help",
-    "/ping",
-    "/task add <title>",
-    "/task list",
-    "/task done <id>",
-    "/note add <text>",
-    "/note list",
-    "/note rm <id>",
-    "/agenda",
-    "/calc <expression>",
-    "/timer <duration>",
-    "/mute <duration>|off",
-    "/whoami",
-    "/userinfo (responda ou mencione)",
-    "/groupinfo",
-    "/rules (grupo)",
-    "/fix (grupo)",
-    "/chat on|off (grupo)",
-    "/set gp chat on|off (grupo, admin)",
-    "/set gp open|close (grupo, admin)",
-    "/set gp name <texto>",
-    "/set gp dcr <texto>",
-    "/set gp img (responda imagem)",
-    "/set gp fix <texto>",
-    "/set gp rules <texto>",
-    "/set gp welcome on|off|text <texto>",
-    "/add gp allowed_groups (grupo, admin)",
-    "/rm gp allowed_groups (grupo, admin)",
-    "/list gp allowed_groups",
-    "/add user admins <@> (admin)",
-    "/rm user admins <@>",
-    "/list user admins",
-    "/ban <@> (grupo, admin)",
-    "/kick <@> (grupo, admin)",
-    "/mute <@> <duração> (grupo, admin)",
-    "/unmute <@> (grupo, admin)",
-    "/hidetag <texto> (grupo, admin)",
-    "/status",
-    "/reminder in <duration> <message> (e.g. 10m, 1h30m)",
-    "/reminder at <DD-MM[-YYYY]> [HH:MM] <message>"
+    cmd("help"),
+    cmd("ping"),
+    cmd("task add <title>"),
+    cmd("task list"),
+    cmd("task done <id>"),
+    cmd("note add <text>"),
+    cmd("note list"),
+    cmd("note rm <id>"),
+    cmd("agenda"),
+    cmd("calc <expression>"),
+    cmd("timer <duration>"),
+    cmd("mute <duration>|off"),
+    cmd("whoami"),
+    cmd("userinfo (responda ou mencione)"),
+    cmd("groupinfo"),
+    cmd("rules (grupo)"),
+    cmd("fix (grupo)"),
+    cmd("chat on|off (grupo)"),
+    cmd("set gp chat on|off (grupo, admin)"),
+    cmd("set gp open|close (grupo, admin)"),
+    cmd("set gp name <texto>"),
+    cmd("set gp dcr <texto>"),
+    cmd("set gp img (responda imagem)"),
+    cmd("set gp fix <texto>"),
+    cmd("set gp rules <texto>"),
+    cmd("set gp welcome on|off|text <texto>"),
+    cmd("add gp allowed_groups (grupo, admin)"),
+    cmd("rm gp allowed_groups (grupo, admin)"),
+    cmd("list gp allowed_groups"),
+    cmd("add user admins <@> (admin)"),
+    cmd("rm user admins <@>"),
+    cmd("list user admins"),
+    cmd("ban <@> (grupo, admin)"),
+    cmd("kick <@> (grupo, admin)"),
+    cmd("mute <@> <duração> (grupo, admin)"),
+    cmd("unmute <@> (grupo, admin)"),
+    cmd("hidetag <texto> (grupo, admin)"),
+    cmd("status"),
+    cmd("reminder in <duration> <message> (e.g. 10m, 1h30m)"),
+    cmd("reminder at <DD-MM[-YYYY]> [HH:MM] <message>")
   ];
-  if (isRoot) commands.push("/alias link <phoneNumber> <lidJid> (ROOT/Admin)");
+  if (isRoot) commands.push(cmd("alias link <phoneNumber> <lidJid> (ROOT/Admin)"));
   return commands;
 };
 
-const buildHelpText = (input?: {
+const buildHelpText = (prefix: string, input?: {
   relationshipProfile?: RelationshipProfile | null;
   permissionRole?: string | null;
   role?: string | null;
@@ -936,7 +910,7 @@ const buildHelpText = (input?: {
     lines.push("Contexto: creator_root detectado. Respostas mais proativas e complementares.");
   }
   lines.push("Commands:");
-  lines.push(...buildCommandList(isRoot));
+  lines.push(...buildCommandList(prefix, isRoot));
   return lines.join("\n");
 };
 
@@ -978,7 +952,7 @@ type NormalizedEvent = InboundMessageEvent & {
   hasMedia: boolean;
 };
 
-type PipelineContext = {
+export type PipelineContext = {
   event: NormalizedEvent;
   scope: { scope: Scope; scopeId: string };
   relationshipProfile: RelationshipProfile;
@@ -1051,8 +1025,7 @@ type DetectedIntent = {
 
 export class Orchestrator {
   private readonly ports: CorePorts;
-  private readonly llmUnavailableText =
-    "No momento estou sem acesso ao assistente inteligente. Você ainda pode usar /help, /task e /reminder.";
+  private readonly llmUnavailableText: string;
   private readonly dedupTtlSeconds = 12;
   private readonly pendingStateTtlMs = 10 * 60 * 1000;
   private readonly greetingCooldownSeconds = 180;
@@ -1061,9 +1034,14 @@ export class Orchestrator {
   private readonly consentTermsVersion: string;
   private readonly consentLink: string;
   private readonly consentSource: string;
+  private readonly commandPrefix: string;
+  private readonly commandRegistry: CommandRegistry;
 
   constructor(ports: CorePorts) {
     this.ports = ports;
+    this.commandPrefix = normalizeCommandPrefix(ports.commandPrefix);
+    this.commandRegistry = createCommandRegistry(this.commandPrefix);
+    this.llmUnavailableText = `No momento estou sem acesso ao assistente inteligente. Você ainda pode usar ${formatCommand(this.commandPrefix, "help")}, ${formatCommand(this.commandPrefix, "task")} e ${formatCommand(this.commandPrefix, "reminder")}.`;
     this.consentTermsVersion = ports.consentTermsVersion ?? "2026-03";
     this.consentLink = ports.consentLink ?? "https://services.net.br/politicas";
     this.consentSource = ports.consentSource ?? "wa-gateway";
@@ -1087,6 +1065,18 @@ export class Orchestrator {
     }
   }
 
+  private hasCommandPrefix(text: string): boolean {
+    return hasPrefix(text, this.commandPrefix);
+  }
+
+  private stripCommandPrefix(text: string): string {
+    return stripPrefix(text, this.commandPrefix);
+  }
+
+  private normalizeCommandLower(text: string): string {
+    return this.stripCommandPrefix(text).toLowerCase();
+  }
+
   private hasRootPrivilege(ctx: PipelineContext): boolean {
     return hasRootPrivileges({
       permissionRole: ctx.identity?.permissionRole,
@@ -1104,30 +1094,31 @@ export class Orchestrator {
   }
 
   private isAccessControlCommand(text: string): boolean {
-    const lower = text.trim().toLowerCase();
+    if (!this.hasCommandPrefix(text)) return false;
+    const lower = this.normalizeCommandLower(text);
     return (
-      lower === "/add gp allowed_groups" ||
-      lower === "/rm gp allowed_groups" ||
-      lower === "/list gp allowed_groups" ||
-      lower.startsWith("/add user admins") ||
-      lower.startsWith("/rm user admins") ||
-      lower === "/list user admins" ||
-      lower.startsWith("/set gp chat") ||
-      lower.startsWith("/chat on") ||
-      lower.startsWith("/chat off")
+      lower === "add gp allowed_groups" ||
+      lower === "rm gp allowed_groups" ||
+      lower === "list gp allowed_groups" ||
+      lower.startsWith("add user admins") ||
+      lower.startsWith("rm user admins") ||
+      lower === "list user admins" ||
+      lower.startsWith("set gp chat") ||
+      lower.startsWith("chat on") ||
+      lower.startsWith("chat off")
     );
   }
 
   private commandRequiresGroupAdmin(commandName?: string): boolean {
     if (!commandName) return false;
-    const cmd = commandName.toLowerCase();
-    if (cmd.startsWith("/chat")) return true;
-    if (cmd.startsWith("/set gp chat")) return true;
-    if (cmd.startsWith("/set gp open") || cmd.startsWith("/set gp close")) return true;
-    if (cmd.startsWith("/set gp name") || cmd.startsWith("/set gp dcr") || cmd.startsWith("/set gp img")) return true;
-    if (cmd.startsWith("/ban") || cmd.startsWith("/kick") || cmd.startsWith("/hidetag")) return true;
-    if (cmd.startsWith("/add gp allowed_groups")) return true;
-    if (cmd.startsWith("/rm gp allowed_groups")) return true;
+    const cmd = this.normalizeCommandLower(commandName);
+    if (cmd.startsWith("chat")) return true;
+    if (cmd.startsWith("set gp chat")) return true;
+    if (cmd.startsWith("set gp open") || cmd.startsWith("set gp close")) return true;
+    if (cmd.startsWith("set gp name") || cmd.startsWith("set gp dcr") || cmd.startsWith("set gp img")) return true;
+    if (cmd.startsWith("ban") || cmd.startsWith("kick") || cmd.startsWith("hidetag")) return true;
+    if (cmd.startsWith("add gp allowed_groups")) return true;
+    if (cmd.startsWith("rm gp allowed_groups")) return true;
     return false;
   }
 
@@ -1507,8 +1498,11 @@ export class Orchestrator {
     if (await this.isDuplicate(event)) return { kind: "ignored_event", reason: "duplicate" };
     if (this.isEchoFromAssistant(ctx)) return { kind: "ignored_event", reason: "loop_guard" };
     if (ctx.conversationState.state !== "NONE") return { kind: "tool_follow_up", reason: ctx.conversationState.state };
-    if (event.normalizedText.startsWith("/")) {
-      return { kind: "command", commandName: event.normalizedText.split(/\s+/)[0] };
+    const parsedCommand = parseCommandText(event.normalizedText, this.commandRegistry);
+    if (parsedCommand) {
+      const match = parsedCommand.match;
+      const commandName = match?.command.name ?? parsedCommand.token;
+      return { kind: "command", commandName, commandKnown: Boolean(match), reason: match ? undefined : "unknown_command" };
     }
     if (event.isGroup && (ctx.isBotMentioned || ctx.isReplyToBot)) {
       return { kind: "ai_candidate", reason: "addressed_in_group" };
@@ -1556,8 +1550,7 @@ export class Orchestrator {
 
     if (!ctx.groupAllowed) {
       if (isAccessCommand && isPrivileged) return { commandsOnly: true };
-      const text =
-        "Este grupo não está autorizado a usar o bot. Um admin deve enviar /add gp allowed_groups para liberar. Comandos privados continuam disponíveis.";
+      const text = `Este grupo não está autorizado a usar o bot. Um admin deve enviar ${formatCommand(this.commandPrefix, "add gp allowed_groups")} para liberar. Comandos privados continuam disponíveis.`;
       return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
     }
 
@@ -1697,7 +1690,9 @@ export class Orchestrator {
     const isYes = /^sim\b/.test(normalized) || normalized === "yes";
     const isNo = /^(nao\b|nao aceito|nao quero|nao concordo)/.test(normalized);
     const wantsTerms = normalized.includes("terms") || normalized.includes("termos") || normalized.includes("politica") || normalized.includes("politics");
-    const wantsHelp = normalized === "ajuda" || normalized === "/ajuda" || normalized === "help" || normalized === "/help";
+    const prefixedHelp = `${this.commandPrefix.toLowerCase()}help`;
+    const prefixedAjuda = `${this.commandPrefix.toLowerCase()}ajuda`;
+    const wantsHelp = normalized === "ajuda" || normalized === "help" || normalized === prefixedHelp || normalized === prefixedAjuda;
 
     const ensurePending = async () => {
       if (!ctx.consent || ctx.consent.status !== "PENDING" || ctx.consent.termsVersion !== this.consentTermsVersion) {
@@ -2442,7 +2437,7 @@ export class Orchestrator {
   private buildMuteText(muteInfo: { until: Date } | null | undefined, timezone: string, scoped?: boolean): string {
     const until = muteInfo?.until ? formatDateTimeInZone(muteInfo.until, timezone) : "(desconhecido)";
     if (scoped) return `🤫 Você está silenciado neste grupo até ${until}.`;
-    return `🤫 Estou em silêncio até ${until}. Envie /mute off para reativar.`;
+    return `🤫 Estou em silêncio até ${until}. Envie ${formatCommand(this.commandPrefix, "mute off")} para reativar.`;
   }
 
   private buildAwaitingStateText(state: ConversationState): string {
@@ -2450,9 +2445,9 @@ export class Orchestrator {
       case "WAITING_CONFIRMATION":
         return "Ainda estou aguardando sua confirmação. Responda com 'sim' ou 'não'.";
       case "WAITING_TASK_DETAILS":
-        return "Preciso dos detalhes da tarefa para continuar. Envie o título ou use /task add <título>.";
+        return `Preciso dos detalhes da tarefa para continuar. Envie o título ou use ${formatCommand(this.commandPrefix, "task add <título>")}.`;
       case "WAITING_REMINDER_DETAILS":
-        return "Envie o texto do lembrete ou use /reminder in <duração> <mensagem>.";
+        return `Envie o texto do lembrete ou use ${formatCommand(this.commandPrefix, "reminder in <duração> <mensagem>")}.`;
       case "WAITING_TOOL_DETAILS":
         return "Faltam alguns detalhes. Pode completar a informação para eu seguir?";
       case "WAITING_TOOL_CONFIRMATION":
@@ -2614,13 +2609,14 @@ export class Orchestrator {
 
   private buildHelpResponse(ctx: PipelineContext): string {
     const isRoot = this.hasRootPrivilege(ctx);
-    const commands = buildCommandList(isRoot);
+    const commands = buildCommandList(this.commandPrefix, isRoot);
+    const withPrefix = (body: string) => formatCommand(this.commandPrefix, body);
     const requester = this.formatRequesterLabel(ctx);
     const botAdminStatus = this.formatBotAdminStatus(ctx);
     const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
 
     if (!ctx.event.isGroup) {
-      const base = buildHelpText({
+      const base = buildHelpText(this.commandPrefix, {
         relationshipProfile: ctx.relationshipProfile,
         permissionRole: ctx.identity?.permissionRole,
         role: ctx.identity?.role
@@ -2643,8 +2639,8 @@ export class Orchestrator {
       `Você: ${requester}`
     ];
     const missing: string[] = [];
-    if (!ctx.groupAllowed) missing.push("Grupo não autorizado (use /add gp allowed_groups).");
-    if (ctx.groupChatMode === "off") missing.push("Chat do bot está OFF (use /chat on).");
+    if (!ctx.groupAllowed) missing.push(`Grupo não autorizado (use ${withPrefix("add gp allowed_groups")}).`);
+    if (ctx.groupChatMode === "off") missing.push(`Chat do bot está OFF (use ${withPrefix("chat on")}).`);
     if (ctx.assistantMode === "off") missing.push("AI desativada (assistant_mode=off).");
     if (missing.length > 0) {
       lines.push("Pendências:");
@@ -2657,22 +2653,23 @@ export class Orchestrator {
 
   private async runCommandRouter(ctx: PipelineContext): Promise<ResponseAction[]> {
     const commandStartedAt = this.ports.clock?.now?.() ?? new Date();
-    const cmd = ctx.event.normalizedText;
-    const lower = cmd.toLowerCase();
+    const parsed = parseCommandText(ctx.event.normalizedText, this.commandRegistry);
+    if (!parsed) return [];
+    const { raw: rawCmd, body: cmd, lower, match } = parsed;
+    const commandKey = match?.command.name ?? parsed.token;
+    const formatCmd = (body: string) => formatCommand(this.commandPrefix, body);
     const botAdminStatus = this.formatBotAdminStatus(ctx);
     const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
 
-    if (!lower.startsWith("/")) return [];
-
     const requireAdmin = (): ResponseAction[] | null => {
       if (this.isRequesterAdmin(ctx)) return null;
-      if (process.env.NODE_ENV !== "production" && lower.startsWith("/chat")) {
+      if (process.env.NODE_ENV !== "production" && lower.startsWith("chat")) {
         this.ports.logger?.debug?.(
           {
             category: "BOT_ADMIN_GUARD",
             tenantId: ctx.event.tenantId,
             waGroupId: ctx.event.waGroupId,
-            command: lower,
+            command: rawCmd,
             guard: "require_bot_admin_user",
             decision: "deny",
             botIsAdmin: ctx.botIsGroupAdmin,
@@ -2750,12 +2747,32 @@ export class Orchestrator {
       if (canonical?.phoneNumber) lines.push(`Telefone: ${canonical.phoneNumber}`);
       if (canonical?.lidJid) lines.push(`LID: ${canonical.lidJid}`);
       if (canonical?.pnJid) lines.push(`PN: ${canonical.pnJid}`);
-      if (resolvedProfile) lines.push(`Perfil: ${resolvedProfile}`);
-      if (identity?.groupName) lines.push(`Grupo: ${identity.groupName}`);
-      return lines.join("\n");
-    };
+    if (resolvedProfile) lines.push(`Perfil: ${resolvedProfile}`);
+    if (identity?.groupName) lines.push(`Grupo: ${identity.groupName}`);
+    return lines.join("\n");
+  };
 
-    if (lower === "/help") {
+    const groupHandled = await handleGroupCommand({
+      commandKey,
+      lower,
+      cmd,
+      ctx,
+      deps: {
+        groupAccess: this.ports.groupAccess,
+        botAdminLabel,
+        requireGroup,
+        requireAdmin,
+        enforceBotAdmin: enforceBotAdminForOperation,
+        botAdminWarning,
+        stylizeReply: (text) => this.stylizeReply(ctx, text),
+        formatCmd,
+        now: ctx.now,
+        formatGroupAccessBotAdmin: (state, nowDate) => this.formatGroupAccessBotAdmin(state, nowDate)
+      }
+    });
+    if (groupHandled) return groupHandled;
+
+    if (commandKey === "help") {
       return [
         {
           kind: "reply_text",
@@ -2764,300 +2781,12 @@ export class Orchestrator {
       ];
     }
 
-    if (lower === "/ping") {
+    if (commandKey === "ping") {
       const elapsedMs = (this.ports.clock?.now?.() ?? new Date()).getTime() - commandStartedAt.getTime();
       return [{ kind: "reply_text", text: `Pong! 🏓\nms: ${elapsedMs}` }];
     }
 
-    if (lower === "/groupinfo") {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const access = ctx.groupAccess;
-      const lines = [
-        `Grupo: ${ctx.event.waGroupId}`,
-        `Nome: ${access?.groupName ?? ctx.identity?.groupName ?? ctx.event.waGroupId ?? "-"}`,
-        `Permitido: ${access?.allowed ? "sim" : "não"}`,
-        `Modo de chat: ${access?.chatMode ?? ctx.groupChatMode}`,
-        `Bot admin: ${botAdminLabel}`
-      ];
-      return [{ kind: "reply_text", text: lines.join("\n") }];
-    }
-
-    if (lower === "/rules") {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const rules = ctx.groupRulesText ?? ctx.groupAccess?.rulesText;
-      if (!rules) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Regras não configuradas.") }];
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, rules) }];
-    }
-
-    if (lower === "/fix" || lower === "/fixed") {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const fixed = ctx.groupFixedMessageText ?? ctx.groupAccess?.fixedMessageText;
-      if (!fixed) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Mensagem fixa não configurada.") }];
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, fixed) }];
-    }
-
-    if (lower.startsWith("/set gp ")) {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      const botAdminGuard = enforceBotAdminForOperation(lower);
-      if (botAdminGuard) return botAdminGuard;
-      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Controle de grupo não está configurado.") }];
-
-      const args = cmd.replace(/^\/set gp\s+/i, "");
-      const [sub, ...restTokens] = args.split(/\s+/);
-      const restText = args.replace(/^\S+\s*/, "").trim();
-      const normalizedSub = (sub ?? "").toLowerCase();
-
-      if (normalizedSub === "chat") {
-        const mode = restTokens[0] === "off" ? "off" : restTokens[0] === "on" ? "on" : null;
-        if (!mode) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Use: /set gp chat on|off") }];
-        const updated = await this.ports.groupAccess.setChatMode({
-          tenantId: ctx.event.tenantId,
-          waGroupId: ctx.event.waGroupId!,
-          mode,
-          actor: ctx.event.waUserId
-        });
-        const warning = botAdminWarning(lower);
-        return [
-          {
-            kind: "reply_text",
-            text: this.stylizeReply(
-              ctx,
-              `Modo de chat ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${botAdminLabel}.${warning ? ` ${warning}` : ""}`
-            )
-          }
-        ];
-      }
-
-      if (normalizedSub === "open" || normalizedSub === "close") {
-        const operation: GroupAdminOperation = normalizedSub === "open" ? "set_open" : "set_closed";
-        return [
-          {
-            kind: "group_admin_action",
-            operation,
-            waGroupId: ctx.event.waGroupId!,
-            actorWaUserId: ctx.event.waUserId
-          }
-        ];
-      }
-
-      if (normalizedSub === "name") {
-        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Informe o novo nome do grupo.") }];
-        return [
-          {
-            kind: "group_admin_action",
-            operation: "set_subject",
-            waGroupId: ctx.event.waGroupId!,
-            actorWaUserId: ctx.event.waUserId,
-            text: restText
-          }
-        ];
-      }
-
-      if (normalizedSub === "dcr") {
-        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Informe a nova descrição.") }];
-        return [
-          {
-            kind: "group_admin_action",
-            operation: "set_description",
-            waGroupId: ctx.event.waGroupId!,
-            actorWaUserId: ctx.event.waUserId,
-            text: restText
-          }
-        ];
-      }
-
-      if (normalizedSub === "img") {
-        return [
-          {
-            kind: "group_admin_action",
-            operation: "set_picture_from_quote",
-            waGroupId: ctx.event.waGroupId!,
-            actorWaUserId: ctx.event.waUserId,
-            quotedWaMessageId: ctx.event.quotedWaMessageId
-          }
-        ];
-      }
-
-      if (normalizedSub === "fix") {
-        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto fixo após o comando.") }];
-        const updated = await this.ports.groupAccess.updateSettings({
-          tenantId: ctx.event.tenantId,
-          waGroupId: ctx.event.waGroupId!,
-          actor: ctx.event.waUserId,
-          settings: { fixedMessageText: restText }
-        });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Mensagem fixa atualizada.${updated.fixedMessageText ? "" : " (vazia)"}`) }];
-      }
-
-      if (normalizedSub === "rules") {
-        if (!restText) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto das regras após o comando.") }];
-        await this.ports.groupAccess.updateSettings({
-          tenantId: ctx.event.tenantId,
-          waGroupId: ctx.event.waGroupId!,
-          actor: ctx.event.waUserId,
-          settings: { rulesText: restText }
-        });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Regras atualizadas.") }];
-      }
-
-      if (normalizedSub === "welcome") {
-        const mode = restTokens[0]?.toLowerCase();
-        if (mode === "on" || mode === "off") {
-          const updated = await this.ports.groupAccess.updateSettings({
-            tenantId: ctx.event.tenantId,
-            waGroupId: ctx.event.waGroupId!,
-            actor: ctx.event.waUserId,
-            settings: { welcomeEnabled: mode === "on" }
-          });
-          return [
-            { kind: "reply_text", text: this.stylizeReply(ctx, `Mensagem de boas-vindas ${updated.welcomeEnabled ? "ativada" : "desativada"}.`) }
-          ];
-        }
-        if (mode === "text") {
-          const text = restTokens.slice(1).join(" ").trim();
-          if (!text) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Informe o texto após 'welcome text'.") }];
-          await this.ports.groupAccess.updateSettings({
-            tenantId: ctx.event.tenantId,
-            waGroupId: ctx.event.waGroupId!,
-            actor: ctx.event.waUserId,
-            settings: { welcomeText: text }
-          });
-          return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Texto de boas-vindas atualizado.") }];
-        }
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Use: /set gp welcome on|off ou /set gp welcome text <mensagem>.") }];
-      }
-
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Comando /set gp não reconhecido.") }];
-    }
-
-    if (lower === "/add gp allowed_groups") {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      const botAdminGuard = enforceBotAdminForOperation(lower);
-      if (botAdminGuard) return botAdminGuard;
-      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
-      const updated = await this.ports.groupAccess.setAllowed({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId!,
-        allowed: true,
-        actor: ctx.event.waUserId
-      });
-      const warning = botAdminWarning(lower);
-      return [
-        {
-          kind: "reply_text",
-          text: this.stylizeReply(
-            ctx,
-            `Grupo autorizado: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}. Bot admin=${botAdminLabel}.${
-              warning ? ` ${warning}` : ""
-            }`
-          )
-        }
-      ];
-    }
-
-    if (lower === "/rm gp allowed_groups") {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      const botAdminGuard = enforceBotAdminForOperation(lower);
-      if (botAdminGuard) return botAdminGuard;
-      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
-      const updated = await this.ports.groupAccess.setAllowed({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId!,
-        allowed: false,
-        actor: ctx.event.waUserId
-      });
-      const warning = botAdminWarning(lower);
-      return [
-        {
-          kind: "reply_text",
-          text: this.stylizeReply(
-            ctx,
-            `Grupo removido da lista permitida: ${updated.groupName ?? updated.waGroupId}. Chat=${updated.chatMode}.${
-              warning ? ` ${warning}` : ""
-            }`
-          )
-        }
-      ];
-    }
-
-    if (lower === "/list gp allowed_groups") {
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
-      const groups = await this.ports.groupAccess.listAllowed(ctx.event.tenantId);
-      if (groups.length === 0) return [{ kind: "reply_text", text: "Nenhum grupo autorizado." }];
-      return [
-        {
-          kind: "reply_list",
-          header: "Grupos autorizados",
-          items: groups.map((g) => ({
-            title: g.groupName ?? g.waGroupId,
-            description: `chat=${g.chatMode} botAdmin=${this.formatGroupAccessBotAdmin(g, ctx.now)}`
-          }))
-        }
-      ];
-    }
-
-    if (lower === "/chat on" || lower === "/chat off") {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      const botAdminGuard = enforceBotAdminForOperation(lower);
-      if (botAdminGuard) return botAdminGuard;
-      if (!this.ports.groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
-      if (process.env.NODE_ENV !== "production") {
-        this.ports.logger?.debug?.(
-          {
-            category: "BOT_ADMIN_GUARD",
-            tenantId: ctx.event.tenantId,
-            waGroupId: ctx.event.waGroupId,
-            command: lower,
-            guard: "chat_command",
-            decision: "proceed",
-            botIsAdmin: ctx.botIsGroupAdmin,
-            sourceUsed: ctx.botAdminSourceUsed,
-            statusSource: ctx.botAdminStatusSource,
-            eventBotIsAdmin: ctx.event.botIsGroupAdmin,
-            groupBotIsAdmin: ctx.groupAccess?.botIsAdmin
-          },
-          "chat command bot admin state"
-        );
-      }
-      const mode = lower.endsWith("off") ? "off" : "on";
-      const updated = await this.ports.groupAccess.setChatMode({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId!,
-        mode,
-        actor: ctx.event.waUserId
-      });
-      const warning = botAdminWarning(lower);
-      return [
-        {
-          kind: "reply_text",
-          text: this.stylizeReply(
-            ctx,
-            `Modo de chat do grupo ajustado para ${updated.chatMode}. Permitido=${updated.allowed ? "sim" : "não"}. Bot admin=${botAdminLabel}.${
-              warning ? ` ${warning}` : ""
-            }`
-          )
-        }
-      ];
-    }
-
-    if (lower.startsWith("/add user admins")) {
+    if (commandKey === "add user admins") {
       const adminCheck = requireAdmin();
       if (adminCheck) return adminCheck;
       if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
@@ -3077,7 +2806,7 @@ export class Orchestrator {
       ];
     }
 
-    if (lower.startsWith("/rm user admins")) {
+    if (commandKey === "rm user admins") {
       const adminCheck = requireAdmin();
       if (adminCheck) return adminCheck;
       if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
@@ -3091,7 +2820,7 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: this.stylizeReply(ctx, removed ? `Admin removido: ${target}.` : `Usuário ${target} não estava na lista de admins.`) }];
     }
 
-    if (lower === "/list user admins") {
+    if (commandKey === "list user admins") {
       const adminCheck = requireAdmin();
       if (adminCheck) return adminCheck;
       if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
@@ -3109,91 +2838,23 @@ export class Orchestrator {
       ];
     }
 
-    if (lower.startsWith("/ban") || lower.startsWith("/kick")) {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      const botAdminGuard = enforceBotAdminForOperation(lower);
-      if (botAdminGuard) return botAdminGuard;
-      const target = resolveTargetUserFromMentionOrReply(ctx.event) ?? cmd.replace(/^(\/ban|\/kick)\s+/i, "").trim();
-      if (!target) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Mencione ou responda quem deseja remover.") }];
-      const actionKind: ModerationActionKind = lower.startsWith("/ban") ? "ban" : "kick";
-      return [
-        {
-          kind: "moderation_action",
-          action: actionKind,
-          waGroupId: ctx.event.waGroupId!,
-          targetWaUserId: target
-        }
-      ];
-    }
-
-    if (ctx.event.isGroup && lower.startsWith("/mute ")) {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const rawArgs = cmd.replace(/^(\/mute)\s+/i, "").trim();
-      const tokens = rawArgs.split(/\s+/).filter(Boolean);
-      const mentionTarget = resolveTargetUserFromMentionOrReply(ctx.event);
-      const tokenTarget = tokens.length > 1 ? tokens.shift() : undefined;
-      const target = mentionTarget ?? tokenTarget;
-      const durationToken = tokens[0];
-      if (!target || !durationToken) {
-        // Fall back to existing mute command (scope mute) when no target/duration provided.
-      } else {
-        const adminCheck = requireAdmin();
-        if (adminCheck) return adminCheck;
-        const botAdminGuard = enforceBotAdminForOperation(lower);
-        if (botAdminGuard) return botAdminGuard;
-        const duration = parseDurationInput(durationToken);
-        if (!duration) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Duração inválida. Ex: 30m, 1h.") }];
-        return [
-          {
-            kind: "moderation_action",
-            action: "mute",
-            waGroupId: ctx.event.waGroupId!,
-            targetWaUserId: target,
-            durationMs: duration.milliseconds
-          }
-        ];
+    const moderationHandled = handleModerationCommand({
+      commandKey,
+      lower,
+      cmd,
+      ctx,
+      deps: {
+        requireGroup,
+        requireAdmin,
+        enforceBotAdmin: enforceBotAdminForOperation,
+        stylizeReply: (text) => this.stylizeReply(ctx, text),
+        formatCmd
       }
-    }
+    });
+    if (moderationHandled) return moderationHandled;
 
-    if (ctx.event.isGroup && lower.startsWith("/unmute")) {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      const botAdminGuard = enforceBotAdminForOperation(lower);
-      if (botAdminGuard) return botAdminGuard;
-      const target = resolveTargetUserFromMentionOrReply(ctx.event) ?? cmd.replace(/^(\/unmute)\s+/i, "").trim();
-      if (!target) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Mencione ou responda quem deseja reativar.") }];
-      return [
-        { kind: "moderation_action", action: "unmute", waGroupId: ctx.event.waGroupId!, targetWaUserId: target }
-      ];
-    }
-
-    if (ctx.event.isGroup && lower.startsWith("/hidetag")) {
-      const groupCheck = requireGroup();
-      if (groupCheck) return groupCheck;
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      const botAdminGuard = enforceBotAdminForOperation(lower);
-      if (botAdminGuard) return botAdminGuard;
-      const text = cmd.replace(/^(\/hidetag)\s*/i, "").trim();
-      if (!text) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto após /hidetag.") }];
-      return [
-        {
-          kind: "moderation_action",
-          action: "hidetag",
-          waGroupId: ctx.event.waGroupId!,
-          text
-        }
-      ];
-    }
-
-    if (lower.startsWith("/task add ")) {
-      const title = cmd.replace(/^(\/task add)\s+/i, "").trim();
+    if (commandKey === "task add") {
+      const title = cmd.replace(/^(task add)\s+/i, "").trim();
       if (!title) return [{ kind: "reply_text", text: "Task title is required." }];
       const task = await this.ports.tasksRepository.addTask({
         tenantId: ctx.event.tenantId,
@@ -3204,7 +2865,7 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: `Task created: ${task.id} - ${task.title}` }];
     }
 
-    if (lower === "/task list") {
+    if (commandKey === "task list") {
       const tasks = await this.ports.tasksRepository.listTasks({
         tenantId: ctx.event.tenantId,
         waGroupId: ctx.event.waGroupId,
@@ -3223,8 +2884,8 @@ export class Orchestrator {
       ];
     }
 
-    if (lower.startsWith("/task done ")) {
-      const taskId = cmd.replace(/^(\/task done)\s+/i, "").trim();
+    if (commandKey === "task done") {
+      const taskId = cmd.replace(/^(task done)\s+/i, "").trim();
       const done = await this.ports.tasksRepository.markDone({
         tenantId: ctx.event.tenantId,
         taskId,
@@ -3234,9 +2895,9 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: done ? `Task ${taskId} marked done.` : `Task ${taskId} not found.` }];
     }
 
-    if (lower.startsWith("/note add ")) {
+    if (commandKey === "note add") {
       if (!this.ports.notesRepository) return [{ kind: "reply_text", text: "Notes module is not available." }];
-      const text = cmd.replace(/^(\/note add)\s+/i, "").trim();
+      const text = cmd.replace(/^(note add)\s+/i, "").trim();
       if (!text) return [{ kind: "reply_text", text: "Note text is required." }];
       const note = await this.ports.notesRepository.addNote({
         tenantId: ctx.event.tenantId,
@@ -3248,7 +2909,7 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: `Nota ${note.publicId} salva.` }];
     }
 
-    if (lower === "/note list") {
+    if (commandKey === "note list") {
       if (!this.ports.notesRepository) return [{ kind: "reply_text", text: "Notes module is not available." }];
       const notes = await this.ports.notesRepository.listNotes({
         tenantId: ctx.event.tenantId,
@@ -3267,9 +2928,9 @@ export class Orchestrator {
       ];
     }
 
-    if (lower.startsWith("/note rm ")) {
+    if (commandKey === "note rm") {
       if (!this.ports.notesRepository) return [{ kind: "reply_text", text: "Notes module is not available." }];
-      const publicId = cmd.replace(/^(\/note rm)\s+/i, "").trim().toUpperCase();
+      const publicId = cmd.replace(/^(note rm)\s+/i, "").trim().toUpperCase();
       if (!publicId) return [{ kind: "reply_text", text: "Informe o ID da nota (ex: N001)." }];
       const removed = await this.ports.notesRepository.removeNote({
         tenantId: ctx.event.tenantId,
@@ -3280,7 +2941,7 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: removed ? `Nota ${publicId} removida.` : `Nota ${publicId} não encontrada.` }];
     }
 
-    if (lower === "/agenda") {
+    if (commandKey === "agenda") {
       const range = getDayRange({ date: ctx.now, timezone: ctx.timezone });
       const tasks = await this.ports.tasksRepository.listTasksForDay({
         tenantId: ctx.event.tenantId,
@@ -3299,8 +2960,8 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: formatAgenda({ dateLabel: range.label, timezone: ctx.timezone, tasks, reminders }) }];
     }
 
-    if (lower.startsWith("/calc ")) {
-      const expression = cmd.replace(/^(\/calc)\s+/i, "").trim();
+    if (commandKey === "calc") {
+      const expression = cmd.replace(/^(calc)\s+/i, "").trim();
       if (!expression) return [{ kind: "reply_text", text: "Forneça uma expressão (ex: 5+10*3)." }];
       try {
         const result = evaluateExpression(expression);
@@ -3310,9 +2971,9 @@ export class Orchestrator {
       }
     }
 
-    if (lower.startsWith("/timer ")) {
+    if (commandKey === "timer") {
       if (!this.ports.timersRepository) return [{ kind: "reply_text", text: "Timer module is not available." }];
-      const durationToken = cmd.replace(/^(\/timer)\s+/i, "").trim();
+      const durationToken = cmd.replace(/^(timer)\s+/i, "").trim();
       const duration = parseDurationInput(durationToken);
       if (!duration) return [{ kind: "reply_text", text: "Formato de duração inválido. Use algo como 10m ou 1h." }];
       const { date, pretty } = addDurationToNow({ durationMs: duration.milliseconds, timezone: ctx.timezone, now: ctx.now });
@@ -3330,9 +2991,9 @@ export class Orchestrator {
       ];
     }
 
-    if (lower.startsWith("/mute")) {
+    if (commandKey === "mute") {
       if (!this.ports.mute) return [{ kind: "reply_text", text: "Mute control is not available." }];
-      const arg = cmd.replace(/^\/mute\s*/i, "").trim();
+      const arg = cmd.replace(/^mute\s*/i, "").trim();
       if (arg.toLowerCase() === "off") {
         await this.ports.mute.unmute({ tenantId: ctx.event.tenantId, scope: ctx.scope.scope, scopeId: ctx.scope.scopeId });
         return [{ kind: "reply_text", text: "Silêncio desativado." }];
@@ -3350,10 +3011,10 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: `🤫 Silenciado até ${untilPretty}.` }];
     }
 
-    if (lower.startsWith("/alias link")) {
+    if (commandKey === "alias link") {
       if (!this.ports.identity?.linkAlias) return [{ kind: "reply_text", text: "Alias linking is not available." }];
-      const match = cmd.match(/^\/alias\s+link\s+(\S+)\s+(\S+)/i);
-      if (!match) return [{ kind: "reply_text", text: "Use: /alias link <phoneNumber> <lidJid>" }];
+      const match = cmd.match(/^alias\s+link\s+(\S+)\s+(\S+)/i);
+      if (!match) return [{ kind: "reply_text", text: `Use: ${formatCmd("alias link <phoneNumber> <lidJid>")}` }];
       const [, phoneNumber, lidJid] = match;
       const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase?.() ?? "";
       const allowedRoles = ["ROOT", "ADMIN", "DONO", "OWNER", "PRIVILEGED"];
@@ -3383,7 +3044,7 @@ export class Orchestrator {
       }
     }
 
-    if (lower === "/whoami") {
+    if (commandKey === "whoami") {
       const summary = await formatIdentity(ctx.event.waUserId, ctx.event.waGroupId);
       const lines = [summary];
       lines.push(`Admin/root: ${this.isRequesterAdmin(ctx) ? "sim" : "não"}`);
@@ -3398,14 +3059,14 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: this.stylizeReply(ctx, lines.join("\n")) }];
     }
 
-    if (lower === "/userinfo") {
+    if (commandKey === "userinfo") {
       const target = resolveTargetUserFromMentionOrReply(ctx.event);
-      if (!target) return [{ kind: "reply_text", text: "Responda ou mencione um usuário para usar /userinfo." }];
+      if (!target) return [{ kind: "reply_text", text: `Responda ou mencione um usuário para usar ${formatCmd("userinfo")}.` }];
       const summary = await formatIdentity(target, ctx.event.waGroupId);
       return [{ kind: "reply_text", text: summary }];
     }
 
-    if (lower === "/status") {
+    if (commandKey === "status") {
       if (!this.ports.status) return [{ kind: "reply_text", text: "Status não disponível." }];
       const status = await this.ports.status.getStatus({
         tenantId: ctx.event.tenantId,
@@ -3438,21 +3099,18 @@ export class Orchestrator {
       return [{ kind: "reply_text", text: lines.join("\n") }];
     }
 
-    if (lower.startsWith("/reminder ")) {
-      const parsed = parseReminder(cmd, { now: ctx.now, timezone: ctx.timezone, defaultReminderTime: ctx.defaultReminderTime });
-      if (!parsed) return [{ kind: "reply_text", text: "Invalid reminder format." }];
-      const reminder = await this.ports.remindersRepository.createReminder({
-        tenantId: ctx.event.tenantId,
-        waUserId: ctx.event.waUserId,
-        waGroupId: ctx.event.waGroupId,
-        message: parsed.message,
-        remindAt: parsed.remindAt
-      });
-      return [
-        { kind: "reply_text", text: `Reminder ${reminder.id} set for ${parsed.pretty} (${ctx.timezone})` },
-        { kind: "enqueue_job", jobType: "reminder", payload: { id: reminder.id, runAt: parsed.remindAt } }
-      ];
-    }
+    const reminderHandled = await handleReminderCommand({
+      commandKey,
+      cmd,
+      ctx,
+      deps: {
+        remindersRepository: this.ports.remindersRepository,
+        timezone: ctx.timezone,
+        defaultReminderTime: ctx.defaultReminderTime,
+        now: ctx.now
+      }
+    });
+    if (reminderHandled) return reminderHandled;
 
     return [];
   }

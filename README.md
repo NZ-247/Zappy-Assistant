@@ -12,7 +12,7 @@ npm run prisma:generate
 
 - `LLM_ENABLED=false` skips the LLM fallback and keeps commands/triggers active.
 - `BOT_TIMEZONE` (default `America/Cuiaba`) controls all reminder parsing/formatting.
-- `BOT_PREFIX` (default `/`) is the global command prefix; keep it in sync with parsing once the registry/prefix refactor lands.
+- `BOT_PREFIX` (default `/`) is the global command prefix; parsing/help text respect this value.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
 ## Run
