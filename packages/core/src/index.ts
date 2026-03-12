@@ -4,7 +4,6 @@ import {
   formatDateTimeInZone,
   getDayRange,
   normalizeTimezone,
-  parseDateTimeWithZone,
   parseDurationInput
 } from "./time.js";
 import { resolveTargetUserFromMentionOrReply, requireGroupContext } from "./common/bot-common.js";
@@ -24,18 +23,10 @@ import { handleModerationCommand } from "./modules/moderation/presentation/comma
 import { handleReminderCommand } from "./modules/reminders/presentation/commands/reminder-commands.js";
 import { handleTaskCommand } from "./modules/tasks/presentation/commands/task-commands.js";
 import { handleNoteCommand } from "./modules/notes/presentation/commands/note-commands.js";
+import { AssistantAiModule } from "./modules/assistant-ai/index.js";
 import { checkConsentGate } from "./modules/consent/application/use-cases/check-consent-gate.js";
 import { enforceConsent } from "./modules/consent/application/use-cases/enforce-consent.js";
-import {
-  createTask as createTaskUseCase,
-  listTasks as listTasksUseCase,
-  completeTask as completeTaskUseCase,
-  updateTask as updateTaskUseCase,
-  removeTask as removeTaskUseCase
-} from "./modules/tasks/index.js";
-import { addNote as addNoteUseCase, listNotes as listNotesUseCase, removeNote as removeNoteUseCase } from "./modules/notes/index.js";
 import { Parser } from "expr-eval";
-import { DateTime } from "luxon";
 import type {
   AuditEvent,
   CanonicalIdentity,
@@ -319,20 +310,6 @@ const formatAgenda = (input: {
   return lines.join("\n");
 };
 
-type PendingToolContext = {
-  pendingTool: ToolAction;
-  missing: string[];
-  provided?: Record<string, unknown>;
-  summary?: string;
-};
-
-type DetectedIntent = {
-  action: ToolAction;
-  payload: Record<string, unknown>;
-  missing: string[];
-  reason: string;
-};
-
 export class Orchestrator {
   private readonly ports: CorePorts;
   private readonly llmUnavailableText: string;
@@ -346,6 +323,7 @@ export class Orchestrator {
   private readonly consentSource: string;
   private readonly commandPrefix: string;
   private readonly commandRegistry: CommandRegistry;
+  private readonly assistantAi: AssistantAiModule;
 
   constructor(ports: CorePorts) {
     this.ports = ports;
@@ -355,6 +333,15 @@ export class Orchestrator {
     this.consentTermsVersion = ports.consentTermsVersion ?? "2026-03";
     this.consentLink = ports.consentLink ?? "https://services.net.br/politicas";
     this.consentSource = ports.consentSource ?? "wa-gateway";
+    this.assistantAi = new AssistantAiModule({
+      ports: this.ports,
+      commandPrefix: this.commandPrefix,
+      pendingStateTtlMs: this.pendingStateTtlMs,
+      llmUnavailableText: this.llmUnavailableText,
+      hasRootPrivilege: (ctx) => this.hasRootPrivilege(ctx),
+      bumpMetric: (key, by) => this.bumpMetric(key, by),
+      stylizeReply: (ctx, text, options) => this.stylizeReply(ctx, text, options)
+    });
   }
 
   private async bumpMetric(key: MetricKey, by = 1): Promise<void> {
@@ -450,32 +437,6 @@ export class Orchestrator {
         const role: ConversationMessage["role"] = item.role === "assistant" ? "assistant" : item.role === "system" ? "system" : "user";
         return { role, content: item.content };
       });
-  }
-
-  private async storeAiMemory(ctx: PipelineContext, assistantText: string): Promise<void> {
-    if (!this.ports.conversationMemory) return;
-    if (!ctx.event.conversationId) return;
-    const keepLatest = ctx.memoryLimit ?? this.ports.llmMemoryMessages ?? 10;
-    const base = {
-      tenantId: ctx.event.tenantId,
-      conversationId: ctx.event.conversationId,
-      waUserId: ctx.event.waUserId,
-      keepLatest
-    };
-    try {
-      await this.ports.conversationMemory.appendMemory({ ...base, role: "user", content: ctx.event.text });
-      await this.ports.conversationMemory.appendMemory({ ...base, role: "assistant", content: assistantText });
-    } catch (error) {
-      this.ports.logger?.warn?.({ err: error, conversationId: ctx.event.conversationId }, "failed to store ai memory");
-    }
-  }
-
-  private normalizeUserRole(role?: string): AiAssistantInput["userRole"] {
-    const upper = role?.toUpperCase?.();
-    if (upper === "ROOT") return "ROOT";
-    if (upper === "DONO") return "DONO";
-    if (upper === "GROUP_ADMIN" || upper === "ADMIN") return upper === "ADMIN" ? "ADMIN" : "GROUP_ADMIN";
-    return "MEMBER";
   }
 
   private normalizeEvent(event: InboundMessageEvent): NormalizedEvent {
@@ -976,660 +937,10 @@ export class Orchestrator {
     return text;
   }
 
-  private relationshipNote(profile: RelationshipProfile): string | null {
-    if (profile === "creator_root")
-      return "Perfil de relacionamento: creator_root. Seja mais proativo e estratégico, sugira próximos passos de forma concisa e levemente descontraída.";
-    if (profile === "mother_privileged")
-      return "Perfil de relacionamento: mother_privileged. Use tom doce, respeitoso e gentil, como um filho bem comportado; apelidos suaves só quando apropriado; nunca use tom romântico.";
-    return null;
-  }
-
-  private sanitizeAiText(ctx: PipelineContext, text: string): string {
-    if (!text) return text;
-    const normalizedQuestion = ctx.event.normalizedText.toLowerCase();
-    const isCreator = ctx.relationshipProfile === "creator_root";
-    const isMother = ctx.relationshipProfile === "mother_privileged";
-    const isRoot = this.hasRootPrivilege(ctx);
-    const nameDenials = [/i (?:do )?not have (?:a )?(?:proper )?name/i, /não tenho (?:um )?nome/i, /sem nome/i];
-    const downgradeRole = [
-      /(standard|regular)\s+(user|member)/i,
-      /membro\s+(padr[aã]o|comum)/i,
-      /usu[aá]rio\s+(padr[aã]o|comum)/i
-    ];
-    if (nameDenials.some((p) => p.test(text))) {
-      text = "Meu nome é Zappy, o assistente digital deste sistema.";
-    }
-    if (isRoot && downgradeRole.some((p) => p.test(text))) {
-      text = "Você é ROOT aqui e tem controle administrativo total. Sou Zappy, pronto para executar suas instruções.";
-    }
-    if (isRoot && /criad[oa]\s+por\s+(uma\s+)?(equipe|time)\s+de\s+ia/i.test(text)) {
-      text = "Fui criada para este sistema por você (NZ_DEV) e atuo como sua assistente Zappy.";
-    }
-    if (isRoot && /created by an ai team/i.test(text)) {
-      text = "I was created here for you (NZ_DEV) and serve you as Zappy with full ROOT alignment.";
-    }
-
-    const askedName =
-      /como se chama|qual (?:é|é)? seu nome|qual o seu nome|seu nome\??|what is your name|who are you\b/i.test(
-        normalizedQuestion
-      );
-    if (askedName) {
-      text = "Sou Zappy, seu assistente digital.";
-    }
-
-    const askedWhoAmI = /quem sou eu(?: (?:para|pra) voc[eê])?|who am i to you/i.test(normalizedQuestion);
-    if (askedWhoAmI) {
-      if (isCreator) {
-        text = "Você é meu criador (NZ_DEV) e tem papel ROOT com controle total. Estou aqui para ajudar proativamente.";
-      } else if (isMother) {
-        text = "Você é minha mãe e contato privilegiado; respondo com carinho, respeito e prontidão para ajudar.";
-      }
-    }
-
-    const askedPermissions =
-      /(quais|minhas).{0,20}permiss(?:ões|oes)|what are my permissions|quais s[aã]o minhas permiss/i.test(
-        normalizedQuestion
-      );
-    if (askedPermissions && isRoot) {
-      text = "Você é ROOT aqui e possui controle administrativo completo sobre o sistema.";
-    }
-
-    if (!/zappy/i.test(text) && nameDenials.some((p) => p.test(text))) {
-      text = `Sou Zappy, seu assistente digital. ${text}`;
-    }
-
-    return text.trim();
-  }
-
-  private guardAiResponses(ctx: PipelineContext, actions: ResponseAction[]): ResponseAction[] {
-    return actions.map((action) => {
-      if (action.kind === "reply_text") {
-        return { ...action, text: this.sanitizeAiText(ctx, action.text) };
-      }
-      if (action.kind === "ai_tool_suggestion" && action.text) {
-        return { ...action, text: this.sanitizeAiText(ctx, action.text) };
-      }
-      return action;
-    });
-  }
-
-  private isCancelText(text: string): boolean {
-    const normalized = text.trim().toLowerCase();
-    const tokens = ["cancel", "cancela", "cancelar", "pare", "para", "esquece", "reset", "resetar"];
-    return tokens.some((t) => normalized === t || normalized.startsWith(`${t} `));
-  }
-
-  private parseNaturalReminderTime(text: string, ctx: PipelineContext): { remindAt: Date; pretty: string } | null {
-    const lower = text.toLowerCase();
-    const durationMatch = lower.match(/(?:daqui|dentro de|em)\s+(\d+)\s*(minutos|min|m|horas|hora|h|dias|dia|d)/i);
-    if (durationMatch) {
-      const amount = Number.parseInt(durationMatch[1] ?? "0", 10);
-      const unit = durationMatch[2] ?? "";
-      const token = unit.startsWith("m")
-        ? `${amount}m`
-        : unit.startsWith("h")
-          ? `${amount}h`
-          : `${amount}d`;
-      const duration = parseDurationInput(token);
-      if (duration) {
-        const { date, pretty } = addDurationToNow({ durationMs: duration.milliseconds, timezone: ctx.timezone, now: ctx.now });
-        return { remindAt: date, pretty };
-      }
-    }
-
-    const timeRegex = /(?:às|as|a[s]?)\s*(\d{1,2}(?::?\d{2})?)/i;
-    const explicitDateMatch = lower.match(/(\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?)/);
-    const hasTomorrow = /\bamanh[ãa]\b/.test(lower);
-    const hasToday = /\bhoje\b/.test(lower);
-
-    let dateToken: string | undefined;
-    if (hasTomorrow || hasToday) {
-      const base = DateTime.fromJSDate(ctx.now).setZone(ctx.timezone);
-      const dt = hasTomorrow ? base.plus({ days: 1 }) : base;
-      dateToken = dt.toFormat("dd-LL-yyyy");
-    } else if (explicitDateMatch?.[1]) {
-      dateToken = explicitDateMatch[1].replace(/\//g, "-");
-    }
-
-    let timeToken: string | undefined;
-    const explicitTime = timeRegex.exec(lower);
-    const looseTime = lower.match(/(\d{1,2}[:h]\d{1,2})/);
-    if (explicitTime?.[1]) timeToken = explicitTime[1].replace("h", ":");
-    else if (looseTime?.[1]) timeToken = looseTime[1].replace("h", ":");
-
-    if (dateToken) {
-      const parsed = parseDateTimeWithZone({
-        dateToken,
-        timeToken,
-        timezone: ctx.timezone,
-        now: ctx.now,
-        defaultTime: ctx.defaultReminderTime
-      });
-      if (parsed) return { remindAt: parsed.date, pretty: parsed.pretty };
-    }
-
-    if (timeToken) {
-      const todayToken = DateTime.fromJSDate(ctx.now).setZone(ctx.timezone).toFormat("dd-LL-yyyy");
-      const parsedToday = parseDateTimeWithZone({
-        dateToken: todayToken,
-        timeToken,
-        timezone: ctx.timezone,
-        now: ctx.now,
-        defaultTime: ctx.defaultReminderTime
-      });
-      if (parsedToday) {
-        if (parsedToday.date.getTime() <= ctx.now.getTime()) {
-          const tomorrowToken = DateTime.fromJSDate(ctx.now).setZone(ctx.timezone).plus({ days: 1 }).toFormat("dd-LL-yyyy");
-          const parsedTomorrow = parseDateTimeWithZone({
-            dateToken: tomorrowToken,
-            timeToken,
-            timezone: ctx.timezone,
-            now: ctx.now,
-            defaultTime: ctx.defaultReminderTime
-          });
-          if (parsedTomorrow) return { remindAt: parsedTomorrow.date, pretty: parsedTomorrow.pretty };
-        }
-        return { remindAt: parsedToday.date, pretty: parsedToday.pretty };
-      }
-    }
-
-    return null;
-  }
-
-  private promptForMissing(action: ToolAction, field: string): string {
-    const map: Record<string, string> = {
-      "create_task:title": "Qual o título da tarefa?",
-      "update_task:taskId": "Qual o ID da tarefa que devo atualizar?",
-      "update_task:title": "Qual é o novo título da tarefa?",
-      "complete_task:taskId": "Qual o ID da tarefa que devo marcar como concluída?",
-      "delete_task:taskId": "Qual o ID da tarefa que devo remover?",
-      "create_reminder:message": "O que devo te lembrar?",
-      "create_reminder:remindAt": "Quando devo lembrar? Informe data e horário ou duração.",
-      "update_reminder:reminderId": "Qual o ID do lembrete para editar?",
-      "update_reminder:message": "Qual o novo texto do lembrete?",
-      "update_reminder:remindAt": "Qual o novo horário do lembrete?",
-      "delete_reminder:reminderId": "Qual o ID do lembrete que devo cancelar?"
-    };
-    return map[`${action}:${field}`] ?? "Me envia mais detalhes para continuar.";
-  }
-
-  private detectNaturalIntent(ctx: PipelineContext): DetectedIntent | null {
-    const text = ctx.event.normalizedText;
-    if (!text || text.startsWith("/")) return null;
-    const lower = text.toLowerCase();
-    if (lower.length < 4) return null;
-
-    if (/(que horas|qual horário|que hora)/i.test(lower)) {
-      return { action: "get_time", payload: {}, missing: [], reason: "time_question" };
-    }
-
-    if (/(configurações?|preferências?|settings?)/i.test(lower)) {
-      return { action: "get_settings", payload: {}, missing: [], reason: "settings_request" };
-    }
-
-    if (/(listar|lista|mostra|mostre).*(notas|anotações|notes)/i.test(lower)) {
-      return { action: "list_notes", payload: {}, missing: [], reason: "list_notes" };
-    }
-
-    if (/(anota|anotar|nota isso|nota ai|note)/i.test(lower)) {
-      const noteText = text.replace(/.*?(anota(r)?|nota|note)\s*(que)?/i, "").trim();
-      const missing = noteText ? [] : ["text"];
-      return { action: "add_note", payload: { text: noteText }, missing, reason: "add_note" };
-    }
-
-    if (/(lembre|lembra|lembrete)/i.test(lower)) {
-      const wantsDelete = /(cancela|cancelar|remover|remove|apaga|exclui)/i.test(lower);
-      const wantsUpdate = /(edita|editar|atualiza|muda|alterar|altera)/i.test(lower);
-      const reminderId = text.match(/(?:lembrete|id)\s+([a-z0-9-]{6,})/i)?.[1];
-
-      if (wantsDelete) {
-        const missing = reminderId ? [] : ["reminderId"];
-        return { action: "delete_reminder", payload: { reminderId: reminderId?.trim() }, missing, reason: "delete_reminder" };
-      }
-
-      if (wantsUpdate) {
-        const payload: Record<string, unknown> = { reminderId: reminderId?.trim() };
-        const time = this.parseNaturalReminderTime(text, ctx);
-        if (time) payload.remindAt = time.remindAt;
-        const message = text.replace(/.*?(lembre|lembra|lembrete)/i, "").trim();
-        if (message) payload.message = message;
-        const missing: string[] = [];
-        if (!payload.reminderId) missing.push("reminderId");
-        if (!payload.message && !payload.remindAt) missing.push("message");
-        return { action: "update_reminder", payload, missing, reason: "update_reminder" };
-      }
-
-      const time = this.parseNaturalReminderTime(text, ctx);
-      const message = text.replace(/^(por favor\s+)?(me\s+)?(lembre|lembra)(-me)?\s*(de|que)?/i, "").trim();
-      const payload: Record<string, unknown> = { message, remindAt: time?.remindAt, pretty: time?.pretty };
-      const missing: string[] = [];
-      if (!payload.message) missing.push("message");
-      if (!payload.remindAt) missing.push("remindAt");
-      return { action: "create_reminder", payload, missing, reason: "create_reminder" };
-    }
-
-    if (/(tarefa|task)/i.test(lower)) {
-      const wantsDelete = /(remove|remover|apaga|apagar|exclui|deleta|deletar)/i.test(lower);
-      const wantsUpdate = /(edita|editar|atualiza|muda|alterar|altera)/i.test(lower);
-      const wantsComplete = /(conclu[ií]d|finaliza|finalizar|feito|feita|fechar|encerrar)/i.test(lower);
-      const wantsList = /(lista|listar|mostra|quais).*(tarefas|tasks?)/i.test(lower);
-      if (wantsList) return { action: "list_tasks", payload: {}, missing: [], reason: "list_tasks" };
-
-      const taskId =
-        text.match(/tarefa\s+([A-Za-z0-9-]{6,})/i)?.[1]?.trim() ??
-        text.match(/\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b/i)?.[1];
-      const titleSegment = text.split(/tarefa/i)[1]?.replace(/^(de|para|sobre)\s+/i, "").trim() ?? "";
-
-      if (wantsDelete) {
-        const missing = taskId ? [] : ["taskId"];
-        return { action: "delete_task", payload: { taskId }, missing, reason: "delete_task" };
-      }
-
-      if (wantsUpdate) {
-        const payload: Record<string, unknown> = { taskId, title: titleSegment };
-        const missing: string[] = [];
-        if (!taskId) missing.push("taskId");
-        if (!payload.title) missing.push("title");
-        return { action: "update_task", payload, missing, reason: "update_task" };
-      }
-
-      if (wantsComplete) {
-        const missing = taskId ? [] : ["taskId"];
-        return { action: "complete_task", payload: { taskId }, missing, reason: "complete_task" };
-      }
-
-      const payload: Record<string, unknown> = { title: titleSegment };
-      const missing: string[] = [];
-      if (!payload.title) missing.push("title");
-      return { action: "create_task", payload, missing, reason: "create_task" };
-    }
-
-    if (/(notas|notes|anotações)/i.test(lower) && /(lista|listar|mostra|quais)/i.test(lower)) {
-      return { action: "list_notes", payload: {}, missing: [], reason: "list_notes" };
-    }
-
-    return null;
-  }
-
-  private async executeToolIntent(ctx: PipelineContext, intent: DetectedIntent): Promise<ResponseAction[]> {
-    switch (intent.action) {
-      case "create_task": {
-        const title = String(intent.payload.title ?? "").trim();
-        const runAtRaw = intent.payload.runAt;
-        const runAt = runAtRaw instanceof Date ? runAtRaw : runAtRaw ? new Date(runAtRaw as string) : undefined;
-        if (!title) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "title")) }];
-        const task = await createTaskUseCase(this.ports.tasksRepository, {
-          tenantId: ctx.event.tenantId,
-          title,
-          createdByWaUserId: ctx.event.waUserId,
-          waGroupId: ctx.event.waGroupId,
-          runAt: runAt ?? null
-        });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa criada: ${task.publicId} - ${task.title}`) }];
-      }
-      case "list_tasks": {
-        const tasks = await listTasksUseCase(this.ports.tasksRepository, {
-          tenantId: ctx.event.tenantId,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId
-        });
-        if (tasks.length === 0) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Nenhuma tarefa no momento.") }];
-        return [
-          {
-            kind: "reply_list",
-            header: "Tarefas",
-            items: tasks.map((t) => ({
-              title: `${t.done ? "✅" : "⬜"} ${t.publicId}`,
-              description: t.title
-            }))
-          }
-        ];
-      }
-      case "update_task": {
-        const taskId = String(intent.payload.taskId ?? "").trim();
-        const title = String(intent.payload.title ?? "").trim();
-        if (!taskId || !title) {
-          const missingField = !taskId ? "taskId" : "title";
-          return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, missingField)) }];
-        }
-        const result = await updateTaskUseCase(this.ports.tasksRepository, {
-          tenantId: ctx.event.tenantId,
-          taskId,
-          title,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId
-        });
-        if (result.status === "not_supported") return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Atualização de tarefas não está disponível.") }];
-        if (result.status === "not_found") return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Não encontrei a tarefa ${taskId}.`) }];
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa ${result.task.id} atualizada para: ${result.task.title}`) }];
-      }
-      case "complete_task": {
-        const taskRef = String(intent.payload.taskId ?? "").trim();
-        if (!taskRef) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "taskId")) }];
-        const done = await completeTaskUseCase(this.ports.tasksRepository, {
-          tenantId: ctx.event.tenantId,
-          taskRef,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId
-        });
-        const label = done.publicId ?? taskRef;
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, done.ok ? `Tarefa ${label} marcada como concluída.` : `Tarefa ${taskRef} não encontrada.`) }];
-      }
-      case "delete_task": {
-        const taskId = String(intent.payload.taskId ?? "").trim();
-        if (!taskId) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "taskId")) }];
-        const result = await removeTaskUseCase(this.ports.tasksRepository, {
-          tenantId: ctx.event.tenantId,
-          taskId,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId
-        });
-        if (result.status === "not_supported") return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Remoção de tarefas não está disponível.") }];
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, result.status === "removed" ? `Tarefa ${taskId} removida.` : `Não encontrei a tarefa ${taskId}.`) }];
-      }
-      case "create_reminder": {
-        const message = String(intent.payload.message ?? "").trim();
-        const remindAtRaw = intent.payload.remindAt;
-        const remindAt = remindAtRaw instanceof Date ? remindAtRaw : remindAtRaw ? new Date(remindAtRaw as string) : undefined;
-        if (!message) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "message")) }];
-        if (!remindAt || Number.isNaN(remindAt.getTime())) {
-          return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "remindAt")) }];
-        }
-        const reminder = await this.ports.remindersRepository.createReminder({
-          tenantId: ctx.event.tenantId,
-          waUserId: ctx.event.waUserId,
-          waGroupId: ctx.event.waGroupId,
-          message,
-          remindAt
-        });
-        const pretty = formatDateTimeInZone(remindAt, ctx.timezone);
-        return [
-          { kind: "reply_text", text: this.stylizeReply(ctx, `Lembrete ${reminder.id} definido para ${pretty}.`) },
-          { kind: "enqueue_job", jobType: "reminder", payload: { id: reminder.id, runAt: remindAt } }
-        ];
-      }
-      case "update_reminder": {
-        if (!this.ports.remindersRepository.updateReminder) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Atualização de lembretes não está disponível.") }];
-        const reminderId = String(intent.payload.reminderId ?? "").trim();
-        const message = intent.payload.message ? String(intent.payload.message).trim() : undefined;
-        const remindAtRaw = intent.payload.remindAt;
-        const remindAt = remindAtRaw instanceof Date ? remindAtRaw : remindAtRaw ? new Date(remindAtRaw as string) : undefined;
-        if (!reminderId) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "reminderId")) }];
-        if (!message && !remindAt) {
-          return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "message")) }];
-        }
-        const updated = await this.ports.remindersRepository.updateReminder({
-          tenantId: ctx.event.tenantId,
-          reminderId,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId,
-          message,
-          remindAt
-        });
-        if (!updated) return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Não encontrei o lembrete ${reminderId}.`) }];
-        const parts: string[] = [];
-        if (message) parts.push(`texto atualizado`);
-        if (remindAt) parts.push(`novo horário ${formatDateTimeInZone(remindAt, ctx.timezone)}`);
-        const actions: ResponseAction[] = [
-          { kind: "reply_text", text: this.stylizeReply(ctx, `Lembrete ${reminderId} atualizado (${parts.join(" / ")}).`) }
-        ];
-        if (remindAt) actions.push({ kind: "enqueue_job", jobType: "reminder", payload: { id: reminderId, runAt: remindAt } });
-        return actions;
-      }
-      case "delete_reminder": {
-        if (!this.ports.remindersRepository.deleteReminder) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Cancelamento de lembretes não está disponível.") }];
-        const reminderId = String(intent.payload.reminderId ?? "").trim();
-        if (!reminderId) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "reminderId")) }];
-        const removed = await this.ports.remindersRepository.deleteReminder({
-          tenantId: ctx.event.tenantId,
-          reminderId,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId
-        });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, removed ? `Lembrete ${reminderId} cancelado.` : `Não encontrei o lembrete ${reminderId}.`) }];
-      }
-      case "add_note": {
-        if (!this.ports.notesRepository) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "O módulo de notas não está disponível.") }];
-        const text = String(intent.payload.text ?? "").trim();
-        if (!text) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto da nota.") }];
-        const note = await addNoteUseCase(this.ports.notesRepository, {
-          tenantId: ctx.event.tenantId,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId,
-          text,
-          scope: ctx.scope.scope
-        });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Nota ${note.publicId} salva.`) }];
-      }
-      case "list_notes": {
-        if (!this.ports.notesRepository) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "O módulo de notas não está disponível.") }];
-        const notes = await listNotesUseCase(this.ports.notesRepository, {
-          tenantId: ctx.event.tenantId,
-          waGroupId: ctx.event.waGroupId,
-          waUserId: ctx.event.waUserId,
-          scope: ctx.scope.scope,
-          limit: 10
-        });
-        if (notes.length === 0) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Nenhuma nota encontrada.") }];
-        return [
-          {
-            kind: "reply_list",
-            header: "Notas",
-            items: notes.map((n) => ({ title: n.publicId, description: truncate(n.text, 50) }))
-          }
-        ];
-      }
-      case "get_time": {
-        const formatted = formatDateTimeInZone(ctx.now, ctx.timezone);
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Agora são ${formatted} (${ctx.timezone}).`) }];
-      }
-      case "get_settings": {
-        const lines = [
-          `assistant_mode: ${ctx.flags.assistant_mode ?? this.ports.defaultAssistantMode ?? "professional"}`,
-          `fun_mode: ${ctx.flags.fun_mode ?? this.ports.defaultFunMode ?? "off"}`,
-          `downloads_mode: ${ctx.flags.downloads_mode ?? "off"}`,
-          `timezone: ${ctx.timezone}`
-        ];
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Configurações atuais:\n${lines.join("\n")}`) }];
-      }
-      default:
-        return [];
-    }
-  }
-
-  private async runNaturalLanguageTools(ctx: PipelineContext): Promise<ResponseAction[]> {
-    if (ctx.groupPolicy?.commandsOnly) return [];
-    if (ctx.policyMuted) return [];
-    const intent = this.detectNaturalIntent(ctx);
-    if (!intent) return [];
-
-    if (intent.missing.length > 0) {
-      if (this.ports.conversationState) {
-        await this.setPendingConversationState(ctx, "WAITING_TOOL_DETAILS", {
-          pendingTool: intent.action,
-          missing: intent.missing,
-          provided: intent.payload,
-          summary: intent.reason
-        });
-      }
-      const question = this.promptForMissing(intent.action, intent.missing[0]);
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, question) }];
-    }
-
-    if (this.ports.conversationState && (intent.action === "delete_task" || intent.action === "delete_reminder")) {
-      await this.setPendingConversationState(ctx, "WAITING_TOOL_CONFIRMATION", {
-        pendingTool: intent.action,
-        missing: [],
-        provided: intent.payload,
-        summary: intent.reason
-      });
-      const prompt =
-        intent.action === "delete_task"
-          ? `Confirma remover a tarefa ${intent.payload.taskId}? Responda sim ou não.`
-          : `Confirma cancelar o lembrete ${intent.payload.reminderId}? Responda sim ou não.`;
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, prompt) }];
-    }
-
-    const actions = await this.executeToolIntent(ctx, intent);
-    if (actions.length > 0) await this.clearConversationState(ctx);
-    return actions;
-  }
-
-  private async handlePendingToolFollowUp(ctx: PipelineContext): Promise<ResponseAction[]> {
-    const pending = this.getPendingContext(ctx.conversationState);
-    if (!pending) {
-      await this.clearConversationState(ctx);
-      return [{ kind: "reply_text", text: this.buildAwaitingStateText(ctx.conversationState.state) }];
-    }
-
-    if (this.isCancelText(ctx.event.normalizedText)) {
-      await this.clearConversationState(ctx);
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Tudo bem, cancelei o fluxo.") }];
-    }
-
-    if (ctx.conversationState.state === "WAITING_TOOL_CONFIRMATION") {
-      const yes = /^(sim|pode|ok|okay|claro|yes)/i.test(ctx.event.normalizedText.trim());
-      if (!yes) {
-        await this.clearConversationState(ctx);
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Ok, não fiz nenhuma alteração.") }];
-      }
-      const intent: DetectedIntent = {
-        action: pending.pendingTool,
-        payload: pending.provided ?? {},
-        missing: [],
-        reason: pending.summary ?? "confirmation"
-      };
-      const actions = await this.executeToolIntent(ctx, intent);
-      await this.clearConversationState(ctx);
-      return actions;
-    }
-
-    const payload: Record<string, unknown> = { ...(pending.provided ?? {}) };
-    let missing = [...pending.missing];
-    const text = ctx.event.normalizedText.trim();
-    const idRegex = /[A-Za-z0-9-]{6,}/;
-
-    switch (pending.pendingTool) {
-      case "create_task":
-        if (missing.includes("title") && text) {
-          payload.title = text;
-          missing = missing.filter((f) => f !== "title");
-        }
-        break;
-      case "update_task":
-        if (missing.includes("taskId") && idRegex.test(text)) {
-          payload.taskId = text;
-          missing = missing.filter((f) => f !== "taskId");
-        }
-        if (missing.includes("title") && text) {
-          payload.title = text;
-          missing = missing.filter((f) => f !== "title");
-        }
-        break;
-      case "complete_task":
-      case "delete_task":
-        if (missing.includes("taskId") && idRegex.test(text)) {
-          payload.taskId = text;
-          missing = [];
-        }
-        break;
-      case "create_reminder": {
-        if (missing.includes("message") && text) {
-          payload.message = text;
-          missing = missing.filter((f) => f !== "message");
-        }
-        if (missing.includes("remindAt")) {
-          const parsed = this.parseNaturalReminderTime(text, ctx);
-          if (parsed) {
-            payload.remindAt = parsed.remindAt;
-            missing = missing.filter((f) => f !== "remindAt");
-          }
-        }
-        break;
-      }
-      case "update_reminder": {
-        if (missing.includes("reminderId") && idRegex.test(text)) {
-          payload.reminderId = text;
-          missing = missing.filter((f) => f !== "reminderId");
-        }
-        if (missing.includes("message") && text) {
-          payload.message = text;
-          missing = missing.filter((f) => f !== "message");
-        }
-        if (missing.includes("remindAt")) {
-          const parsed = this.parseNaturalReminderTime(text, ctx);
-          if (parsed) {
-            payload.remindAt = parsed.remindAt;
-            missing = missing.filter((f) => f !== "remindAt");
-          }
-        }
-        break;
-      }
-      default:
-        break;
-    }
-
-    if (missing.length > 0) {
-      if (this.ports.conversationState) {
-        await this.setPendingConversationState(ctx, "WAITING_TOOL_DETAILS", {
-          pendingTool: pending.pendingTool,
-          missing,
-          provided: payload,
-          summary: pending.summary
-        });
-      }
-      const question = this.promptForMissing(pending.pendingTool, missing[0]);
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, question) }];
-    }
-
-    const intent: DetectedIntent = {
-      action: pending.pendingTool,
-      payload,
-      missing: [],
-      reason: pending.summary ?? "follow_up"
-    };
-    const actions = await this.executeToolIntent(ctx, intent);
-    await this.clearConversationState(ctx);
-    return actions;
-  }
   private buildMuteText(muteInfo: { until: Date } | null | undefined, timezone: string, scoped?: boolean): string {
     const until = muteInfo?.until ? formatDateTimeInZone(muteInfo.until, timezone) : "(desconhecido)";
     if (scoped) return `🤫 Você está silenciado neste grupo até ${until}.`;
     return `🤫 Estou em silêncio até ${until}. Envie ${formatCommand(this.commandPrefix, "mute off")} para reativar.`;
-  }
-
-  private buildAwaitingStateText(state: ConversationState): string {
-    switch (state) {
-      case "WAITING_CONFIRMATION":
-        return "Ainda estou aguardando sua confirmação. Responda com 'sim' ou 'não'.";
-      case "WAITING_TASK_DETAILS":
-        return `Preciso dos detalhes da tarefa para continuar. Envie o título ou use ${formatCommand(this.commandPrefix, "task add <título>")}.`;
-      case "WAITING_REMINDER_DETAILS":
-        return `Envie o texto do lembrete ou use ${formatCommand(this.commandPrefix, "reminder in <duração> <mensagem>")}.`;
-      case "WAITING_TOOL_DETAILS":
-        return "Faltam alguns detalhes. Pode completar a informação para eu seguir?";
-      case "WAITING_TOOL_CONFIRMATION":
-        return "Quase lá. Confirma que devo executar?";
-      case "WAITING_CONSENT":
-        return "Preciso que você aceite os termos primeiro. Responda SIM para aceitar ou NÃO para recusar.";
-      case "HANDOFF_ACTIVE":
-        return "O atendimento humano já foi acionado. Aguarde, por favor.";
-      default:
-        return "Estou aguardando mais informações para continuar.";
-    }
-  }
-
-  private async setPendingConversationState(ctx: PipelineContext, state: ConversationState, pending: PendingToolContext): Promise<void> {
-    if (!this.ports.conversationState) return;
-    const expiresAt = new Date(ctx.now.getTime() + this.pendingStateTtlMs);
-    await this.ports.conversationState.setState({
-      tenantId: ctx.event.tenantId,
-      waGroupId: ctx.event.waGroupId,
-      waUserId: ctx.event.waUserId,
-      state,
-      context: pending,
-      expiresAt
-    });
   }
 
   private async clearConversationState(ctx: PipelineContext): Promise<void> {
@@ -1639,17 +950,6 @@ export class Orchestrator {
       waGroupId: ctx.event.waGroupId,
       waUserId: ctx.event.waUserId
     });
-  }
-
-  private getPendingContext(state: ConversationStateRecord): PendingToolContext | null {
-    const ctx = state.context as PendingToolContext | undefined;
-    if (!ctx || !ctx.pendingTool) return null;
-    return {
-      pendingTool: ctx.pendingTool,
-      missing: ctx.missing ?? [],
-      provided: ctx.provided ?? {},
-      summary: ctx.summary
-    };
   }
 
   private async runGreetingStage(ctx: PipelineContext): Promise<ResponseAction[]> {
@@ -2243,136 +1543,6 @@ export class Orchestrator {
     return [];
   }
 
-  private async runAiFallback(ctx: PipelineContext): Promise<ResponseAction[]> {
-    if (ctx.groupPolicy?.commandsOnly) return [];
-    if (ctx.policyMuted) return [];
-    if (ctx.assistantMode === "off") return [];
-    if (this.ports.llmEnabled === false) {
-      return [{ kind: "reply_text", text: this.llmUnavailableText }];
-    }
-
-    if (this.ports.aiAssistant) {
-      try {
-        await this.bumpMetric("ai_requests_total");
-        const result = await this.ports.aiAssistant.generate({
-          tenantId: ctx.event.tenantId,
-          conversationId: ctx.event.conversationId,
-          waUserId: ctx.event.waUserId,
-          waGroupId: ctx.event.waGroupId,
-          userText: ctx.event.text,
-          chatScope: ctx.event.isGroup ? "group" : "direct",
-          userRole: this.normalizeUserRole(ctx.identity?.permissionRole ?? ctx.identity?.role),
-          modulesEnabled: [],
-          availableTools: [
-            "create_task",
-            "update_task",
-            "complete_task",
-            "delete_task",
-            "list_tasks",
-            "create_reminder",
-            "update_reminder",
-            "delete_reminder",
-            "list_reminders",
-            "add_note",
-            "list_notes",
-            "get_time",
-            "get_settings"
-          ],
-          conversationState: ctx.conversationState.state,
-          handoffActive: ctx.conversationState.state === "HANDOFF_ACTIVE",
-          settings: { timezone: ctx.timezone },
-          now: ctx.now,
-          llmEnabled: this.ports.llmEnabled,
-          relationshipProfile: ctx.relationshipProfile
-        });
-
-        this.ports.logger?.info?.(
-          {
-            category: "AI",
-            tenantId: ctx.event.tenantId,
-            waUserId: ctx.event.waUserId,
-            waGroupId: ctx.event.waGroupId,
-            model: this.ports.llmModel ?? "unknown",
-            aiEnabled: Boolean(this.ports.llmEnabled ?? true),
-            toolSuggestion: result.kind === "tool_suggestion" ? result.tool.action : undefined,
-            fallback: result.kind === "fallback"
-          },
-          "ai response"
-        );
-
-        if (result.kind === "text") return this.guardAiResponses(ctx, [{ kind: "reply_text", text: result.text }]);
-        if (result.kind === "tool_suggestion") {
-          return this.guardAiResponses(ctx, [
-            {
-              kind: "ai_tool_suggestion",
-              tool: result.tool,
-              text: result.text
-            }
-          ]);
-        }
-        return this.guardAiResponses(ctx, [{ kind: "reply_text", text: result.text ?? this.llmUnavailableText }]);
-      } catch (error) {
-        await this.bumpMetric("ai_failures_total");
-        this.ports.logger?.warn?.(
-          { err: error, tenantId: ctx.event.tenantId, waGroupId: ctx.event.waGroupId, waUserId: ctx.event.waUserId },
-          "ai assistant failed"
-        );
-        return [{ kind: "reply_text", text: this.llmUnavailableText }];
-      }
-    }
-
-    const promptOverride = await this.ports.prompt.resolvePrompt({
-      tenantId: ctx.event.tenantId,
-      waGroupId: ctx.event.waGroupId
-    });
-    const systemBase =
-      promptOverride ??
-      this.ports.baseSystemPrompt ??
-      "Você é Zappy, uma secretária eficiente e direta no WhatsApp. Ajude com tarefas, lembretes e respostas objetivas.";
-    const relationshipNote = this.relationshipNote(ctx.relationshipProfile);
-    const system = relationshipNote ? `${relationshipNote}\n${systemBase}` : systemBase;
-
-    try {
-      await this.bumpMetric("ai_requests_total");
-      const llmText = await this.ports.llm.chat({
-        system,
-        messages: [...ctx.recentMessages, { role: "user", content: ctx.event.text }]
-      });
-      const sanitized = this.sanitizeAiText(ctx, llmText);
-      if (!sanitized) return [];
-      await this.storeAiMemory(ctx, sanitized);
-      this.ports.logger?.info?.(
-        {
-          category: "AI",
-          tenantId: ctx.event.tenantId,
-          waUserId: ctx.event.waUserId,
-          waGroupId: ctx.event.waGroupId,
-          model: this.ports.llmModel ?? "unknown",
-          aiEnabled: Boolean(this.ports.llmEnabled ?? true),
-          fallback: false
-        },
-        "llm response"
-      );
-      return [{ kind: "reply_text", text: sanitized }];
-    } catch (error) {
-      await this.bumpMetric("ai_failures_total");
-      const payload = {
-        tenantId: ctx.event.tenantId,
-        waUserId: ctx.event.waUserId,
-        waGroupId: ctx.event.waGroupId,
-        messageId: ctx.event.waMessageId,
-        error,
-        llmReason: error instanceof LlmError ? error.reason : "unknown"
-      };
-      if (this.ports.logger?.warn) {
-        this.ports.logger.warn(payload, "llm fallback failed");
-      } else {
-        console.warn("llm fallback failed", payload);
-      }
-      return [{ kind: "reply_text", text: this.llmUnavailableText }];
-    }
-  }
-
   async handleInboundMessage(event: InboundMessageEvent): Promise<ResponseAction[]> {
     const normalized = this.normalizeEvent(event);
     await this.bumpMetric("messages_received_total");
@@ -2478,14 +1648,14 @@ export class Orchestrator {
     if (commandActions.length > 0) return this.formatActionsForDelivery(commandActions);
 
     if (ctx.classification.kind === "tool_follow_up") {
-      const followUp = await this.handlePendingToolFollowUp(ctx);
+      const followUp = await this.assistantAi.handlePendingToolFollowUp(ctx);
       if (followUp.length > 0) return this.formatActionsForDelivery(followUp);
     }
 
-    const naturalActions = await this.runNaturalLanguageTools(ctx);
+    const naturalActions = await this.assistantAi.handleAddressedMessage(ctx);
     if (naturalActions.length > 0) return this.formatActionsForDelivery(naturalActions);
 
-    const aiActions = await this.runAiFallback(ctx);
+    const aiActions = await this.assistantAi.runFallback(ctx);
     if (aiActions.length > 0) return this.formatActionsForDelivery(aiActions);
 
     if (ctx.policyMuted) {
