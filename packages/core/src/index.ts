@@ -873,6 +873,7 @@ const containsLink = (text: string): boolean => {
 const buildCommandList = (isRoot: boolean): string[] => {
   const commands = [
     "/help",
+    "/ping",
     "/task add <title>",
     "/task list",
     "/task done <id>",
@@ -2655,6 +2656,7 @@ export class Orchestrator {
   }
 
   private async runCommandRouter(ctx: PipelineContext): Promise<ResponseAction[]> {
+    const commandStartedAt = this.ports.clock?.now?.() ?? new Date();
     const cmd = ctx.event.normalizedText;
     const lower = cmd.toLowerCase();
     const botAdminStatus = this.formatBotAdminStatus(ctx);
@@ -2760,6 +2762,11 @@ export class Orchestrator {
           text: this.buildHelpResponse(ctx)
         }
       ];
+    }
+
+    if (lower === "/ping") {
+      const elapsedMs = (this.ports.clock?.now?.() ?? new Date()).getTime() - commandStartedAt.getTime();
+      return [{ kind: "reply_text", text: `Pong! 🏓\nms: ${elapsedMs}` }];
     }
 
     if (lower === "/groupinfo") {

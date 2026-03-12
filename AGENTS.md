@@ -1,134 +1,395 @@
-# AGENTS.md — Zappy-Assistant (Coding Rules for Agents)
+# AGENTS.md
 
-This repository is a monorepo for a scalable WhatsApp assistant.
-Agents (Codex) must follow the rules below when generating or editing code.
+This repository is a **modular monolith** for Zappy Assistant.
 
-## 1) Non-negotiable goals
-- Keep the architecture Hexagonal / Ports & Adapters:
-  - `packages/core` MUST NOT depend on frameworks, DB, Redis, Baileys, or OpenAI SDK.
-  - All external integrations live in `packages/adapters` or apps.
-- Avoid unstable external dependencies; the only external AI provider is OpenAI (behind a port).
-- Admin must be possible without code changes:
-  - CRUD triggers and feature flags via Admin API + Admin UI.
+The architectural target is:
 
-## 2) Repo layout (do not change without strong reason)
-- `apps/assistant-api`: Fastify Admin API (and optional static hosting for admin-ui)
-- `apps/wa-gateway`: Baileys WhatsApp connection + event normalization + message send
-- `apps/worker`: BullMQ workers (reminders/jobs)
-- `apps/admin-ui`: Static HTML UI that consumes Admin API
+- **Modular Monolith**
+- **Hexagonal Architecture / Ports and Adapters**
+- **Use Cases per Module**
+- **Single codebase, multiple runtime apps**
+- **Command Registry for bot commands**
+- **Transport-agnostic core logic**
 
-- `packages/core`: domain logic (Orchestrator, TriggerEngine, policies, ports/interfaces)
-- `packages/adapters`: implementations of ports (Prisma, Redis/BullMQ, OpenAI)
-- `packages/shared`: shared types, zod schemas, env loader, logger helpers
+This file defines how coding agents must work in this repository.
 
-- `prisma/`: schema and migrations
-- `infra/`: docker-compose and infra files
+---
 
-## 3) TypeScript + quality baseline
-- TypeScript strict mode ON.
-- Prefer small, readable modules. No “god files”.
-- Use explicit types for domain DTOs/events.
-- Validate external input (HTTP payloads) with Zod.
-- No silent catch: log errors with context.
-- Avoid changing working bootstrap plumbing unless necessary.
+## 1. Core architectural direction
 
-## 4) Ports and adapters contract
-Core defines ports only; adapters implement them.
+Zappy Assistant must evolve as a **modular monolith**, not as a growing god-file.
 
-### Core ports (examples)
-- `WhatsAppClientPort`
-  - `sendText(to: string, text: string): Promise<void>`
-  - `sendTyping(to: string, on: boolean): Promise<void>`
-- `LlmPort`
-  - `chat(input: { system: string; messages: Array<{role: 'user'|'assistant'|'system'; content: string}> }): Promise<string>`
-- `RepositoriesPort` (or split repos)
-  - `TriggersRepo`, `FlagsRepo`, `TasksRepo`, `RemindersRepo`, `MessagesRepo`, `AuditRepo`
-- `QueuePort`
-  - `enqueueReminder(reminderId: string, runAt: Date): Promise<{jobId: string}>`
-- `CachePort / RateLimitPort`
-  - `get/set`, `incrWithTTL`, etc.
+### Non-negotiable rule
+Do **not** continue to grow `packages/core/src/index.ts` with new business logic.
 
-Adapters must live in `packages/adapters/*` and must not leak adapter-specific types into core.
-Apps do dependency injection by constructing adapters and passing them into core.
+`packages/core/src/index.ts` should progressively become only:
 
-## 5) Message processing pipeline (must follow)
-When an inbound WhatsApp message arrives:
+- ingress pipeline
+- context resolution orchestration
+- dispatch to modules / use cases
+- outbound action normalization
 
-1) Normalize into `InboundMessageEvent` (core DTO).
-2) Persist inbound message (DB).
-3) Run `Orchestrator.handleInboundMessage(event)`:
-   a) Resolve feature flags (user > group > tenant > defaults).
-   b) TriggerEngine (priority order + cooldown) -> optional reply.
-   c) CommandRouter -> tools (/task, /reminder, /help).
-   d) LLM fallback if enabled.
-4) Send replies via `WhatsAppClientPort`.
-5) Persist outbound message (DB).
-6) Log actions (pino) and audit changes (Admin side).
+Business rules, commands, and feature logic must live in modules.
 
-Do not shortcut by calling DB/Redis directly from orchestrator.
+---
 
-## 6) Feature flags rules
-- Flags exist with scopes: GLOBAL (tenant default), GROUP, USER.
-- Precedence: USER > GROUP > GLOBAL > env defaults.
-- Default keys to support:
-  - `assistant_mode` (off|professional|fun|mixed)
-  - `fun_mode` (off|on)
-  - `downloads_mode` (off|allowlist|on)
+## 2. Repository mental model
 
-## 7) Triggers rules
-- Triggers are data-driven (no code edits required to add behavior).
-- Match types supported: CONTAINS, REGEX, STARTS_WITH.
-- Evaluate by priority (higher first).
-- Cooldown must be enforced using Redis keys (scope-aware).
-- Templates support variables:
-  - `{{user}}`, `{{group}}`, `{{bot}}`, `{{date}}`
-- Triggers must respect feature flags/policies (e.g., fun triggers only when fun_mode enabled).
+### Runtime apps
+- `apps/wa-gateway`  
+  WhatsApp/Baileys ingress/egress, message normalization, platform-specific actions.
 
-## 8) Reminders and jobs rules
-- Reminders must be scheduled via BullMQ (delayed jobs).
-- Worker must be idempotent:
-  - check DB status before sending; do not send twice.
-- Update reminder status: SCHEDULED -> SENT/FAILED/CANCELED.
-- Log job execution with context.
+- `apps/assistant-api`  
+  Admin/ops HTTP API, status, queues, metrics, audit read endpoints.
 
-## 9) Admin API & Admin UI rules
-- Admin API lives in `apps/assistant-api`.
-- All `/admin/*` routes require `Authorization: Bearer <ADMIN_API_TOKEN>`.
-- Every mutation (POST/PUT/DELETE) must write an `AuditLog` entry.
-- Admin UI is static and must only call Admin API.
-- Admin UI should not embed secrets; token can be entered by user and stored in localStorage.
+- `apps/worker`  
+  BullMQ workers, reminders, delayed jobs, background processing.
 
-## 10) Data model constraints
-- Prisma is the source of truth for DB structure.
-- Use migrations for any schema changes.
-- Respect existing unique keys:
-  - `Group.waGroupId` unique
-  - `User.waUserId` unique
+- `apps/admin-ui`  
+  UI that consumes `assistant-api` only.
 
-## 11) Logging & error handling
-- Use pino everywhere (shared logger helper).
-- Include correlation/context fields when possible:
-  - tenantId, groupId/waGroupId, waUserId, conversationId, messageId
-- Errors should be logged once with stack traces.
-- Prefer returning safe messages to WhatsApp rather than crashing.
+### Shared packages
+- `packages/core`  
+  Transport-agnostic application pipeline and module dispatch.
 
-## 12) Dependency rules (hard)
-Core must NEVER import:
-- fastify, baileys, prisma, ioredis/redis, bullmq, openai SDK, or any Node-only APIs not needed for pure logic.
+- `packages/adapters`  
+  Concrete implementations for Prisma, Redis, BullMQ, OpenAI, Baileys-facing helpers, audit/metrics persistence.
 
-Apps/adapters may import those, but keep boundaries clean.
+- `packages/shared`  
+  Env loading, logger, shared types/constants/utilities.
 
-## 13) Development workflow
-- After changes, ensure:
-  - `npm run build` passes
-  - (if available) minimal smoke: start assistant-api and hit /health
-- Keep changes incremental:
-  1) core + ports
-  2) adapters
-  3) apps integration
-  4) UI enhancements
+- `packages/ai`  
+  Assistant persona, prompt building, tool-intent support, memory orchestration.
 
-## 14) If you are unsure
-- Prefer implementing a small, correct MVP first.
-- Do NOT ask questions; choose sensible defaults and proceed.
-- Do NOT refactor unrelated code.
+### Data / infra
+- `prisma/`
+- `infra/`
+
+---
+
+## 3. Modular structure rules
+
+All new business capabilities must be implemented as modules by **business domain**, not by technical layer alone.
+
+Preferred structure inside `packages/core/src/modules/<module-name>/`:
+
+```text
+modules/
+  groups/
+    application/
+      use-cases/
+      dto/
+      policies/
+    domain/
+    ports/
+    presentation/
+      commands/
+    index.ts
+
+Each module should contain:
+
+application/use-cases/
+
+domain/
+
+ports/
+
+presentation/commands/
+
+optional policies/, dto/, mappers/
+
+Good examples
+
+modules/groups/application/use-cases/set-group-name.ts
+
+modules/reminders/application/use-cases/create-reminder.ts
+
+modules/moderation/presentation/commands/mute.command.ts
+
+Avoid
+
+adding large new logic directly in packages/core/src/index.ts
+
+dumping unrelated features in generic utils/
+
+putting SDK calls directly in core use cases
+
+creating one giant commands.ts
+
+4. Ports and adapters rules
+
+The core must depend on ports, never on concrete SDKs or frameworks.
+
+Examples of ports
+
+LlmPort
+
+QueuePort
+
+AuditPort
+
+MetricsPort
+
+GroupRepositoryPort
+
+ReminderRepositoryPort
+
+GroupPlatformPort
+
+MessagePlatformPort
+
+Adapter rules
+
+Concrete implementations belong in packages/adapters or runtime apps.
+
+Examples:
+
+Prisma adapter
+
+Redis adapter
+
+BullMQ adapter
+
+OpenAI adapter
+
+Baileys-specific platform adapter
+
+Forbidden
+
+Do not import:
+
+Baileys
+
+Prisma client
+
+Redis client
+
+BullMQ
+
+OpenAI SDK
+
+directly inside module use cases unless the file is explicitly an adapter.
+
+5. Command system rules
+
+Zappy must use a central command registry.
+
+Every command definition must have metadata such as:
+
+name
+
+aliases
+
+scope (direct, group, both)
+
+requiredRole
+
+botAdminRequired
+
+description
+
+usage
+
+examples
+
+handler / bound use case
+
+Important
+
+/help must be generated from registry metadata, not hardcoded manually forever.
+
+unknown commands must not silently fall into AI without deliberate policy.
+
+prefix handling must be centralized.
+
+6. Prefix handling
+
+Command prefix must be configurable through environment:
+
+BOT_PREFIX=/
+
+Rules:
+
+default prefix is /
+
+changing BOT_PREFIX changes command parsing globally
+
+help text and usage text must reflect the active prefix
+
+parsers must not hardcode /
+
+Future-friendly design:
+
+global prefix now
+
+prefix per tenant/group later if needed
+
+7. Group behavior rules
+
+Current supported ideas:
+
+allowed groups
+
+chat on/off
+
+addressed messages via mention/reply
+
+operation-first bot-admin checks
+
+onboarding/consent in direct chat
+
+moderation base
+
+group settings
+
+When adding group features:
+
+keep plain non-addressed chatter ignored
+
+use operation-first strategy for admin-required platform actions
+
+keep requester authorization separate from bot-admin capability
+
+always prefer explicit, auditable behavior
+
+8. AI / assistant behavior rules
+
+AI usage must be policy-driven, not accidental.
+
+AI may be used for:
+
+addressed conversation
+
+tool-intent recognition
+
+structured fallback
+
+persona-aware replies
+
+AI must not become the default home for unfinished command parsing.
+
+When a request maps to an implemented command or use case, prefer:
+
+command / use case execution
+
+AI only for slot-filling / clarification / presentation when appropriate
+
+9. Admin API and Admin UI rules
+Admin API
+
+protected by ADMIN_API_TOKEN
+
+returns stable contracts
+
+should expose status, queues, metrics, commands, messages, settings gradually
+
+Admin UI
+
+consumes only Admin API
+
+must not embed domain logic
+
+must be driven by documented contracts
+
+every new page should define:
+
+endpoint used
+
+fields expected
+
+loading state
+
+empty state
+
+error state
+
+10. Logging and observability rules
+
+Development logging may be pretty/colored.
+Production logging must remain structured and machine-friendly.
+
+When adding logs:
+
+avoid noisy giant dumps by default
+
+use explicit one-line debug logs when diagnosing complex WhatsApp metadata
+
+keep security-sensitive values redacted
+
+never log full secrets/tokens
+
+Metrics and audit are first-class concerns:
+
+important actions should be auditable
+
+important flows should increment metrics
+
+11. Refactoring rules
+
+Refactoring is now a project priority.
+
+Rules for coding agents
+
+prefer small internal PR-style steps
+
+do not mix large feature expansion with major refactors in one change
+
+preserve behavior first, improve structure second
+
+move code before rewriting logic when possible
+
+document architectural changes in ARCHITECTURE.md
+
+Refactoring target
+
+Progressively shrink packages/core/src/index.ts by extracting:
+
+command registry
+
+group module
+
+moderation module
+
+reminders/tasks/notes modules
+
+assistant-ai module
+
+12. Documentation rules
+
+Whenever architecture or contracts change, update:
+
+README.md when user-facing behavior changes
+
+ARCHITECTURE.md when structure/pipeline changes
+
+INTEGRATION_CONTRACTS.md when API/UI contracts change
+
+13. Expected coding style
+
+prefer explicit names over clever abstractions
+
+keep module boundaries clear
+
+prefer small files with single responsibility
+
+keep transport/platform details outside the core domain
+
+every command/use case should be testable in isolation
+
+return normalized result objects where possible
+
+14. Immediate roadmap guidance
+
+Near-term priority order:
+
+architectural refactor toward modules/use-cases/registry
+
+command registry + configurable prefix
+
+stabilize API/UI contracts
+
+polish parsing and ergonomics
+
+add media/fun/search/download modules on top of the improved architecture
+
+Do not keep adding major features into the current central core file.
