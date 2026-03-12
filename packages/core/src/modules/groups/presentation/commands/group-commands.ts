@@ -1,4 +1,10 @@
-import type { GroupAccessPort, GroupAccessState, GroupAdminOperation, PipelineContext, ResponseAction } from "../../../../index.js";
+import type { PipelineContext } from "../../../../pipeline/context.js";
+import type { ResponseAction, GroupAdminOperation } from "../../../../pipeline/actions.js";
+import type { GroupAccessPort, GroupAccessState } from "../../ports/group-access.port.js";
+import { setGroupChatMode } from "../../application/use-cases/set-group-chat-mode.js";
+import { setGroupAllowed } from "../../application/use-cases/set-group-allowed.js";
+import { updateGroupSettings } from "../../application/use-cases/update-group-settings.js";
+import { listAllowedGroups } from "../../application/use-cases/list-allowed-groups.js";
 
 type GroupCommandKey =
   | "groupinfo"
@@ -91,7 +97,7 @@ export const handleGroupCommand = async (input: {
     if (normalizedSub === "chat") {
       const mode = restTokens[0] === "off" ? "off" : restTokens[0] === "on" ? "on" : null;
       if (!mode) return [{ kind: "reply_text", text: stylizeReply(`Use: ${formatCmd("set gp chat on|off")}`) }];
-      const updated = await groupAccess.setChatMode({
+      const updated = await setGroupChatMode(groupAccess, {
         tenantId: ctx.event.tenantId,
         waGroupId: ctx.event.waGroupId!,
         mode,
@@ -160,7 +166,7 @@ export const handleGroupCommand = async (input: {
 
     if (normalizedSub === "fix") {
       if (!restText) return [{ kind: "reply_text", text: stylizeReply("Envie o texto fixo após o comando.") }];
-      const updated = await groupAccess.updateSettings({
+      const updated = await updateGroupSettings(groupAccess, {
         tenantId: ctx.event.tenantId,
         waGroupId: ctx.event.waGroupId!,
         actor: ctx.event.waUserId,
@@ -171,7 +177,7 @@ export const handleGroupCommand = async (input: {
 
     if (normalizedSub === "rules") {
       if (!restText) return [{ kind: "reply_text", text: stylizeReply("Envie o texto das regras após o comando.") }];
-      await groupAccess.updateSettings({
+      await updateGroupSettings(groupAccess, {
         tenantId: ctx.event.tenantId,
         waGroupId: ctx.event.waGroupId!,
         actor: ctx.event.waUserId,
@@ -183,7 +189,7 @@ export const handleGroupCommand = async (input: {
     if (normalizedSub === "welcome") {
       const mode = restTokens[0]?.toLowerCase();
       if (mode === "on" || mode === "off") {
-        const updated = await groupAccess.updateSettings({
+        const updated = await updateGroupSettings(groupAccess, {
           tenantId: ctx.event.tenantId,
           waGroupId: ctx.event.waGroupId!,
           actor: ctx.event.waUserId,
@@ -194,7 +200,7 @@ export const handleGroupCommand = async (input: {
       if (mode === "text") {
         const text = restTokens.slice(1).join(" ").trim();
         if (!text) return [{ kind: "reply_text", text: stylizeReply("Informe o texto após 'welcome text'.") }];
-        await groupAccess.updateSettings({
+        await updateGroupSettings(groupAccess, {
           tenantId: ctx.event.tenantId,
           waGroupId: ctx.event.waGroupId!,
           actor: ctx.event.waUserId,
@@ -216,7 +222,7 @@ export const handleGroupCommand = async (input: {
     const botAdminGuard = enforceBotAdmin(lower);
     if (botAdminGuard) return botAdminGuard;
     if (!groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
-    const updated = await groupAccess.setAllowed({
+    const updated = await setGroupAllowed(groupAccess, {
       tenantId: ctx.event.tenantId,
       waGroupId: ctx.event.waGroupId!,
       allowed: true,
@@ -241,7 +247,7 @@ export const handleGroupCommand = async (input: {
     const botAdminGuard = enforceBotAdmin(lower);
     if (botAdminGuard) return botAdminGuard;
     if (!groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
-    const updated = await groupAccess.setAllowed({
+    const updated = await setGroupAllowed(groupAccess, {
       tenantId: ctx.event.tenantId,
       waGroupId: ctx.event.waGroupId!,
       allowed: false,
@@ -262,7 +268,7 @@ export const handleGroupCommand = async (input: {
     const adminCheck = requireAdmin();
     if (adminCheck) return adminCheck;
     if (!groupAccess) return [{ kind: "reply_text", text: "Controle de grupos não está configurado." }];
-    const groups = await groupAccess.listAllowed(ctx.event.tenantId);
+    const groups = await listAllowedGroups(groupAccess, ctx.event.tenantId);
     if (groups.length === 0) return [{ kind: "reply_text", text: "Nenhum grupo autorizado." }];
     return [
       {
@@ -289,7 +295,7 @@ export const handleGroupCommand = async (input: {
     const mode = modeToken === "off" ? "off" : modeToken === "on" ? "on" : null;
     if (!mode) return [{ kind: "reply_text", text: stylizeReply(`Use: ${formatCmd("chat on|off")}`) }];
 
-    const updated = await groupAccess.setChatMode({
+    const updated = await setGroupChatMode(groupAccess, {
       tenantId: ctx.event.tenantId,
       waGroupId: ctx.event.waGroupId!,
       mode,

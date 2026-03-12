@@ -1,4 +1,4 @@
-import type { GroupChatMode, GroupAccessState, InboundMessageEvent } from "../index.js";
+import type { GroupChatMode, GroupAccessState, InboundMessageEvent } from "../pipeline/types.js";
 
 export const resolveMentionedUsers = (event: Pick<InboundMessageEvent, "mentionedWaUserIds" | "quotedWaUserId">): string[] => {
   const mentions = Array.isArray(event.mentionedWaUserIds) ? event.mentionedWaUserIds : [];

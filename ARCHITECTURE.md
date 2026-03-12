@@ -340,7 +340,7 @@ commands must not hardcode /
 
 Implementation status:
 
-- The command registry, parser, and prefix helpers live in `packages/core/src/commands/` (registry.ts, parser.ts, utils.ts). Registry metadata covers name/aliases/scope/role/botAdminRequired/description/usage and lookup honors the active prefix.
+- The command registry, parser, and prefix helpers live in `packages/core/src/commands/registry/*` and `packages/core/src/commands/parser/*` (`command-groups.ts`, `index.ts`, `parse-command.ts`, `prefix.ts`, `utils.ts`). Registry metadata covers name/aliases/scope/role/botAdminRequired/description/usage and lookup honors the active prefix.
 - Command parsing in `Orchestrator` now goes through the shared parser/registry instead of inline string checks.
 - First moduleized command handlers exist under `packages/core/src/modules/` for `groups`, `moderation`, and `reminders` (presentation/commands/*), keeping feature logic out of the core entrypoint.
 

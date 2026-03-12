@@ -1,6 +1,14 @@
 import { resolveTargetUserFromMentionOrReply } from "../../../../common/bot-common.js";
-import type { PipelineContext, ResponseAction } from "../../../../index.js";
+import type { PipelineContext } from "../../../../pipeline/context.js";
+import type { ResponseAction } from "../../../../pipeline/actions.js";
 import { parseDurationInput } from "../../../../time.js";
+import {
+  banUserAction,
+  hideTagAction,
+  kickUserAction,
+  muteUserAction,
+  unmuteUserAction
+} from "../../application/use-cases/moderation-actions.js";
 
 type ModerationCommandKey = "ban" | "kick" | "mute" | "unmute" | "hidetag";
 
@@ -33,15 +41,11 @@ export const handleModerationCommand = (
     if (botAdminGuard) return botAdminGuard;
     const target = resolveTargetUserFromMentionOrReply(ctx.event) ?? cmd.replace(/^(ban|kick)\s+/i, "").trim();
     if (!target) return [{ kind: "reply_text", text: stylizeReply("Mencione ou responda quem deseja remover.") }];
-    const actionKind = commandKey === "ban" ? "ban" : "kick";
-    return [
-      {
-        kind: "moderation_action",
-        action: actionKind,
-        waGroupId: ctx.event.waGroupId!,
-        targetWaUserId: target
-      }
-    ];
+    const action =
+      commandKey === "ban"
+        ? banUserAction({ waGroupId: ctx.event.waGroupId!, targetWaUserId: target })
+        : kickUserAction({ waGroupId: ctx.event.waGroupId!, targetWaUserId: target });
+    return [action];
   }
 
   if (commandKey === "mute") {
@@ -62,15 +66,7 @@ export const handleModerationCommand = (
     if (botAdminGuard) return botAdminGuard;
     const duration = parseDurationInput(durationToken);
     if (!duration) return [{ kind: "reply_text", text: stylizeReply("Duração inválida. Ex: 30m, 1h.") }];
-    return [
-      {
-        kind: "moderation_action",
-        action: "mute",
-        waGroupId: ctx.event.waGroupId!,
-        targetWaUserId: target,
-        durationMs: duration.milliseconds
-      }
-    ];
+    return [muteUserAction({ waGroupId: ctx.event.waGroupId!, targetWaUserId: target, durationMs: duration.milliseconds })];
   }
 
   if (commandKey === "unmute") {
@@ -82,7 +78,7 @@ export const handleModerationCommand = (
     if (botAdminGuard) return botAdminGuard;
     const target = resolveTargetUserFromMentionOrReply(ctx.event) ?? cmd.replace(/^(unmute)\s+/i, "").trim();
     if (!target) return [{ kind: "reply_text", text: stylizeReply("Mencione ou responda quem deseja reativar.") }];
-    return [{ kind: "moderation_action", action: "unmute", waGroupId: ctx.event.waGroupId!, targetWaUserId: target }];
+    return [unmuteUserAction({ waGroupId: ctx.event.waGroupId!, targetWaUserId: target })];
   }
 
   if (commandKey === "hidetag") {
@@ -94,14 +90,7 @@ export const handleModerationCommand = (
     if (botAdminGuard) return botAdminGuard;
     const text = cmd.replace(/^(hidetag)\s*/i, "").trim();
     if (!text) return [{ kind: "reply_text", text: stylizeReply(`Envie o texto após ${formatCmd("hidetag")}.`) }];
-    return [
-      {
-        kind: "moderation_action",
-        action: "hidetag",
-        waGroupId: ctx.event.waGroupId!,
-        text
-      }
-    ];
+    return [hideTagAction({ waGroupId: ctx.event.waGroupId!, text })];
   }
 
   return null;

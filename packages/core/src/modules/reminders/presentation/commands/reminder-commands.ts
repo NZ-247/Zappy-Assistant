@@ -1,5 +1,8 @@
 import { addDurationToNow, isTimeLike, parseDateTimeWithZone, parseDurationInput } from "../../../../time.js";
-import type { PipelineContext, ReminderCreateInput, RemindersRepositoryPort, ResponseAction } from "../../../../index.js";
+import type { PipelineContext } from "../../../../pipeline/context.js";
+import type { ResponseAction } from "../../../../pipeline/actions.js";
+import type { RemindersRepositoryPort } from "../../ports/reminder-repository.port.js";
+import { createReminder } from "../../application/use-cases/create-reminder.js";
 
 export const parseReminderCommand = (
   text: string,
@@ -63,16 +66,13 @@ export const handleReminderCommand = async (input: {
   });
   if (!parsed) return [{ kind: "reply_text", text: "Invalid reminder format." }];
 
-  const reminder = await deps.remindersRepository.createReminder({
+  return createReminder(deps.remindersRepository, {
     tenantId: ctx.event.tenantId,
     waUserId: ctx.event.waUserId,
     waGroupId: ctx.event.waGroupId,
     message: parsed.message,
-    remindAt: parsed.remindAt
-  } as ReminderCreateInput);
-
-  return [
-    { kind: "reply_text", text: `Reminder ${reminder.id} set for ${parsed.pretty} (${deps.timezone})` },
-    { kind: "enqueue_job", jobType: "reminder", payload: { id: reminder.id, runAt: parsed.remindAt } }
-  ];
+    remindAt: parsed.remindAt,
+    pretty: parsed.pretty,
+    timezone: deps.timezone
+  });
 };

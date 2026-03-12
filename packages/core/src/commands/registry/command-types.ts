@@ -2,9 +2,21 @@ export type CommandScope = "direct" | "group" | "both";
 
 export type CommandRequiredRole = "member" | "admin" | "root" | "group_admin" | "privileged";
 
+export type CommandCategory =
+  | "core"
+  | "groups"
+  | "moderation"
+  | "tasks"
+  | "notes"
+  | "reminders"
+  | "admin"
+  | "identity"
+  | "system";
+
 export interface CommandDefinition {
   name: string;
   aliases?: string[];
+  category?: CommandCategory;
   scope: CommandScope;
   requiredRole?: CommandRequiredRole;
   botAdminRequired?: boolean;

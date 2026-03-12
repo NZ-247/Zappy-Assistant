@@ -8,69 +8,185 @@ import {
   parseDurationInput
 } from "./time.js";
 import { resolveTargetUserFromMentionOrReply, requireGroupContext } from "./common/bot-common.js";
-import { formatCommand, hasCommandPrefix as hasPrefix, normalizeCommandPrefix, stripCommandPrefix as stripPrefix } from "./commands/utils.js";
-import { createCommandRegistry } from "./commands/registry.js";
-import type { CommandRegistry } from "./commands/types.js";
-import { parseCommandText } from "./commands/parser.js";
+import {
+  formatCommand,
+  hasCommandPrefix as hasPrefix,
+  normalizeCommandPrefix,
+  stripCommandPrefix as stripPrefix
+} from "./commands/parser/prefix.js";
+import { createCommandRegistry } from "./commands/registry/index.js";
+import type { CommandRegistry } from "./commands/registry/command-types.js";
+import { parseCommandText } from "./commands/parser/parse-command.js";
 import { handleGroupCommand } from "./modules/groups/presentation/commands/group-commands.js";
 import { handleModerationCommand } from "./modules/moderation/presentation/commands/moderation-commands.js";
 import { handleReminderCommand } from "./modules/reminders/presentation/commands/reminder-commands.js";
 import { Parser } from "expr-eval";
 import { DateTime } from "luxon";
+import type {
+  AuditEvent,
+  CanonicalIdentity,
+  ConversationMessage,
+  ConversationState,
+  ConversationStateRecord,
+  GroupAccessState,
+  GroupChatMode,
+  GroupFunMode,
+  GroupModerationSettings,
+  InboundMessageEvent,
+  MessageClassification,
+  MessageClassificationKind,
+  MessageKind,
+  RelationshipProfile,
+  MetricKey,
+  Scope,
+  ToolAction,
+  ToolIntent,
+  AiAssistantInput,
+  AiResponse,
+  ConsentStatus,
+  UserConsentRecord,
+  TriggerRule,
+  ReminderCreateInput,
+  ReminderRecord,
+  NoteRecord,
+  TimerStatus,
+  TimerCreateInput,
+  TimerRecord,
+  TaskListItem,
+  StatusSnapshot,
+  LlmErrorReason,
+  FlagValue
+} from "./pipeline/types.js";
+import { LlmError } from "./pipeline/types.js";
+import type {
+  ResponseAction,
+  GroupAdminOperation,
+  ModerationActionKind,
+  GroupAdminAction,
+  ReplyTextAction,
+  ReplyListAction,
+  EnqueueJobAction,
+  NoopAction,
+  ErrorAction,
+  HandoffAction,
+  AiToolSuggestionAction,
+  ModerationAction,
+  OrchestratorAction
+} from "./pipeline/actions.js";
+import type {
+  CorePorts,
+  GroupAccessPort,
+  AdminAccessPort,
+  FlagsRepositoryPort,
+  TriggersRepositoryPort,
+  TasksRepositoryPort,
+  RemindersRepositoryPort,
+  NotesRepositoryPort,
+  TimersRepositoryPort,
+  MessagesRepositoryPort,
+  ConversationMemoryItem,
+  ConversationMemoryPort,
+  CooldownPort,
+  RateLimitPort,
+  ConversationStatePort,
+  ConsentPort,
+  QueuePort,
+  LlmPort,
+  PromptPort,
+  MutePort,
+  IdentityPort,
+  StatusPort,
+  ClockPort,
+  LoggerPort,
+  MetricsPort,
+  AuditPort
+} from "./pipeline/ports.js";
+import type { PipelineContext, NormalizedEvent } from "./pipeline/context.js";
 
-export { createCommandRegistry } from "./commands/registry.js";
-export type { CommandDefinition, CommandMatch, CommandRegistry, CommandScope, CommandRequiredRole } from "./commands/types.js";
-export { formatCommand, normalizeCommandPrefix } from "./commands/utils.js";
-
-export type Scope = "GLOBAL" | "TENANT" | "GROUP" | "USER";
-export type MatchType = "CONTAINS" | "REGEX" | "STARTS_WITH";
-
-export type RelationshipProfile =
-  | "creator_root"
-  | "mother_privileged"
-  | "delegated_owner"
-  | "admin"
-  | "member"
-  | "external_contact";
-
-export type GroupChatMode = "on" | "off";
-export type GroupFunMode = "on" | "off";
-
-export interface GroupModerationSettings {
-  antiLink?: boolean;
-  autoDeleteLinks?: boolean;
-  antiSpam?: boolean;
-  tempMuteSeconds?: number | null;
-}
-
-export interface GroupAccessState {
-  waGroupId: string;
-  groupName?: string | null;
-  description?: string | null;
-  allowed: boolean;
-  chatMode: GroupChatMode;
-  isOpen?: boolean;
-  welcomeEnabled?: boolean;
-  welcomeText?: string | null;
-  fixedMessageText?: string | null;
-  rulesText?: string | null;
-  funMode?: GroupFunMode;
-  moderation?: GroupModerationSettings;
-  botIsAdmin?: boolean;
-  botAdminCheckedAt?: Date | null;
-}
-
-export interface CanonicalIdentity {
-  canonicalUserKey: string;
-  waUserId: string;
-  phoneNumber?: string | null;
-  lidJid?: string | null;
-  pnJid?: string | null;
-  aliases: string[];
-  displayName?: string | null;
-  permissionRole?: string | null;
-  relationshipProfile?: RelationshipProfile | null;
-}
+export { createCommandRegistry } from "./commands/registry/index.js";
+export type { CommandDefinition, CommandMatch, CommandRegistry, CommandScope, CommandRequiredRole } from "./commands/registry/command-types.js";
+export { formatCommand, normalizeCommandPrefix } from "./commands/parser/prefix.js";
+export type {
+  Scope,
+  MatchType,
+  RelationshipProfile,
+  GroupChatMode,
+  GroupFunMode,
+  GroupModerationSettings,
+  GroupAccessState,
+  CanonicalIdentity,
+  MessageKind,
+  MessageClassificationKind,
+  MessageClassification,
+  MetricKey,
+  AuditEvent,
+  InboundMessageEvent,
+  ConversationMessage,
+  ConversationState,
+  ConversationStateRecord,
+  ToolAction,
+  ToolIntent,
+  AiResponse,
+  AiAssistantInput,
+  ConsentStatus,
+  UserConsentRecord,
+  LlmErrorReason,
+  FlagValue,
+  TriggerRule,
+  ReminderCreateInput,
+  ReminderRecord,
+  NoteRecord,
+  TimerStatus,
+  TimerCreateInput,
+  TimerRecord,
+  TaskListItem,
+  StatusSnapshot
+} from "./pipeline/types.js";
+export { LlmError } from "./pipeline/types.js";
+export type {
+  ReplyTextAction,
+  ReplyListAction,
+  EnqueueJobAction,
+  NoopAction,
+  ErrorAction,
+  HandoffAction,
+  AiToolSuggestionAction,
+  GroupAdminOperation,
+  GroupAdminAction,
+  ModerationActionKind,
+  ModerationAction,
+  ResponseAction,
+  OrchestratorAction
+} from "./pipeline/actions.js";
+export type {
+  GroupAccessPort,
+  AdminAccessPort,
+  FlagsRepositoryPort,
+  TriggersRepositoryPort,
+  TasksRepositoryPort,
+  RemindersRepositoryPort,
+  NotesRepositoryPort,
+  TimersRepositoryPort,
+  MessagesRepositoryPort,
+  ConversationMemoryItem,
+  ConversationMemoryPort,
+  CooldownPort,
+  RateLimitPort,
+  ConversationStatePort,
+  ConsentPort,
+  QueuePort,
+  LlmPort,
+  PromptPort,
+  MutePort,
+  IdentityPort,
+  StatusPort,
+  ClockPort,
+  LoggerPort,
+  MetricsPort,
+  AuditPort,
+  CorePorts
+} from "./pipeline/ports.js";
+export type { PipelineContext, NormalizedEvent } from "./pipeline/context.js";
 
 const CREATOR_WA_NUMBER = "556699064658";
 const MOTHER_WA_NUMBER = "556692283438";
@@ -123,690 +239,6 @@ export const resolveRelationshipProfile = (input: {
 
   return { profile: "member", reason: "default_member" };
 };
-
-export type MessageKind = "text" | "media" | "system" | "unknown";
-
-export type MessageClassificationKind =
-  | "system_event"
-  | "ignored_event"
-  | "consent_pending"
-  | "command"
-  | "trigger_candidate"
-  | "ai_candidate"
-  | "tool_follow_up";
-
-export interface MessageClassification {
-  kind: MessageClassificationKind;
-  reason?: string;
-  commandName?: string;
-  commandKnown?: boolean;
-}
-
-export type MetricKey =
-  | "messages_received_total"
-  | "commands_executed_total"
-  | "trigger_matches_total"
-  | "ai_requests_total"
-  | "ai_failures_total"
-  | "reminders_created_total"
-  | "reminders_sent_total"
-  | "moderation_actions_total"
-  | "onboarding_pending_total"
-  | "onboarding_accepted_total";
-
-export type AuditEvent =
-  | {
-      kind: "command";
-      tenantId: string;
-      conversationId?: string;
-      waUserId: string;
-      waGroupId?: string;
-      command: string;
-      inputText?: string;
-      resultSummary?: string;
-      status: string;
-      metadata?: Record<string, unknown>;
-    }
-  | {
-      kind: "trigger";
-      tenantId: string;
-      conversationId?: string;
-      waUserId: string;
-      waGroupId?: string;
-      triggerId?: string;
-      triggerName?: string;
-      actor?: string;
-    }
-  | {
-      kind: "consent";
-      tenantId: string;
-      waUserId: string;
-      waGroupId?: string;
-      status: "PENDING" | "ACCEPTED" | "DECLINED";
-      version: string;
-      actor?: string;
-    }
-  | {
-      kind: "reminder";
-      tenantId: string;
-      waUserId: string;
-      waGroupId?: string;
-      reminderId: string;
-      status: "scheduled" | "sent" | "failed";
-      message?: string;
-      actor?: string;
-    }
-  | {
-      kind: "moderation";
-      tenantId: string;
-      waUserId: string;
-      waGroupId?: string;
-      action: string;
-      targetWaUserId?: string;
-      success?: boolean;
-      result?: string;
-      actor?: string;
-    }
-  | {
-      kind: "settings";
-      tenantId: string;
-      waUserId: string;
-      waGroupId?: string;
-      scope: Scope;
-      key: string;
-      value?: string;
-      action: string;
-      actor?: string;
-    }
-  | {
-      kind: "role_change";
-      tenantId: string;
-      waUserId: string;
-      waGroupId?: string;
-      targetWaUserId: string;
-      role: string;
-      action: string;
-      scope?: Scope;
-      actor?: string;
-    };
-
-export interface InboundMessageEvent {
-  tenantId: string;
-  conversationId?: string;
-  waGroupId?: string;
-  waUserId: string;
-  text: string;
-  waMessageId: string;
-  timestamp: Date;
-  isGroup: boolean;
-  kind?: MessageKind;
-  remoteJid?: string;
-  isStatusBroadcast?: boolean;
-  isFromBot?: boolean;
-  hasMedia?: boolean;
-  rawMessageType?: string;
-  mentionedWaUserIds?: string[];
-  isBotMentioned?: boolean;
-  quotedWaMessageId?: string;
-  quotedWaUserId?: string;
-  isReplyToBot?: boolean;
-  senderIsGroupAdmin?: boolean;
-  messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };
-  botIsGroupAdmin?: boolean;
-  botAdminStatusSource?: "live" | "cache" | "fallback" | "operation";
-  botAdminCheckedAt?: Date;
-  botAdminCheckFailed?: boolean;
-  botAdminCheckError?: string;
-  groupName?: string;
-}
-
-export interface ConversationMessage {
-  role: "user" | "assistant" | "system";
-  content: string;
-}
-
-export type ToolAction =
-  | "create_task"
-  | "update_task"
-  | "complete_task"
-  | "delete_task"
-  | "list_tasks"
-  | "create_reminder"
-  | "update_reminder"
-  | "delete_reminder"
-  | "list_reminders"
-  | "add_note"
-  | "list_notes"
-  | "get_time"
-  | "get_settings";
-
-export interface ToolIntent {
-  action: ToolAction;
-  payload?: Record<string, unknown>;
-  confidence?: number;
-  reason?: string;
-}
-
-export interface AiTextReply {
-  kind: "text";
-  text: string;
-  meta?: Record<string, unknown>;
-}
-
-export interface AiToolIntent {
-  kind: "tool_suggestion";
-  tool: ToolIntent;
-  text?: string;
-  meta?: Record<string, unknown>;
-}
-
-export interface AiFallback {
-  kind: "fallback";
-  reason: string;
-  text?: string;
-}
-
-export type AiResponse = AiTextReply | AiToolIntent | AiFallback;
-
-export interface AiAssistantInput {
-  tenantId: string;
-  conversationId?: string;
-  waUserId: string;
-  waGroupId?: string;
-  userText: string;
-  chatScope: "direct" | "group";
-  userRole: "ROOT" | "DONO" | "GROUP_ADMIN" | "ADMIN" | "MEMBER";
-  relationshipProfile?: RelationshipProfile;
-  modulesEnabled?: string[];
-  availableTools?: ToolAction[];
-  conversationState?: string;
-  handoffActive?: boolean;
-  settings?: { timezone?: string; language?: string; formality?: "formal" | "neutral" | "casual" };
-  now: Date;
-  llmEnabled?: boolean;
-  personaId?: string;
-}
-
-export interface AiAssistantPort {
-  generate(input: AiAssistantInput): Promise<AiResponse>;
-}
-
-export type ConversationState =
-  | "NONE"
-  | "WAITING_CONSENT"
-  | "WAITING_CONFIRMATION"
-  | "WAITING_TASK_DETAILS"
-  | "WAITING_REMINDER_DETAILS"
-  | "WAITING_TOOL_DETAILS"
-  | "WAITING_TOOL_CONFIRMATION"
-  | "HANDOFF_ACTIVE";
-
-export interface ConversationStateRecord {
-  state: ConversationState;
-  context?: Record<string, unknown>;
-  updatedAt: Date;
-  expiresAt?: Date | null;
-}
-
-export type ConsentStatus = "PENDING" | "ACCEPTED" | "DECLINED";
-
-export interface UserConsentRecord {
-  id: string;
-  tenantId: string;
-  userId: string;
-  status: ConsentStatus;
-  termsVersion: string;
-  acceptedAt?: Date | null;
-  declinedAt?: Date | null;
-  source?: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export type LlmErrorReason = "rate_limit" | "insufficient_quota" | "timeout" | "network" | "unknown";
-
-export class LlmError extends Error {
-  readonly reason: LlmErrorReason;
-  readonly status?: number;
-  readonly code?: string;
-
-  constructor(reason: LlmErrorReason, message?: string, meta?: { status?: number; code?: string; cause?: unknown }) {
-    super(message ?? reason);
-    this.name = "LlmError";
-    this.reason = reason;
-    this.status = meta?.status;
-    this.code = meta?.code;
-    if (meta?.cause !== undefined) {
-      // Preserve root cause when available for downstream logging/inspection.
-      (this as Error & { cause?: unknown }).cause = meta.cause;
-    }
-    Object.setPrototypeOf(this, LlmError.prototype);
-  }
-}
-
-export interface FlagValue {
-  key: string;
-  value: string;
-  scope: Scope;
-}
-
-export interface TriggerRule {
-  id: string;
-  name: string;
-  pattern: string;
-  responseTemplate: string;
-  enabled: boolean;
-  matchType: MatchType;
-  priority: number;
-  cooldownSeconds: number;
-  scope: Scope;
-}
-
-export interface ReminderCreateInput {
-  tenantId: string;
-  waUserId: string;
-  waGroupId?: string;
-  message: string;
-  remindAt: Date;
-}
-
-export interface ReminderRecord {
-  id: string;
-  status: "SCHEDULED" | "SENT" | "FAILED" | "CANCELED";
-  remindAt?: Date;
-  message?: string;
-}
-
-export interface NoteRecord {
-  id: string;
-  publicId: string;
-  text: string;
-  createdAt: Date;
-  scope: Scope;
-}
-
-export type TimerStatus = "SCHEDULED" | "FIRED" | "FAILED" | "CANCELED";
-
-export interface TimerCreateInput {
-  tenantId: string;
-  waUserId: string;
-  waGroupId?: string;
-  fireAt: Date;
-  durationMs: number;
-  label?: string;
-}
-
-export interface TimerRecord {
-  id: string;
-  status: TimerStatus;
-  fireAt?: Date;
-}
-
-export interface TaskListItem {
-  id: string;
-  title: string;
-  done: boolean;
-  runAt?: Date | null;
-}
-
-export interface StatusSnapshot {
-  gateway: { ok: boolean; at?: string | null };
-  worker: { ok: boolean; at?: string | null };
-  db: { ok: boolean };
-  redis: { ok: boolean };
-  llm: { enabled: boolean; ok: boolean; reason?: string };
-  counts: { tasksOpen: number; remindersScheduled: number; timersScheduled: number };
-  queue?: { waiting?: number; active?: number; delayed?: number };
-}
-
-export interface ReplyTextAction {
-  kind: "reply_text";
-  text: string;
-}
-
-export interface ReplyListItem {
-  title: string;
-  description?: string;
-}
-
-export interface ReplyListAction {
-  kind: "reply_list";
-  header?: string;
-  items: ReplyListItem[];
-  footer?: string;
-}
-
-export interface EnqueueJobAction {
-  kind: "enqueue_job";
-  jobType: "reminder" | "timer" | string;
-  payload: { id: string; runAt?: Date; [key: string]: unknown };
-}
-
-export interface NoopAction {
-  kind: "noop";
-  reason?: string;
-}
-
-export interface ErrorAction {
-  kind: "error";
-  message: string;
-  reason?: string;
-}
-
-export interface HandoffAction {
-  kind: "handoff";
-  target: "human" | "agent";
-  note?: string;
-}
-
-export interface AiToolSuggestionAction {
-  kind: "ai_tool_suggestion";
-  tool: ToolIntent;
-  text?: string;
-}
-
-export type GroupAdminOperation =
-  | "set_subject"
-  | "set_description"
-  | "set_picture_from_quote"
-  | "set_open"
-  | "set_closed";
-
-export interface GroupAdminAction {
-  kind: "group_admin_action";
-  operation: GroupAdminOperation;
-  waGroupId: string;
-  actorWaUserId: string;
-  text?: string;
-  quotedWaMessageId?: string;
-}
-
-export type ModerationActionKind = "ban" | "kick" | "mute" | "unmute" | "hidetag" | "delete_message";
-
-export interface ModerationAction {
-  kind: "moderation_action";
-  action: ModerationActionKind;
-  waGroupId: string;
-  targetWaUserId?: string;
-  durationMs?: number;
-  text?: string;
-  messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };
-}
-
-export type ResponseAction =
-  | ReplyTextAction
-  | ReplyListAction
-  | EnqueueJobAction
-  | NoopAction
-  | ErrorAction
-  | HandoffAction
-  | AiToolSuggestionAction
-  | GroupAdminAction
-  | ModerationAction;
-export type OrchestratorAction = ResponseAction;
-
-export type GroupSettingsUpdate = Partial<{
-  chatMode: GroupChatMode;
-  isOpen: boolean;
-  welcomeEnabled: boolean;
-  welcomeText: string | null;
-  fixedMessageText: string | null;
-  rulesText: string | null;
-  funMode: GroupFunMode | null;
-  moderation: GroupModerationSettings;
-  groupName: string | null;
-  description: string | null;
-}>;
-
-export interface GroupAccessPort {
-  getGroupAccess(input: { tenantId: string; waGroupId: string; groupName?: string | null; botIsAdmin?: boolean | null }): Promise<GroupAccessState>;
-  setAllowed(input: { tenantId: string; waGroupId: string; allowed: boolean; actor?: string }): Promise<GroupAccessState>;
-  setChatMode(input: { tenantId: string; waGroupId: string; mode: GroupChatMode; actor?: string }): Promise<GroupAccessState>;
-  updateSettings(input: { tenantId: string; waGroupId: string; settings: GroupSettingsUpdate; actor?: string }): Promise<GroupAccessState>;
-  listAllowed(tenantId: string): Promise<GroupAccessState[]>;
-}
-
-export interface AdminAccessPort {
-  add(input: { tenantId: string; waUserId: string; displayName?: string | null; actor?: string }): Promise<{
-    waUserId: string;
-    displayName?: string | null;
-    phoneNumber?: string | null;
-    permissionRole?: string | null;
-  }>;
-  remove(input: { tenantId: string; waUserId: string; actor?: string }): Promise<boolean>;
-  list(tenantId: string): Promise<
-    Array<{ waUserId: string; displayName?: string | null; phoneNumber?: string | null; permissionRole?: string | null; createdAt?: Date }>
-  >;
-  isAdmin(input: { tenantId: string; waUserId: string }): Promise<boolean>;
-}
-
-export interface FlagsRepositoryPort {
-  resolveFlags(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<Record<string, string>>;
-}
-
-export interface TriggersRepositoryPort {
-  findActiveByScope(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<TriggerRule[]>;
-}
-
-export interface TasksRepositoryPort {
-  addTask(input: {
-    tenantId: string;
-    title: string;
-    createdByWaUserId: string;
-    waGroupId?: string;
-    runAt?: Date | null;
-  }): Promise<{ id: string; title: string }>;
-  listTasks(input: { tenantId: string; waGroupId?: string; waUserId?: string }): Promise<TaskListItem[]>;
-  listTasksForDay(input: { tenantId: string; waGroupId?: string; waUserId?: string; dayStart: Date; dayEnd: Date }): Promise<TaskListItem[]>;
-  markDone(input: { tenantId: string; taskId: string; waGroupId?: string; waUserId?: string }): Promise<boolean>;
-  updateTask?(input: {
-    tenantId: string;
-    taskId: string;
-    title?: string;
-    runAt?: Date | null;
-    waGroupId?: string;
-    waUserId?: string;
-  }): Promise<{ id: string; title: string; runAt?: Date | null } | null>;
-  deleteTask?(input: { tenantId: string; taskId: string; waGroupId?: string; waUserId?: string }): Promise<boolean>;
-  countOpen(input: { tenantId: string; waGroupId?: string; waUserId?: string }): Promise<number>;
-}
-
-export interface RemindersRepositoryPort {
-  createReminder(input: ReminderCreateInput): Promise<ReminderRecord>;
-  listForDay(input: { tenantId: string; waGroupId?: string; waUserId: string; dayStart: Date; dayEnd: Date }): Promise<ReminderRecord[]>;
-  updateReminder?(input: {
-    tenantId: string;
-    reminderId: string;
-    waGroupId?: string;
-    waUserId?: string;
-    message?: string;
-    remindAt?: Date;
-  }): Promise<ReminderRecord | null>;
-  deleteReminder?(input: { tenantId: string; reminderId: string; waGroupId?: string; waUserId?: string }): Promise<boolean>;
-  countScheduled(input: { tenantId: string; waGroupId?: string; waUserId?: string }): Promise<number>;
-}
-
-export interface NotesRepositoryPort {
-  addNote(input: { tenantId: string; waGroupId?: string; waUserId: string; text: string; scope: Scope }): Promise<NoteRecord>;
-  listNotes(input: { tenantId: string; waGroupId?: string; waUserId: string; scope: Scope; limit?: number }): Promise<NoteRecord[]>;
-  removeNote(input: { tenantId: string; waGroupId?: string; waUserId: string; publicId: string }): Promise<boolean>;
-}
-
-export interface TimersRepositoryPort {
-  createTimer(input: TimerCreateInput): Promise<TimerRecord>;
-  getTimerById(id: string): Promise<TimerRecord | null>;
-  countScheduled(input: { tenantId: string; waGroupId?: string; waUserId?: string }): Promise<number>;
-}
-
-export interface MessagesRepositoryPort {
-  getRecentMessages(input: { tenantId: string; waGroupId?: string; waUserId: string; limit: number }): Promise<ConversationMessage[]>;
-}
-
-export interface ConversationMemoryItem {
-  id: string;
-  role: "system" | "user" | "assistant" | "tool";
-  content: string;
-  metadataJson?: unknown;
-  createdAt: Date;
-}
-
-export interface ConversationMemoryPort {
-  appendMemory(input: {
-    tenantId: string;
-    conversationId: string;
-    waUserId?: string;
-    role: "system" | "user" | "assistant" | "tool";
-    content: string;
-    metadataJson?: unknown;
-    keepLatest?: number;
-  }): Promise<void>;
-  listRecentMemory(input: { conversationId: string; limit: number }): Promise<ConversationMemoryItem[]>;
-  trimOldMemory?(conversationId: string, keepLatestN: number): Promise<void>;
-  clearMemory?(conversationId: string): Promise<void>;
-}
-
-export interface CooldownPort {
-  canFire(key: string, ttlSeconds: number): Promise<boolean>;
-}
-
-export interface RateLimitPort {
-  allow(key: string, max: number, windowSeconds: number): Promise<boolean>;
-}
-
-export interface ConversationStatePort {
-  getState(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<ConversationStateRecord | null>;
-  setState(input: {
-    tenantId: string;
-    waGroupId?: string;
-    waUserId: string;
-    state: ConversationState;
-    context?: Record<string, unknown>;
-    expiresAt?: Date | null;
-  }): Promise<void>;
-  clearState(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<void>;
-}
-
-export interface ConsentPort {
-  getConsent(input: { tenantId: string; waUserId: string; termsVersion?: string }): Promise<UserConsentRecord | null>;
-  setConsentStatus(input: {
-    tenantId: string;
-    waUserId: string;
-    status: ConsentStatus;
-    termsVersion: string;
-    source?: string;
-    timestamp?: Date;
-  }): Promise<UserConsentRecord>;
-}
-
-export interface QueuePort {
-  enqueueReminder(reminderId: string, runAt: Date): Promise<{ jobId: string }>;
-  enqueueTimer(timerId: string, runAt: Date): Promise<{ jobId: string }>;
-}
-
-export interface LlmPort {
-  chat(input: { system: string; messages: ConversationMessage[] }): Promise<string>;
-}
-
-export interface PromptPort {
-  resolvePrompt(input: { tenantId: string; waGroupId?: string }): Promise<string | null>;
-}
-
-export interface MutePort {
-  getMuteState(input: { tenantId: string; scope: Scope; scopeId: string; waUserId?: string }): Promise<{ until: Date } | null>;
-  mute(input: { tenantId: string; scope: Scope; scopeId: string; durationMs: number; now: Date; waUserId?: string }): Promise<{ until: Date }>;
-  unmute(input: { tenantId: string; scope: Scope; scopeId: string; waUserId?: string }): Promise<void>;
-}
-
-export interface IdentityPort {
-  getIdentity(input: {
-    tenantId: string;
-    waUserId: string;
-    waGroupId?: string;
-  }): Promise<{
-    displayName?: string | null;
-    role: string;
-    permissionRole?: string | null;
-    permissions: string[];
-    groupName?: string;
-    canonicalIdentity?: CanonicalIdentity;
-    relationshipProfile?: RelationshipProfile | null;
-    relationshipReason?: string | null;
-  }>;
-  linkAlias?(input: {
-    tenantId: string;
-    phoneNumber: string;
-    lidJid: string;
-    actor?: string;
-  }): Promise<{
-    canonicalIdentity: CanonicalIdentity;
-    relationshipProfile?: RelationshipProfile | null;
-    permissionRole?: string | null;
-  }>;
-}
-
-export interface StatusPort {
-  getStatus(input: { tenantId: string; waGroupId?: string; waUserId?: string }): Promise<StatusSnapshot>;
-}
-
-export interface ClockPort {
-  now(): Date;
-}
-
-export interface LoggerPort {
-  debug?(obj: unknown, msg?: string, ...args: unknown[]): void;
-  info?(obj: unknown, msg?: string, ...args: unknown[]): void;
-  warn(obj: unknown, msg?: string, ...args: unknown[]): void;
-  error?(obj: unknown, msg?: string, ...args: unknown[]): void;
-}
-
-export interface MetricsPort {
-  increment(key: MetricKey, by?: number): Promise<void>;
-}
-
-export interface AuditPort {
-  record(event: AuditEvent): Promise<void>;
-}
-
-export interface CorePorts {
-  flagsRepository: FlagsRepositoryPort;
-  triggersRepository: TriggersRepositoryPort;
-  tasksRepository: TasksRepositoryPort;
-  remindersRepository: RemindersRepositoryPort;
-  notesRepository?: NotesRepositoryPort;
-  timersRepository?: TimersRepositoryPort;
-  messagesRepository: MessagesRepositoryPort;
-  conversationMemory?: ConversationMemoryPort;
-  aiAssistant?: AiAssistantPort;
-  prompt: PromptPort;
-  cooldown: CooldownPort;
-  rateLimit: RateLimitPort;
-  queue: QueuePort;
-  llm: LlmPort;
-  llmModel?: string;
-  mute?: MutePort;
-  identity?: IdentityPort;
-  groupAccess?: GroupAccessPort;
-  adminAccess?: AdminAccessPort;
-  status?: StatusPort;
-  conversationState?: ConversationStatePort;
-  consent: ConsentPort;
-  clock?: ClockPort;
-  logger?: LoggerPort;
-  botName?: string;
-  defaultAssistantMode?: "off" | "professional" | "fun" | "mixed";
-  defaultFunMode?: "off" | "on";
-  llmEnabled?: boolean;
-  timezone?: string;
-  commandPrefix?: string;
-  defaultReminderTime?: string;
-  baseSystemPrompt?: string;
-  llmMemoryMessages?: number;
-  consentTermsVersion?: string;
-  consentLink?: string;
-  consentSource?: string;
-  metrics?: MetricsPort;
-  audit?: AuditPort;
-}
 
 const renderTemplate = (template: string, vars: Record<string, string>): string => {
   let out = template;
@@ -942,71 +374,6 @@ const formatAgenda = (input: {
       })
     );
   return lines.join("\n");
-};
-
-type NormalizedEvent = InboundMessageEvent & {
-  normalizedText: string;
-  messageKind: MessageKind;
-  isStatusBroadcast: boolean;
-  isFromBot: boolean;
-  hasMedia: boolean;
-};
-
-export type PipelineContext = {
-  event: NormalizedEvent;
-  scope: { scope: Scope; scopeId: string };
-  relationshipProfile: RelationshipProfile;
-  relationshipReason?: string;
-  flags: Record<string, string>;
-  assistantMode: "off" | "professional" | "fun" | "mixed";
-  funMode: "off" | "on";
-  downloadsMode: "off" | "allowlist" | "on";
-  timezone: string;
-  now: Date;
-  defaultReminderTime: string;
-  memoryLimit: number;
-  classification: MessageClassification;
-  muteInfo?: { until: Date } | null;
-  userMuteInfo?: { until: Date } | null;
-  conversationState: ConversationStateRecord;
-  consent?: UserConsentRecord | null;
-  consentRequired: boolean;
-  bypassConsent: boolean;
-  consentVersion: string;
-  identity?: {
-    displayName?: string | null;
-    role: string;
-    permissionRole?: string | null;
-    permissions: string[];
-    groupName?: string;
-    canonicalIdentity?: CanonicalIdentity;
-    relationshipProfile?: RelationshipProfile | null;
-    relationshipReason?: string | null;
-  };
-  groupAccess?: GroupAccessState;
-  groupAllowed: boolean;
-  groupChatMode: GroupChatMode;
-  groupIsOpen?: boolean;
-  groupWelcomeEnabled?: boolean;
-  groupWelcomeText?: string | null;
-  groupFixedMessageText?: string | null;
-  groupRulesText?: string | null;
-  groupModeration?: GroupModerationSettings;
-  botIsGroupAdmin: boolean;
-  botAdminStatusSource?: "live" | "cache" | "fallback" | "operation";
-  botAdminSourceUsed?: string;
-  botAdminResolutionPath?: Array<{ source: string; value?: boolean; checkedAt?: Date }>;
-  botAdminCheckedAt?: Date;
-  botAdminCheckFailed?: boolean;
-  botAdminCheckError?: string;
-  isBotMentioned: boolean;
-  isReplyToBot: boolean;
-  mentionedWaUserIds: string[];
-  requesterIsAdmin: boolean;
-  requesterIsGroupAdmin?: boolean;
-  groupPolicy?: { commandsOnly?: boolean };
-  recentMessages: ConversationMessage[];
-  policyMuted: boolean;
 };
 
 type PendingToolContext = {

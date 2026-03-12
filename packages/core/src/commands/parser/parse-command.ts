@@ -1,5 +1,5 @@
-import type { CommandMatch, CommandRegistry } from "./types.js";
-import { hasCommandPrefix, stripCommandPrefix } from "./utils.js";
+import type { CommandMatch, CommandRegistry } from "../registry/command-types.js";
+import { hasCommandPrefix, stripCommandPrefix } from "./prefix.js";
 
 export interface ParsedCommand {
   raw: string;
