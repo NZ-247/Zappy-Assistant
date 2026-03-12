@@ -22,6 +22,16 @@ import { parseCommandText } from "./commands/parser/parse-command.js";
 import { handleGroupCommand } from "./modules/groups/presentation/commands/group-commands.js";
 import { handleModerationCommand } from "./modules/moderation/presentation/commands/moderation-commands.js";
 import { handleReminderCommand } from "./modules/reminders/presentation/commands/reminder-commands.js";
+import { handleTaskCommand } from "./modules/tasks/presentation/commands/task-commands.js";
+import { handleNoteCommand } from "./modules/notes/presentation/commands/note-commands.js";
+import {
+  createTask as createTaskUseCase,
+  listTasks as listTasksUseCase,
+  completeTask as completeTaskUseCase,
+  updateTask as updateTaskUseCase,
+  removeTask as removeTaskUseCase
+} from "./modules/tasks/index.js";
+import { addNote as addNoteUseCase, listNotes as listNotesUseCase, removeNote as removeNoteUseCase } from "./modules/notes/index.js";
 import { Parser } from "expr-eval";
 import { DateTime } from "luxon";
 import type {
@@ -1399,7 +1409,7 @@ export class Orchestrator {
         const runAtRaw = intent.payload.runAt;
         const runAt = runAtRaw instanceof Date ? runAtRaw : runAtRaw ? new Date(runAtRaw as string) : undefined;
         if (!title) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "title")) }];
-        const task = await this.ports.tasksRepository.addTask({
+        const task = await createTaskUseCase(this.ports.tasksRepository, {
           tenantId: ctx.event.tenantId,
           title,
           createdByWaUserId: ctx.event.waUserId,
@@ -1409,7 +1419,7 @@ export class Orchestrator {
         return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa criada: ${task.id} - ${task.title}`) }];
       }
       case "list_tasks": {
-        const tasks = await this.ports.tasksRepository.listTasks({
+        const tasks = await listTasksUseCase(this.ports.tasksRepository, {
           tenantId: ctx.event.tenantId,
           waGroupId: ctx.event.waGroupId,
           waUserId: ctx.event.waUserId
@@ -1427,27 +1437,27 @@ export class Orchestrator {
         ];
       }
       case "update_task": {
-        if (!this.ports.tasksRepository.updateTask) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Atualização de tarefas não está disponível.") }];
         const taskId = String(intent.payload.taskId ?? "").trim();
         const title = String(intent.payload.title ?? "").trim();
         if (!taskId || !title) {
           const missingField = !taskId ? "taskId" : "title";
           return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, missingField)) }];
         }
-        const updated = await this.ports.tasksRepository.updateTask({
+        const result = await updateTaskUseCase(this.ports.tasksRepository, {
           tenantId: ctx.event.tenantId,
           taskId,
           title,
           waGroupId: ctx.event.waGroupId,
           waUserId: ctx.event.waUserId
         });
-        if (!updated) return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Não encontrei a tarefa ${taskId}.`) }];
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa ${updated.id} atualizada para: ${updated.title}`) }];
+        if (result.status === "not_supported") return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Atualização de tarefas não está disponível.") }];
+        if (result.status === "not_found") return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Não encontrei a tarefa ${taskId}.`) }];
+        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa ${result.task.id} atualizada para: ${result.task.title}`) }];
       }
       case "complete_task": {
         const taskId = String(intent.payload.taskId ?? "").trim();
         if (!taskId) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "taskId")) }];
-        const done = await this.ports.tasksRepository.markDone({
+        const done = await completeTaskUseCase(this.ports.tasksRepository, {
           tenantId: ctx.event.tenantId,
           taskId,
           waGroupId: ctx.event.waGroupId,
@@ -1456,16 +1466,16 @@ export class Orchestrator {
         return [{ kind: "reply_text", text: this.stylizeReply(ctx, done ? `Tarefa ${taskId} marcada como concluída.` : `Tarefa ${taskId} não encontrada.`) }];
       }
       case "delete_task": {
-        if (!this.ports.tasksRepository.deleteTask) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Remoção de tarefas não está disponível.") }];
         const taskId = String(intent.payload.taskId ?? "").trim();
         if (!taskId) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "taskId")) }];
-        const removed = await this.ports.tasksRepository.deleteTask({
+        const result = await removeTaskUseCase(this.ports.tasksRepository, {
           tenantId: ctx.event.tenantId,
           taskId,
           waGroupId: ctx.event.waGroupId,
           waUserId: ctx.event.waUserId
         });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, removed ? `Tarefa ${taskId} removida.` : `Não encontrei a tarefa ${taskId}.`) }];
+        if (result.status === "not_supported") return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Remoção de tarefas não está disponível.") }];
+        return [{ kind: "reply_text", text: this.stylizeReply(ctx, result.status === "removed" ? `Tarefa ${taskId} removida.` : `Não encontrei a tarefa ${taskId}.`) }];
       }
       case "create_reminder": {
         const message = String(intent.payload.message ?? "").trim();
@@ -1532,7 +1542,7 @@ export class Orchestrator {
         if (!this.ports.notesRepository) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "O módulo de notas não está disponível.") }];
         const text = String(intent.payload.text ?? "").trim();
         if (!text) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Envie o texto da nota.") }];
-        const note = await this.ports.notesRepository.addNote({
+        const note = await addNoteUseCase(this.ports.notesRepository, {
           tenantId: ctx.event.tenantId,
           waGroupId: ctx.event.waGroupId,
           waUserId: ctx.event.waUserId,
@@ -1543,7 +1553,7 @@ export class Orchestrator {
       }
       case "list_notes": {
         if (!this.ports.notesRepository) return [{ kind: "reply_text", text: this.stylizeReply(ctx, "O módulo de notas não está disponível.") }];
-        const notes = await this.ports.notesRepository.listNotes({
+        const notes = await listNotesUseCase(this.ports.notesRepository, {
           tenantId: ctx.event.tenantId,
           waGroupId: ctx.event.waGroupId,
           waUserId: ctx.event.waUserId,
@@ -2168,93 +2178,21 @@ export class Orchestrator {
     });
     if (moderationHandled) return moderationHandled;
 
-    if (commandKey === "task add") {
-      const title = cmd.replace(/^(task add)\s+/i, "").trim();
-      if (!title) return [{ kind: "reply_text", text: "Task title is required." }];
-      const task = await this.ports.tasksRepository.addTask({
-        tenantId: ctx.event.tenantId,
-        title,
-        createdByWaUserId: ctx.event.waUserId,
-        waGroupId: ctx.event.waGroupId
-      });
-      return [{ kind: "reply_text", text: `Task created: ${task.id} - ${task.title}` }];
-    }
+    const taskHandled = await handleTaskCommand({
+      commandKey,
+      cmd,
+      ctx,
+      deps: { tasksRepository: this.ports.tasksRepository }
+    });
+    if (taskHandled) return taskHandled;
 
-    if (commandKey === "task list") {
-      const tasks = await this.ports.tasksRepository.listTasks({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId
-      });
-      if (tasks.length === 0) return [{ kind: "reply_text", text: "No tasks yet." }];
-      return [
-        {
-          kind: "reply_list",
-          header: "Tarefas",
-          items: tasks.map((t) => ({
-            title: `${t.done ? "✅" : "⬜"} ${t.id}`,
-            description: t.title
-          }))
-        }
-      ];
-    }
-
-    if (commandKey === "task done") {
-      const taskId = cmd.replace(/^(task done)\s+/i, "").trim();
-      const done = await this.ports.tasksRepository.markDone({
-        tenantId: ctx.event.tenantId,
-        taskId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId
-      });
-      return [{ kind: "reply_text", text: done ? `Task ${taskId} marked done.` : `Task ${taskId} not found.` }];
-    }
-
-    if (commandKey === "note add") {
-      if (!this.ports.notesRepository) return [{ kind: "reply_text", text: "Notes module is not available." }];
-      const text = cmd.replace(/^(note add)\s+/i, "").trim();
-      if (!text) return [{ kind: "reply_text", text: "Note text is required." }];
-      const note = await this.ports.notesRepository.addNote({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId,
-        text,
-        scope: ctx.scope.scope
-      });
-      return [{ kind: "reply_text", text: `Nota ${note.publicId} salva.` }];
-    }
-
-    if (commandKey === "note list") {
-      if (!this.ports.notesRepository) return [{ kind: "reply_text", text: "Notes module is not available." }];
-      const notes = await this.ports.notesRepository.listNotes({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId,
-        scope: ctx.scope.scope,
-        limit: 10
-      });
-      if (notes.length === 0) return [{ kind: "reply_text", text: "Nenhuma nota ainda." }];
-      return [
-        {
-          kind: "reply_list",
-          header: "Notas",
-          items: notes.map((n) => ({ title: n.publicId, description: truncate(n.text, 50) }))
-        }
-      ];
-    }
-
-    if (commandKey === "note rm") {
-      if (!this.ports.notesRepository) return [{ kind: "reply_text", text: "Notes module is not available." }];
-      const publicId = cmd.replace(/^(note rm)\s+/i, "").trim().toUpperCase();
-      if (!publicId) return [{ kind: "reply_text", text: "Informe o ID da nota (ex: N001)." }];
-      const removed = await this.ports.notesRepository.removeNote({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId,
-        publicId
-      });
-      return [{ kind: "reply_text", text: removed ? `Nota ${publicId} removida.` : `Nota ${publicId} não encontrada.` }];
-    }
+    const noteHandled = await handleNoteCommand({
+      commandKey,
+      cmd,
+      ctx,
+      deps: { notesRepository: this.ports.notesRepository }
+    });
+    if (noteHandled) return noteHandled;
 
     if (commandKey === "agenda") {
       const range = getDayRange({ date: ctx.now, timezone: ctx.timezone });
