@@ -15,6 +15,8 @@ import {
   stripCommandPrefix as stripPrefix
 } from "./commands/parser/prefix.js";
 import { createCommandRegistry } from "./commands/registry/index.js";
+import { buildCommandHelpLines, buildProfileNotice } from "./commands/help-renderer.js";
+import type { HelpVisibilityContext } from "./commands/help-renderer.js";
 import type { CommandRegistry } from "./commands/registry/command-types.js";
 import { parseCommandText } from "./commands/parser/parse-command.js";
 import { handleGroupCommand } from "./modules/groups/presentation/commands/group-commands.js";
@@ -273,77 +275,6 @@ const containsLink = (text: string): boolean => {
   const linkRegex = /(https?:\/\/\S+)|(www\.\S+)|(t\.me\/\S+)|(wa\.me\/\d+)|([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i;
   const domainRegex = /\b[a-z0-9.-]+\.[a-z]{2,}(\/\S*)?/i;
   return linkRegex.test(text) || domainRegex.test(text);
-};
-
-const buildCommandList = (prefix: string, isRoot: boolean): string[] => {
-  const cmd = (body: string) => formatCommand(prefix, body);
-  const commands = [
-    cmd("help"),
-    cmd("ping"),
-    cmd("task add <title>"),
-    cmd("task list"),
-    cmd("task done <id>"),
-    cmd("note add <text>"),
-    cmd("note list"),
-    cmd("note rm <id>"),
-    cmd("agenda"),
-    cmd("calc <expression>"),
-    cmd("timer <duration>"),
-    cmd("mute <duration>|off"),
-    cmd("whoami"),
-    cmd("userinfo (responda ou mencione)"),
-    cmd("groupinfo"),
-    cmd("rules (grupo)"),
-    cmd("fix (grupo)"),
-    cmd("chat on|off (grupo)"),
-    cmd("set gp chat on|off (grupo, admin)"),
-    cmd("set gp open|close (grupo, admin)"),
-    cmd("set gp name <texto>"),
-    cmd("set gp dcr <texto>"),
-    cmd("set gp img (responda imagem)"),
-    cmd("set gp fix <texto>"),
-    cmd("set gp rules <texto>"),
-    cmd("set gp welcome on|off|text <texto>"),
-    cmd("add gp allowed_groups (grupo, admin)"),
-    cmd("rm gp allowed_groups (grupo, admin)"),
-    cmd("list gp allowed_groups"),
-    cmd("add user admins <@> (admin)"),
-    cmd("rm user admins <@>"),
-    cmd("list user admins"),
-    cmd("ban <@> (grupo, admin)"),
-    cmd("kick <@> (grupo, admin)"),
-    cmd("mute <@> <duração> (grupo, admin)"),
-    cmd("unmute <@> (grupo, admin)"),
-    cmd("hidetag <texto> (grupo, admin)"),
-    cmd("status"),
-    cmd("reminder in <duration> <message> (e.g. 10m, 1h30m)"),
-    cmd("reminder at <DD-MM[-YYYY]> [HH:MM] <message>")
-  ];
-  if (isRoot) commands.push(cmd("alias link <phoneNumber> <lidJid> (ROOT/Admin)"));
-  return commands;
-};
-
-const buildHelpText = (prefix: string, input?: {
-  relationshipProfile?: RelationshipProfile | null;
-  permissionRole?: string | null;
-  role?: string | null;
-}): string => {
-  const isRoot = hasRootPrivileges({
-    permissionRole: input?.permissionRole,
-    role: input?.role,
-    relationshipProfile: input?.relationshipProfile ?? null
-  });
-  const lines: string[] = [];
-  if (isRoot) {
-    lines.push("Contexto: ROOT/creator reconhecido. Você tem controle administrativo total; pode pedir ações diretas e estratégicas.");
-  } else if (input?.relationshipProfile === "mother_privileged") {
-    lines.push("Contexto: contato privilegiado (mãe). Vou responder com carinho e respeito extras.");
-  } else if (input?.relationshipProfile === "creator_root") {
-    lines.push("Contexto: creator_root detectado. Respostas mais proativas e complementares.");
-  }
-  lines.push("Commands:");
-  lines.push(...buildCommandList(prefix, isRoot));
-  return lines.join("\n");
 };
 
 const formatAgenda = (input: {
@@ -1976,19 +1907,35 @@ export class Orchestrator {
 
   private buildHelpResponse(ctx: PipelineContext): string {
     const isRoot = this.hasRootPrivilege(ctx);
-    const commands = buildCommandList(this.commandPrefix, isRoot);
+    const visibility: HelpVisibilityContext = {
+      isGroup: ctx.event.isGroup,
+      isAdmin: this.isRequesterAdmin(ctx),
+      isRoot,
+      isGroupAdmin: ctx.requesterIsGroupAdmin ?? false,
+      relationshipProfile: ctx.relationshipProfile ?? ctx.identity?.relationshipProfile ?? null,
+      botIsGroupAdmin: ctx.botIsGroupAdmin
+    };
+    const commands = buildCommandHelpLines({
+      registry: this.commandRegistry,
+      prefix: this.commandPrefix,
+      visibility
+    });
     const withPrefix = (body: string) => formatCommand(this.commandPrefix, body);
     const requester = this.formatRequesterLabel(ctx);
     const botAdminStatus = this.formatBotAdminStatus(ctx);
     const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
+    const prefixLine = `Prefixo: ${this.commandPrefix}`;
 
     if (!ctx.event.isGroup) {
-      const base = buildHelpText(this.commandPrefix, {
-        relationshipProfile: ctx.relationshipProfile,
-        permissionRole: ctx.identity?.permissionRole,
-        role: ctx.identity?.role
-      });
-      return [`Você: ${requester}`, base].join("\n");
+      const profileNotice = buildProfileNotice(visibility.relationshipProfile, isRoot);
+      const lines = [
+        prefixLine,
+        `Você: ${requester}`,
+        "Comandos:",
+        ...commands
+      ];
+      if (profileNotice) lines.unshift(profileNotice);
+      return lines.join("\n");
     }
 
     const groupLabel = ctx.identity?.groupName ?? ctx.groupAccess?.groupName ?? ctx.event.waGroupId ?? "grupo";
@@ -2003,6 +1950,7 @@ export class Orchestrator {
       `Welcome: ${ctx.groupWelcomeEnabled ? "on" : "off"}`,
       `Chat: ${ctx.groupChatMode.toUpperCase()}`,
       `AI: ${aiLabel}`,
+      prefixLine,
       `Você: ${requester}`
     ];
     const missing: string[] = [];
