@@ -369,6 +369,7 @@ export interface TimerRecord {
 
 export interface TaskListItem {
   id: string;
+  publicId: string;
   title: string;
   done: boolean;
   runAt?: Date | null;

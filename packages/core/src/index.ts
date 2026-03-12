@@ -302,7 +302,7 @@ const formatAgenda = (input: {
     lines.push(
       ...input.tasks.map((t) => {
         const timePart = t.runAt ? ` @ ${formatDateTimeInZone(t.runAt, input.timezone)}` : "";
-        return `${t.done ? "✅" : "⬜"} ${t.id}: ${t.title}${timePart}`;
+        return `${t.done ? "✅" : "⬜"} ${t.publicId}: ${t.title}${timePart}`;
       })
     );
   lines.push("\nLembretes:");
@@ -1416,7 +1416,7 @@ export class Orchestrator {
           waGroupId: ctx.event.waGroupId,
           runAt: runAt ?? null
         });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa criada: ${task.id} - ${task.title}`) }];
+        return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa criada: ${task.publicId} - ${task.title}`) }];
       }
       case "list_tasks": {
         const tasks = await listTasksUseCase(this.ports.tasksRepository, {
@@ -1430,7 +1430,7 @@ export class Orchestrator {
             kind: "reply_list",
             header: "Tarefas",
             items: tasks.map((t) => ({
-              title: `${t.done ? "✅" : "⬜"} ${t.id}`,
+              title: `${t.done ? "✅" : "⬜"} ${t.publicId}`,
               description: t.title
             }))
           }
@@ -1455,15 +1455,16 @@ export class Orchestrator {
         return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Tarefa ${result.task.id} atualizada para: ${result.task.title}`) }];
       }
       case "complete_task": {
-        const taskId = String(intent.payload.taskId ?? "").trim();
-        if (!taskId) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "taskId")) }];
+        const taskRef = String(intent.payload.taskId ?? "").trim();
+        if (!taskRef) return [{ kind: "reply_text", text: this.stylizeReply(ctx, this.promptForMissing(intent.action, "taskId")) }];
         const done = await completeTaskUseCase(this.ports.tasksRepository, {
           tenantId: ctx.event.tenantId,
-          taskId,
+          taskRef,
           waGroupId: ctx.event.waGroupId,
           waUserId: ctx.event.waUserId
         });
-        return [{ kind: "reply_text", text: this.stylizeReply(ctx, done ? `Tarefa ${taskId} marcada como concluída.` : `Tarefa ${taskId} não encontrada.`) }];
+        const label = done.publicId ?? taskRef;
+        return [{ kind: "reply_text", text: this.stylizeReply(ctx, done.ok ? `Tarefa ${label} marcada como concluída.` : `Tarefa ${taskRef} não encontrada.`) }];
       }
       case "delete_task": {
         const taskId = String(intent.payload.taskId ?? "").trim();
@@ -1983,6 +1984,24 @@ export class Orchestrator {
     const { raw: rawCmd, body: cmd, lower, match } = parsed;
     const commandKey = match?.command.name ?? parsed.token;
     const formatCmd = (body: string) => formatCommand(this.commandPrefix, body);
+    const usageFor = (name: string): string | null => {
+      const def = this.commandRegistry.find(name);
+      if (!def) return null;
+      return this.stylizeReply(ctx, `Uso: ${formatCmd(def.usage)}`);
+    };
+    const usageForToken = (token: string): string | null => {
+      if (!token) return null;
+      const candidates = this.commandRegistry
+        .list()
+        .filter((cmd) => {
+          const first = cmd.name.split(/\s+/)[0] ?? cmd.name;
+          const aliasFirsts = cmd.aliases?.map((a) => a.split(/\s+/)[0] ?? a) ?? [];
+          return first === token || aliasFirsts.includes(token);
+        });
+      if (candidates.length === 0) return null;
+      const lines = candidates.slice(0, 4).map((cmd) => `- ${formatCmd(cmd.usage)} — ${cmd.description}`);
+      return this.stylizeReply(ctx, `Comando incompleto. Exemplos:\n${lines.join("\n")}`);
+    };
     const botAdminStatus = this.formatBotAdminStatus(ctx);
     const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
 
@@ -2182,7 +2201,7 @@ export class Orchestrator {
       commandKey,
       cmd,
       ctx,
-      deps: { tasksRepository: this.ports.tasksRepository }
+      deps: { tasksRepository: this.ports.tasksRepository, formatUsage: (name) => usageFor(name) }
     });
     if (taskHandled) return taskHandled;
 
@@ -2190,7 +2209,7 @@ export class Orchestrator {
       commandKey,
       cmd,
       ctx,
-      deps: { notesRepository: this.ports.notesRepository }
+      deps: { notesRepository: this.ports.notesRepository, formatUsage: (name) => usageFor(name) }
     });
     if (noteHandled) return noteHandled;
 
@@ -2364,6 +2383,13 @@ export class Orchestrator {
       }
     });
     if (reminderHandled) return reminderHandled;
+
+    if (!match) {
+      const partialUsage = usageForToken(parsed.token);
+      if (partialUsage) return [{ kind: "reply_text", text: partialUsage }];
+    }
+    const fallbackUsage = usageForToken(commandKey.split(/\s+/)[0] ?? parsed.token);
+    if (fallbackUsage) return [{ kind: "reply_text", text: fallbackUsage }];
 
     return [];
   }

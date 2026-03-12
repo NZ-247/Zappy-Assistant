@@ -59,10 +59,10 @@ export interface TasksRepositoryPort {
     createdByWaUserId: string;
     waGroupId?: string;
     runAt?: Date | null;
-  }): Promise<{ id: string; title: string }>;
+  }): Promise<{ id: string; publicId: string; title: string }>;
   listTasks(input: { tenantId: string; waGroupId?: string; waUserId?: string }): Promise<TaskListItem[]>;
   listTasksForDay(input: { tenantId: string; waGroupId?: string; waUserId?: string; dayStart: Date; dayEnd: Date }): Promise<TaskListItem[]>;
-  markDone(input: { tenantId: string; taskId: string; waGroupId?: string; waUserId?: string }): Promise<boolean>;
+  markDone(input: { tenantId: string; taskRef: string; waGroupId?: string; waUserId?: string }): Promise<{ ok: boolean; id?: string; publicId?: string }>;
   updateTask?(input: {
     tenantId: string;
     taskId: string;

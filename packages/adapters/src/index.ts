@@ -10,6 +10,7 @@ import {
   TaskStatus,
   TimerStatus,
   type MessageDirection,
+  type Task,
   type Prisma,
   type User,
   type Group
@@ -789,10 +790,53 @@ export const coreTriggersRepository = {
   }
 };
 
+const TASK_PUBLIC_ID_PREFIX = "TSK";
+const formatTaskPublicId = (sequence: number): string => `${TASK_PUBLIC_ID_PREFIX}${Math.max(1, sequence).toString().padStart(3, "0")}`;
+const fallbackTaskPublicIdFromId = (id: string): string => `${TASK_PUBLIC_ID_PREFIX}${id.replace(/[^a-zA-Z0-9]/g, "").slice(-6).toUpperCase()}`;
+const normalizeTaskPublicId = (value?: string | null): string | null => {
+  if (!value) return null;
+  const trimmed = value.trim().toUpperCase();
+  const withoutPrefix = trimmed.startsWith(TASK_PUBLIC_ID_PREFIX) ? trimmed.slice(TASK_PUBLIC_ID_PREFIX.length) : trimmed;
+  const digits = withoutPrefix.replace(/[^A-Z0-9]/g, "");
+  if (!digits) return null;
+  return `${TASK_PUBLIC_ID_PREFIX}${digits}`;
+};
+const parseSequenceFromPublicId = (publicId: string): number | null => {
+  const normalized = normalizeTaskPublicId(publicId);
+  if (!normalized) return null;
+  const digits = normalized.replace(TASK_PUBLIC_ID_PREFIX, "");
+  const n = Number.parseInt(digits, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+const taskScopeWhere = (input: { tenantId: string; waGroupId?: string; waUserId?: string }): Prisma.TaskWhereInput => ({
+  tenantId: input.tenantId,
+  type: "TASK",
+  waGroupId: input.waGroupId ?? undefined,
+  waUserId: input.waGroupId ? undefined : input.waUserId
+});
+const nextTaskSequence = async (where: Prisma.TaskWhereInput): Promise<number> => {
+  const last = await prisma.task.findFirst({ where, orderBy: { createdAt: "desc" }, select: { payload: true } });
+  const lastSeq = Number((last?.payload as Prisma.JsonObject | null)?.sequence ?? 0);
+  if (Number.isFinite(lastSeq) && lastSeq > 0) return lastSeq + 1;
+  const count = await prisma.task.count({ where });
+  return count + 1;
+};
+const buildTaskPublicId = (row: Task): string => {
+  const payload = row.payload as Prisma.JsonObject | null;
+  const stored = normalizeTaskPublicId((payload?.publicId as string | undefined) ?? null);
+  const seq = Number(payload?.sequence ?? 0);
+  if (stored) return stored;
+  if (Number.isFinite(seq) && seq > 0) return formatTaskPublicId(seq);
+  return fallbackTaskPublicIdFromId(row.id);
+};
 export const tasksRepository = {
   addTask: async (input: { tenantId: string; title: string; createdByWaUserId: string; waGroupId?: string; runAt?: Date | null }) => {
     const user = await findUserForTenant(input.tenantId, input.createdByWaUserId, input.waGroupId);
     const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const where = taskScopeWhere({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.createdByWaUserId });
+    const sequence = await nextTaskSequence(where);
+    const publicId = formatTaskPublicId(sequence);
+    const payload: Prisma.JsonObject = { title: input.title, createdByWaUserId: input.createdByWaUserId, publicId, sequence };
     const row = await prisma.task.create({
       data: {
         tenantId: input.tenantId,
@@ -801,42 +845,72 @@ export const tasksRepository = {
         waGroupId: input.waGroupId,
         waUserId: input.createdByWaUserId,
         type: "TASK",
-        payload: { title: input.title, createdByWaUserId: input.createdByWaUserId },
+        payload,
         status: TaskStatus.PENDING,
         runAt: input.runAt ?? null
       }
     });
-    return { id: row.id, title: input.title };
+    return { id: row.id, publicId, title: input.title };
   },
   listTasks: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
-    const where: Prisma.TaskWhereInput = {
-      tenantId: input.tenantId,
-      type: "TASK",
-      waGroupId: input.waGroupId ?? undefined,
-      waUserId: input.waGroupId ? undefined : input.waUserId
-    };
+    const where = taskScopeWhere(input);
     const rows = await prisma.task.findMany({ where, orderBy: { createdAt: "desc" }, take: 20 });
-    return rows.map((row) => ({ id: row.id, title: String((row.payload as Prisma.JsonObject).title ?? "untitled"), done: row.status === TaskStatus.DONE, runAt: row.runAt }));
+    return rows.map((row) => ({
+      id: row.id,
+      publicId: buildTaskPublicId(row),
+      title: String((row.payload as Prisma.JsonObject).title ?? "untitled"),
+      done: row.status === TaskStatus.DONE,
+      runAt: row.runAt
+    }));
   },
   listTasksForDay: async (input: { tenantId: string; waGroupId?: string; waUserId?: string; dayStart: Date; dayEnd: Date }) => {
     const where: Prisma.TaskWhereInput = {
-      tenantId: input.tenantId,
-      type: "TASK",
-      waGroupId: input.waGroupId ?? undefined,
-      waUserId: input.waGroupId ? undefined : input.waUserId,
+      ...taskScopeWhere(input),
       OR: [
         { runAt: { gte: input.dayStart, lte: input.dayEnd } },
         { AND: [{ runAt: null }, { createdAt: { gte: input.dayStart, lte: input.dayEnd } }] }
       ]
     };
     const rows = await prisma.task.findMany({ where, orderBy: { createdAt: "asc" }, take: 50 });
-    return rows.map((row) => ({ id: row.id, title: String((row.payload as Prisma.JsonObject).title ?? "untitled"), done: row.status === TaskStatus.DONE, runAt: row.runAt }));
+    return rows.map((row) => ({
+      id: row.id,
+      publicId: buildTaskPublicId(row),
+      title: String((row.payload as Prisma.JsonObject).title ?? "untitled"),
+      done: row.status === TaskStatus.DONE,
+      runAt: row.runAt
+    }));
   },
-  markDone: async (input: { tenantId: string; taskId: string; waGroupId?: string; waUserId?: string }) => {
-    const row = await prisma.task.findFirst({ where: { id: input.taskId, tenantId: input.tenantId, type: "TASK", waGroupId: input.waGroupId ?? undefined, waUserId: input.waGroupId ? undefined : input.waUserId } });
-    if (!row) return false;
-    await prisma.task.update({ where: { id: row.id }, data: { status: TaskStatus.DONE } });
-    return true;
+  markDone: async (input: { tenantId: string; taskRef: string; waGroupId?: string; waUserId?: string }) => {
+    const scope = taskScopeWhere(input);
+    const normalizedRef = input.taskRef.trim();
+    const normalizedPublicId = normalizeTaskPublicId(normalizedRef);
+
+    let row =
+      (await prisma.task.findFirst({ where: { ...scope, id: normalizedRef } })) ??
+      (normalizedPublicId
+        ? await prisma.task.findFirst({
+            where: {
+              ...scope,
+              OR: [
+                { payload: { path: ["publicId"], equals: normalizedPublicId } },
+                parseSequenceFromPublicId(normalizedPublicId) !== null
+                  ? { payload: { path: ["sequence"], equals: parseSequenceFromPublicId(normalizedPublicId) } }
+                  : undefined
+              ].filter(Boolean) as Prisma.TaskWhereInput[]
+            }
+          })
+        : null);
+
+    if (!row && normalizedPublicId) {
+      const rows = await prisma.task.findMany({ where: scope, orderBy: { createdAt: "desc" }, take: 50 });
+      row = rows.find((candidate) => buildTaskPublicId(candidate) === normalizedPublicId) ?? null;
+    }
+    if (!row) return { ok: false };
+
+    const publicId = buildTaskPublicId(row);
+    const payload = { ...(row.payload as Prisma.JsonObject | null), publicId };
+    await prisma.task.update({ where: { id: row.id }, data: { status: TaskStatus.DONE, payload } });
+    return { ok: true, id: row.id, publicId };
   },
   updateTask: async (input: { tenantId: string; taskId: string; title?: string; runAt?: Date | null; waGroupId?: string; waUserId?: string }) => {
     const row = await prisma.task.findFirst({

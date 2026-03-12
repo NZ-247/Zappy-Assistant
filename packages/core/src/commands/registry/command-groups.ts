@@ -188,7 +188,7 @@ export const moderationCommands: CommandDefinition[] = [
 export const taskCommands: CommandDefinition[] = [
   { category: "tasks", name: "task add", scope: "both", description: "Cria uma nova tarefa.", usage: "task add <title>" },
   { category: "tasks", name: "task list", scope: "both", description: "Lista tarefas.", usage: "task list" },
-  { category: "tasks", name: "task done", scope: "both", description: "Marca uma tarefa como concluída.", usage: "task done <id>" }
+  { category: "tasks", name: "task done", scope: "both", description: "Marca uma tarefa como concluída pelo ID público (ex: TSK001).", usage: "task done <id|publicId>" }
 ];
 
 export const noteCommands: CommandDefinition[] = [

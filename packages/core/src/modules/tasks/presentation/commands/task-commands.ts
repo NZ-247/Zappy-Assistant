@@ -5,10 +5,15 @@ import { createTask } from "../../application/use-cases/create-task.js";
 import { listTasks } from "../../application/use-cases/list-tasks.js";
 import { completeTask } from "../../application/use-cases/complete-task.js";
 
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const publicIdPattern = /^TSK[0-9A-Z]{3,}$/i;
+const isValidTaskRef = (value: string): boolean => uuidPattern.test(value.trim()) || publicIdPattern.test(value.trim().toUpperCase());
+
 type TaskCommandKey = "task add" | "task list" | "task done";
 
 export interface TaskCommandDeps {
   tasksRepository: TasksRepositoryPort;
+  formatUsage?: (command: TaskCommandKey) => string | null;
 }
 
 export const handleTaskCommand = async (input: {
@@ -25,14 +30,15 @@ export const handleTaskCommand = async (input: {
 
   if (key === "task add") {
     const title = cmd.replace(/^(task add)\s+/i, "").trim();
-    if (!title) return [{ kind: "reply_text", text: "Task title is required." }];
+    const usage = deps.formatUsage?.("task add");
+    if (!title) return [{ kind: "reply_text", text: usage ?? "Task title is required." }];
     const task = await createTask(tasksRepository, {
       tenantId: ctx.event.tenantId,
       title,
       createdByWaUserId: ctx.event.waUserId,
       waGroupId: ctx.event.waGroupId
     });
-    return [{ kind: "reply_text", text: `Task created: ${task.id} - ${task.title}` }];
+    return [{ kind: "reply_text", text: `Task created: ${task.publicId} - ${task.title}` }];
   }
 
   if (key === "task list") {
@@ -47,7 +53,7 @@ export const handleTaskCommand = async (input: {
         kind: "reply_list",
         header: "Tarefas",
         items: tasks.map((t) => ({
-          title: `${t.done ? "✅" : "⬜"} ${t.id}`,
+          title: `${t.done ? "✅" : "⬜"} ${t.publicId}`,
           description: t.title
         }))
       }
@@ -55,14 +61,19 @@ export const handleTaskCommand = async (input: {
   }
 
   if (key === "task done") {
+    const usage = deps.formatUsage?.("task done");
     const taskId = cmd.replace(/^(task done)\s+/i, "").trim();
+    if (!taskId) return [{ kind: "reply_text", text: usage ?? "Usage: task done <id>" }];
+    if (!isValidTaskRef(taskId)) return [{ kind: "reply_text", text: usage ?? "Informe um ID de tarefa válido (ex: TSK001)." }];
     const done = await completeTask(tasksRepository, {
       tenantId: ctx.event.tenantId,
-      taskId,
+      taskRef: taskId,
       waGroupId: ctx.event.waGroupId,
       waUserId: ctx.event.waUserId
     });
-    return [{ kind: "reply_text", text: done ? `Task ${taskId} marked done.` : `Task ${taskId} not found.` }];
+    const label = done.publicId ?? taskId;
+    if (!done.ok) return [{ kind: "reply_text", text: `Task ${label} not found.` }];
+    return [{ kind: "reply_text", text: `Task ${label} marked done.` }];
   }
 
   return null;

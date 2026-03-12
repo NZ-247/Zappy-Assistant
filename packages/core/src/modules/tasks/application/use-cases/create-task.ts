@@ -10,6 +10,7 @@ export interface CreateTaskInput {
 
 export interface CreateTaskResult {
   id: string;
+  publicId: string;
   title: string;
   runAt?: Date | null;
 }

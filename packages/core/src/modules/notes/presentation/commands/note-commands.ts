@@ -11,6 +11,7 @@ type NoteCommandKey = "note add" | "note list" | "note rm";
 
 export interface NoteCommandDeps {
   notesRepository?: NotesRepositoryPort;
+  formatUsage?: (command: NoteCommandKey) => string | null;
 }
 
 export const handleNoteCommand = async (input: {
@@ -27,8 +28,9 @@ export const handleNoteCommand = async (input: {
   const key = commandKey as NoteCommandKey;
 
   if (key === "note add") {
-    const text = cmd.replace(/^(note add)\s+/i, "").trim();
-    if (!text) return [{ kind: "reply_text", text: "Note text is required." }];
+    const usage = deps.formatUsage?.("note add");
+    const text = cmd.replace(/^(note\s+add)\s+/i, "").replace(/^(note|notes)\s+/i, "").trim();
+    if (!text) return [{ kind: "reply_text", text: usage ?? "Note text is required." }];
     const note = await addNote(notesRepository, {
       tenantId: ctx.event.tenantId,
       waGroupId: ctx.event.waGroupId,
@@ -58,8 +60,9 @@ export const handleNoteCommand = async (input: {
   }
 
   if (key === "note rm") {
-    const publicId = cmd.replace(/^(note rm)\s+/i, "").trim().toUpperCase();
-    if (!publicId) return [{ kind: "reply_text", text: "Informe o ID da nota (ex: N001)." }];
+    const usage = deps.formatUsage?.("note rm");
+    const publicId = cmd.replace(/^(note|notes)\s+rm\s+/i, "").trim().toUpperCase();
+    if (!publicId) return [{ kind: "reply_text", text: usage ?? "Informe o ID da nota (ex: N001)." }];
     const removed = await removeNote(notesRepository, {
       tenantId: ctx.event.tenantId,
       waGroupId: ctx.event.waGroupId,
