@@ -1,8 +1,3 @@
----
-
-# 📄 `EXTERNAL_INTEGRATIONS_BLUEPRINT.md`
-
-```markdown
 # EXTERNAL_INTEGRATIONS_BLUEPRINT.md
 
 # Zappy Assistant — External Integrations Blueprint
