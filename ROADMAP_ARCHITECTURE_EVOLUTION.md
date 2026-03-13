@@ -66,9 +66,7 @@ Introduce strong observability and operational visibility.
 
 New modules:
 
-
-modules/observability
-
+`modules/observability`
 
 Capabilities:
 
@@ -88,11 +86,9 @@ Key improvements:
 
 Recommended technologies:
 
-
-Redis counters
-structured logs
-Prometheus-compatible metrics
-
+ - Redis counters
+ - structured logs
+ - Prometheus-compatible metrics
 
 Outcome:
 
@@ -108,50 +104,40 @@ Enable integrations with external services.
 
 New modules:
 
-
-modules/search
-modules/media-fun
-modules/integrations
-modules/automation
-
+`modules/search`
+`modules/media-fun`
+`modules/integrations`
+`modules/automation`
 
 Examples:
 
 Search module:
 
-
-/search web
-/search image
-/search news
-
+`/search web`
+`search image`
+`/search news`
 
 Media module:
 
-
-/sticker
-/tts
-/media download
-
+`/sticker`
+`/tts`
+`/media download`
 
 Automation module:
 
-
-workflow triggers
-scheduled automations
-external event hooks
-
+ - workflow triggers
+ - scheduled automations
+ - external event hooks
 
 External systems:
 
-
-Google APIs
-Nextcloud
-n8n
-Zapier
-Make
-ERP systems
-CRM systems
-
+`Google APIs`
+`Nextcloud`
+`n8n`
+`Zapier`
+`Make`
+`ERP systems`
+`CRM systems`
 
 Outcome:
 
@@ -167,49 +153,44 @@ Improve assistant intelligence and conversational workflows.
 
 Enhancements to:
 
-
-modules/assistant-ai
-
+`modules/assistant-ai`
 
 New features:
 
 Natural language command inference:
 
 Example:
-
-
+```
 "remind me tomorrow at 9"
 → reminder module
+```
 
 
 Slot filling:
-
-
+```
 User: create a reminder
 Assistant: when?
 User: tomorrow
 Assistant: what message?
-
+```
 
 Tool reasoning:
 
 AI selects tools automatically.
 
 Example:
-
-
+```
 "search images of cats"
 → search module
-
+```
 
 Persona management:
 
 Assistant personas:
 
-
-professional
-friendly
-technical
+`professional`
+`friendly`
+`technical`
 
 
 Context awareness:
@@ -231,10 +212,10 @@ Run the assistant across multiple messaging platforms.
 New gateways:
 
 
-apps/telegram-gateway
-apps/discord-gateway
-apps/slack-gateway
-apps/web-chat-gateway
+`apps/telegram-gateway`
+`apps/discord-gateway`
+`apps/slack-gateway`
+`apps/web-chat-gateway`
 
 
 Requirement:
@@ -267,8 +248,7 @@ Enable advanced workflow automation.
 
 New module:
 
-
-modules/automation
+`modules/automation`
 
 
 Capabilities:
@@ -280,19 +260,17 @@ Capabilities:
 
 Example workflows:
 
-
-When task completed → notify group
-When server alert → create reminder
-Daily summary → send report
+`When task completed → notify group`
+`When server alert → create reminder`
+`Daily summary → send report`
 
 
 Integration with:
 
-
-_n8n_
-_Zapier_
-_Make_
-_custom webhooks_
+`n8n`
+`Zapier`
+`Make`
+`custom webhooks`
 
 
 Outcome:
