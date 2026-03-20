@@ -119,7 +119,7 @@ export const executeToolIntent = async (
       });
       const pretty = formatDateTimeInZone(remindAt, deps.timezone);
       return [
-        { kind: "reply_text", text: deps.stylizeReply(`Lembrete ${reminder.id} definido para ${pretty}.`) },
+        { kind: "reply_text", text: deps.stylizeReply(`Lembrete ${reminder.publicId} agendado para ${pretty}.`) },
         { kind: "enqueue_job", jobType: "reminder", payload: { id: reminder.id, runAt: remindAt } }
       ];
     }
@@ -146,9 +146,9 @@ export const executeToolIntent = async (
       if (message) parts.push(`texto atualizado`);
       if (remindAt) parts.push(`novo horário ${formatDateTimeInZone(remindAt, deps.timezone)}`);
       const actions: ResponseAction[] = [
-        { kind: "reply_text", text: deps.stylizeReply(`Lembrete ${reminderId} atualizado (${parts.join(" / ")}).`) }
+        { kind: "reply_text", text: deps.stylizeReply(`Lembrete ${updated.publicId} atualizado (${parts.join(" / ")}).`) }
       ];
-      if (remindAt) actions.push({ kind: "enqueue_job", jobType: "reminder", payload: { id: reminderId, runAt: remindAt } });
+      if (remindAt) actions.push({ kind: "enqueue_job", jobType: "reminder", payload: { id: updated.id, runAt: remindAt } });
       return actions;
     }
     case "delete_reminder": {
@@ -161,7 +161,8 @@ export const executeToolIntent = async (
         waGroupId: ctx.event.waGroupId,
         waUserId: ctx.event.waUserId
       });
-      return [{ kind: "reply_text", text: deps.stylizeReply(removed ? `Lembrete ${reminderId} cancelado.` : `Não encontrei o lembrete ${reminderId}.`) }];
+      if (!removed) return [{ kind: "reply_text", text: deps.stylizeReply(`Não encontrei o lembrete ${reminderId}.`) }];
+      return [{ kind: "reply_text", text: deps.stylizeReply(`Lembrete ${removed.publicId} cancelado.`) }];
     }
     case "add_note": {
       if (!deps.notesRepository) return [{ kind: "reply_text", text: deps.stylizeReply("O módulo de notas não está disponível.") }];

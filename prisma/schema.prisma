@@ -292,16 +292,20 @@ model Reminder {
   user          User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
   waUserId      String?
   waGroupId     String?
+  sequence      Int?
+  publicId      String?
   message       String
   remindAt      DateTime
   status        ReminderStatus @default(SCHEDULED)
   sentMessageId String?
   createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   @@index([remindAt])
   @@index([tenantId])
   @@index([groupId])
   @@index([userId])
+  @@unique([tenantId, publicId])
 }
 
 model Note {

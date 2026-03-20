@@ -10,6 +10,16 @@ export type DetectedToolIntent = {
   reason: string;
 };
 
+const reminderPublicIdRegex = /\b(RMD[0-9A-Z]{3,})\b/i;
+const uuidRegex = /\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b/i;
+const extractReminderRef = (text: string): string | undefined => {
+  const publicId = text.match(reminderPublicIdRegex)?.[1];
+  if (publicId) return publicId.toUpperCase();
+  const uuid = text.match(uuidRegex)?.[1];
+  if (uuid) return uuid;
+  return text.match(/(?:lembrete|id)\s+([a-z0-9-]{6,})/i)?.[1]?.trim();
+};
+
 export const parseNaturalReminderTime = (
   text: string,
   ctx: PipelineContext
@@ -99,10 +109,10 @@ export const promptForMissing = (action: ToolAction, field: string): string => {
     "delete_task:taskId": "Qual o ID da tarefa que devo remover?",
     "create_reminder:message": "O que devo te lembrar?",
     "create_reminder:remindAt": "Quando devo lembrar? Informe data e horário ou duração.",
-    "update_reminder:reminderId": "Qual o ID do lembrete para editar?",
+    "update_reminder:reminderId": "Qual o ID do lembrete para editar? (ex: RMD001)",
     "update_reminder:message": "Qual o novo texto do lembrete?",
     "update_reminder:remindAt": "Qual o novo horário do lembrete?",
-    "delete_reminder:reminderId": "Qual o ID do lembrete que devo cancelar?"
+    "delete_reminder:reminderId": "Qual o ID do lembrete que devo cancelar? (ex: RMD001)"
   };
   return map[`${action}:${field}`] ?? "Me envia mais detalhes para continuar.";
 };
@@ -131,10 +141,14 @@ export const inferToolIntent = (ctx: PipelineContext): DetectedToolIntent | null
     return { action: "add_note", payload: { text: noteText }, missing, reason: "add_note" };
   }
 
-  if (/(lembre|lembra|lembrete)/i.test(lower)) {
+  const hasReminderKeyword = /(lembre|lembra|lembrete)/i.test(lower);
+  const hasReminderRef = reminderPublicIdRegex.test(text) || uuidRegex.test(text);
+  const hasReminderOperationVerb = /(cancela|cancelar|remover|remove|apaga|exclui|edita|editar|atualiza|muda|alterar|altera)/i.test(lower);
+
+  if (hasReminderKeyword || (hasReminderRef && hasReminderOperationVerb)) {
     const wantsDelete = /(cancela|cancelar|remover|remove|apaga|exclui)/i.test(lower);
     const wantsUpdate = /(edita|editar|atualiza|muda|alterar|altera)/i.test(lower);
-    const reminderId = text.match(/(?:lembrete|id)\s+([a-z0-9-]{6,})/i)?.[1];
+    const reminderId = extractReminderRef(text);
 
     if (wantsDelete) {
       const missing = reminderId ? [] : ["reminderId"];

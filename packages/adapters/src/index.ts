@@ -11,6 +11,7 @@ import {
   TimerStatus,
   type MessageDirection,
   type Task,
+  type Reminder,
   type Prisma,
   type User,
   type Group
@@ -943,11 +944,86 @@ export const tasksRepository = {
   }
 };
 
+const REMINDER_PUBLIC_ID_PREFIX = "RMD";
+const formatReminderPublicId = (sequence: number): string => `${REMINDER_PUBLIC_ID_PREFIX}${Math.max(1, sequence).toString().padStart(3, "0")}`;
+const fallbackReminderPublicIdFromId = (id: string): string =>
+  `${REMINDER_PUBLIC_ID_PREFIX}${id.replace(/[^a-zA-Z0-9]/g, "").slice(-6).toUpperCase()}`;
+const normalizeReminderPublicId = (value?: string | null): string | null => {
+  if (!value) return null;
+  const trimmed = value.trim().toUpperCase();
+  const withoutPrefix = trimmed.startsWith(REMINDER_PUBLIC_ID_PREFIX) ? trimmed.slice(REMINDER_PUBLIC_ID_PREFIX.length) : trimmed;
+  const normalized = withoutPrefix.replace(/[^A-Z0-9]/g, "");
+  if (!normalized) return null;
+  return `${REMINDER_PUBLIC_ID_PREFIX}${normalized}`;
+};
+const parseReminderSequenceFromPublicId = (publicId: string): number | null => {
+  const normalized = normalizeReminderPublicId(publicId);
+  if (!normalized) return null;
+  const digits = normalized.replace(REMINDER_PUBLIC_ID_PREFIX, "");
+  if (!/^\d+$/.test(digits)) return null;
+  const n = Number.parseInt(digits, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+const reminderScopeWhere = (input: { tenantId: string; waGroupId?: string; waUserId?: string }): Prisma.ReminderWhereInput => ({
+  tenantId: input.tenantId,
+  waGroupId: input.waGroupId ?? undefined,
+  waUserId: input.waGroupId ? undefined : input.waUserId
+});
+const nextReminderSequence = async (input: { tenantId: string }): Promise<number> => {
+  const last = await prisma.reminder.findFirst({
+    where: { tenantId: input.tenantId },
+    orderBy: [{ sequence: "desc" }, { createdAt: "desc" }],
+    select: { sequence: true }
+  });
+  const lastSeq = Number(last?.sequence ?? 0);
+  if (Number.isFinite(lastSeq) && lastSeq > 0) return lastSeq + 1;
+  const count = await prisma.reminder.count({ where: { tenantId: input.tenantId } });
+  return count + 1;
+};
+const buildReminderPublicId = (row: Pick<Reminder, "id" | "publicId" | "sequence">): string => {
+  const stored = normalizeReminderPublicId(row.publicId);
+  if (stored) return stored;
+  const seq = Number(row.sequence ?? 0);
+  if (Number.isFinite(seq) && seq > 0) return formatReminderPublicId(seq);
+  return fallbackReminderPublicIdFromId(row.id);
+};
+const findReminderByRef = async (input: {
+  tenantId: string;
+  reminderRef: string;
+  waGroupId?: string;
+  waUserId?: string;
+}): Promise<Reminder | null> => {
+  const scope = reminderScopeWhere(input);
+  const ref = input.reminderRef.trim();
+  if (!ref) return null;
+  const normalizedPublicId = normalizeReminderPublicId(ref);
+  const parsedSequence = normalizedPublicId ? parseReminderSequenceFromPublicId(normalizedPublicId) : null;
+  const whereByRef: Prisma.ReminderWhereInput[] = [{ id: ref }];
+  if (normalizedPublicId) whereByRef.push({ publicId: normalizedPublicId });
+  if (parsedSequence !== null) whereByRef.push({ sequence: parsedSequence });
+
+  let row = await prisma.reminder.findFirst({
+    where: {
+      ...scope,
+      OR: whereByRef
+    }
+  });
+  if (row) return row;
+
+  if (normalizedPublicId) {
+    const recent = await prisma.reminder.findMany({ where: scope, orderBy: { createdAt: "desc" }, take: 200 });
+    row = recent.find((candidate) => buildReminderPublicId(candidate) === normalizedPublicId) ?? null;
+  }
+  return row;
+};
+
 export const remindersRepository = {
   createReminder: async (input: ReminderCreateInput) => {
     const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
     const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    return prisma.reminder.create({
+    const sequence = await nextReminderSequence({ tenantId: input.tenantId });
+    const publicId = formatReminderPublicId(sequence);
+    const row = await prisma.reminder.create({
       data: {
         tenantId: input.tenantId,
         userId: user?.id,
@@ -956,47 +1032,70 @@ export const remindersRepository = {
         remindAt: input.remindAt,
         status: ReminderStatus.SCHEDULED,
         waUserId: input.waUserId,
-        waGroupId: input.waGroupId
+        waGroupId: input.waGroupId,
+        sequence,
+        publicId
       },
-      select: { id: true, status: true }
+      select: { id: true, status: true, publicId: true, sequence: true }
     });
+    return { id: row.id, publicId: buildReminderPublicId(row), status: row.status };
   },
   listForDay: async (input: { tenantId: string; waGroupId?: string; waUserId: string; dayStart: Date; dayEnd: Date }) => {
     const where: Prisma.ReminderWhereInput = {
-      tenantId: input.tenantId,
-      waGroupId: input.waGroupId ?? undefined,
-      waUserId: input.waGroupId ? undefined : input.waUserId,
+      ...reminderScopeWhere(input),
       remindAt: { gte: input.dayStart, lte: input.dayEnd },
       status: ReminderStatus.SCHEDULED
     };
     const rows = await prisma.reminder.findMany({ where, orderBy: { remindAt: "asc" } });
-    return rows.map((row) => ({ id: row.id, status: row.status, remindAt: row.remindAt, message: row.message }));
+    return rows.map((row) => ({
+      id: row.id,
+      publicId: buildReminderPublicId(row),
+      status: row.status,
+      remindAt: row.remindAt,
+      message: row.message
+    }));
   },
   updateReminder: async (input: { tenantId: string; reminderId: string; waGroupId?: string; waUserId?: string; message?: string; remindAt?: Date }) => {
-    const row = await prisma.reminder.findFirst({
-      where: { id: input.reminderId, tenantId: input.tenantId, waGroupId: input.waGroupId ?? undefined, waUserId: input.waGroupId ? undefined : input.waUserId }
+    const row = await findReminderByRef({
+      tenantId: input.tenantId,
+      reminderRef: input.reminderId,
+      waGroupId: input.waGroupId,
+      waUserId: input.waUserId
     });
     if (!row) return null;
     const data: Prisma.ReminderUpdateInput = {};
-    if (input.message) data.message = input.message;
+    if (input.message !== undefined) data.message = input.message;
     if (input.remindAt) data.remindAt = input.remindAt;
     const updated = await prisma.reminder.update({ where: { id: row.id }, data });
-    return { id: updated.id, status: updated.status, remindAt: updated.remindAt, message: updated.message };
+    return {
+      id: updated.id,
+      publicId: buildReminderPublicId(updated),
+      status: updated.status,
+      remindAt: updated.remindAt,
+      message: updated.message
+    };
   },
   deleteReminder: async (input: { tenantId: string; reminderId: string; waGroupId?: string; waUserId?: string }) => {
-    const row = await prisma.reminder.findFirst({
-      where: { id: input.reminderId, tenantId: input.tenantId, waGroupId: input.waGroupId ?? undefined, waUserId: input.waGroupId ? undefined : input.waUserId }
+    const row = await findReminderByRef({
+      tenantId: input.tenantId,
+      reminderRef: input.reminderId,
+      waGroupId: input.waGroupId,
+      waUserId: input.waUserId
     });
-    if (!row) return false;
-    await prisma.reminder.update({ where: { id: row.id }, data: { status: ReminderStatus.CANCELED } });
-    return true;
+    if (!row) return null;
+    const updated = await prisma.reminder.update({ where: { id: row.id }, data: { status: ReminderStatus.CANCELED } });
+    return {
+      id: updated.id,
+      publicId: buildReminderPublicId(updated),
+      status: updated.status,
+      remindAt: updated.remindAt,
+      message: updated.message
+    };
   },
   countScheduled: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
     const where: Prisma.ReminderWhereInput = {
-      tenantId: input.tenantId,
+      ...reminderScopeWhere(input),
       status: ReminderStatus.SCHEDULED,
-      waGroupId: input.waGroupId ?? undefined,
-      waUserId: input.waGroupId ? undefined : input.waUserId
     };
     return prisma.reminder.count({ where });
   }

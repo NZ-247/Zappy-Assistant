@@ -337,6 +337,7 @@ export interface ReminderCreateInput {
 
 export interface ReminderRecord {
   id: string;
+  publicId: string;
   status: "SCHEDULED" | "SENT" | "FAILED" | "CANCELED";
   remindAt?: Date;
   message?: string;

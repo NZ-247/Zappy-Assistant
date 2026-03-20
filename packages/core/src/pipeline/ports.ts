@@ -86,7 +86,7 @@ export interface RemindersRepositoryPort {
     message?: string;
     remindAt?: Date;
   }): Promise<ReminderRecord | null>;
-  deleteReminder?(input: { tenantId: string; reminderId: string; waGroupId?: string; waUserId?: string }): Promise<boolean>;
+  deleteReminder?(input: { tenantId: string; reminderId: string; waGroupId?: string; waUserId?: string }): Promise<ReminderRecord | null>;
   countScheduled(input: { tenantId: string; waGroupId?: string; waUserId?: string }): Promise<number>;
 }
 

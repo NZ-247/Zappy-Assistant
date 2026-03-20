@@ -67,7 +67,7 @@ export const handleReminderCommand = async (input: {
   });
   if (!parsed) {
     const usage = deps.formatUsage?.("reminder");
-    return [{ kind: "reply_text", text: usage ?? "Uso correto: reminder in <duração> <mensagem> | reminder at <DD-MM[-AAAA]> [HH:MM] <mensagem>" }];
+    return [{ kind: "reply_text", text: usage ?? "Uso correto: reminder in <duração> <mensagem> ou reminder at <DD-MM[-AAAA]> [HH:MM] <mensagem>" }];
   }
 
   return createReminder(deps.remindersRepository, {

@@ -52,15 +52,31 @@ const reportStartupStatus = async () => {
   logger.info(withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }), `Redis ${redisOk ? "OK" : "FAIL"}`);
 };
 
-const sendViaGatewayApi = async (to: string, text: string): Promise<{ id?: string; raw?: unknown }> => {
+const sendViaGatewayApi = async (input: {
+  to: string;
+  text: string;
+  tenantId: string;
+  waUserId?: string | null;
+  waGroupId?: string | null;
+  action: "send_reminder" | "fire_timer";
+  referenceId: string;
+}): Promise<{ id?: string; raw?: unknown }> => {
+  const scope = input.waGroupId ? "group" : "direct";
+  const waUserId = input.waUserId ?? input.waGroupId ?? input.to;
   logger.info(
     withCategory("WA-OUT", {
-      to,
-      textPreview: text.slice(0, 80)
+      tenantId: input.tenantId,
+      scope,
+      action: input.action,
+      referenceId: input.referenceId,
+      waUserId,
+      waGroupId: input.waGroupId ?? undefined,
+      target: input.to,
+      textPreview: input.text.slice(0, 80)
     }),
-    "send reminder via placeholder sender"
+    "outbound dispatch"
   );
-  return { id: `local-${Date.now()}`, raw: { to, text } };
+  return { id: `local-${Date.now()}`, raw: { to: input.to, text: input.text } };
 };
 
 void reportStartupStatus();
@@ -73,23 +89,32 @@ const worker = new Worker(
       const reminder = await getReminderById(reminderId);
       if (!reminder) return;
       if (reminder.status !== ReminderStatus.SCHEDULED) {
-        logger.info({ reminderId, status: reminder.status }, "reminder already processed");
+        logger.info({ reminderId, reminderPublicId: reminder.publicId ?? reminder.id, status: reminder.status }, "reminder already processed");
         return;
       }
 
       try {
         const to = reminder.waGroupId ?? reminder.waUserId;
         if (!to) throw new Error("Reminder has no recipient");
-        const sent = await sendViaGatewayApi(to, `⏰ Reminder: ${reminder.message}`);
+        const text = `⏰ Lembrete: ${reminder.message}`;
+        const sent = await sendViaGatewayApi({
+          to,
+          text,
+          tenantId: reminder.tenantId ?? "",
+          waUserId: reminder.waUserId ?? undefined,
+          waGroupId: reminder.waGroupId ?? undefined,
+          action: "send_reminder",
+          referenceId: reminder.publicId ?? reminder.id
+        });
         await updateReminderStatus(reminder.id, ReminderStatus.SENT);
         await markReminderMessage({ reminderId: reminder.id, messageId: sent.id });
         await persistOutboundMessage({
           tenantId: reminder.tenantId ?? "",
           userId: reminder.userId ?? undefined,
           groupId: reminder.groupId ?? undefined,
-          waUserId: reminder.waUserId ?? to,
+          waUserId: reminder.waUserId ?? reminder.waGroupId ?? to,
           waGroupId: reminder.waGroupId ?? undefined,
-          text: `⏰ Reminder: ${reminder.message}`,
+          text,
           waMessageId: sent.id,
           rawJson: sent.raw
         });
@@ -108,13 +133,13 @@ const worker = new Worker(
         await auditTrail.record({
           kind: "reminder",
           tenantId: reminder.tenantId ?? "",
-          waUserId: reminder.waUserId ?? "",
+          waUserId: reminder.waUserId ?? reminder.waGroupId ?? "",
           waGroupId: reminder.waGroupId ?? undefined,
           reminderId: reminder.id,
           status: "failed",
           message: reminder.message
         });
-        logger.error({ reminderId, error }, "failed to process reminder");
+        logger.error({ reminderId, reminderPublicId: reminder.publicId ?? reminder.id, error }, "failed to process reminder");
         throw error;
       }
     } else if (job.name === "fire-timer") {
@@ -131,14 +156,22 @@ const worker = new Worker(
         if (!to) throw new Error("Timer has no recipient");
         const label = timer.label ? ` (${timer.label})` : "";
         const text = `⏱ Timer finalizado${label}`;
-        const sent = await sendViaGatewayApi(to, text);
+        const sent = await sendViaGatewayApi({
+          to,
+          text,
+          tenantId: timer.tenantId ?? "",
+          waUserId: timer.waUserId ?? undefined,
+          waGroupId: timer.waGroupId ?? undefined,
+          action: "fire_timer",
+          referenceId: timer.id
+        });
         await updateTimerStatus(timer.id, TimerStatus.FIRED);
         await markTimerMessage({ timerId: timer.id, messageId: sent.id });
         await persistOutboundMessage({
           tenantId: timer.tenantId ?? "",
           userId: timer.userId ?? undefined,
           groupId: timer.groupId ?? undefined,
-          waUserId: timer.waUserId ?? to,
+          waUserId: timer.waUserId ?? timer.waGroupId ?? to,
           waGroupId: timer.waGroupId ?? undefined,
           text,
           waMessageId: sent.id,

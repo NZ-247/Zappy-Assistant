@@ -20,7 +20,7 @@ export const createReminder = async (
   });
 
   return [
-    { kind: "reply_text", text: `Reminder ${reminder.id} set for ${input.pretty} (${input.timezone})` },
+    { kind: "reply_text", text: `Lembrete ${reminder.publicId} agendado para ${input.pretty} (${input.timezone}).` },
     { kind: "enqueue_job", jobType: "reminder", payload: { id: reminder.id, runAt: input.remindAt } }
   ];
 };

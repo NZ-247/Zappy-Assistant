@@ -304,7 +304,7 @@ const formatAgenda = (input: {
     lines.push(
       ...input.reminders.map((r) => {
         const timePart = r.remindAt ? formatDateTimeInZone(r.remindAt, input.timezone) : "";
-        return `⏰ ${r.id ?? ""} ${timePart} - ${r.message ?? "(sem mensagem)"}`;
+        return `⏰ ${r.publicId} ${timePart} - ${r.message ?? "(sem mensagem)"}`;
       })
     );
   return lines.join("\n");
