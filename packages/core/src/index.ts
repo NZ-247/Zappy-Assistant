@@ -270,7 +270,7 @@ const truncate = (text: string, max = 60): string => (text.length <= max ? text 
 const evaluateExpression = (expression: string): number => {
   const parser = new Parser({ operators: { logical: false, comparison: true }, allowMemberAccess: false });
   const result = parser.evaluate(expression);
-  if (typeof result !== "number" || Number.isNaN(result) || !Number.isFinite(result)) throw new Error("Invalid expression result");
+  if (typeof result !== "number" || Number.isNaN(result) || !Number.isFinite(result)) throw new Error("Resultado inválido para a expressão.");
   return result;
 };
 
@@ -1136,7 +1136,7 @@ export class Orchestrator {
     const usageFor = (name: string): string | null => {
       const def = this.commandRegistry.find(name);
       if (!def) return null;
-      return this.stylizeReply(ctx, `Uso: ${formatCmd(def.usage)}`);
+      return this.stylizeReply(ctx, `Uso correto: ${formatCmd(def.usage)}`);
     };
     const usageForToken = (token: string): string | null => {
       if (!token) return null;
@@ -1393,7 +1393,7 @@ export class Orchestrator {
     }
 
     if (commandKey === "timer") {
-      if (!this.ports.timersRepository) return [{ kind: "reply_text", text: "Timer module is not available." }];
+      if (!this.ports.timersRepository) return [{ kind: "reply_text", text: "Módulo de timer não está disponível." }];
       const durationToken = cmd.replace(/^(timer)\s+/i, "").trim();
       const duration = parseDurationInput(durationToken);
       if (!duration) return [{ kind: "reply_text", text: "Formato de duração inválido. Use algo como 10m ou 1h." }];
@@ -1413,7 +1413,7 @@ export class Orchestrator {
     }
 
     if (commandKey === "mute") {
-      if (!this.ports.mute) return [{ kind: "reply_text", text: "Mute control is not available." }];
+      if (!this.ports.mute) return [{ kind: "reply_text", text: "Controle de silêncio não está disponível." }];
       const arg = cmd.replace(/^mute\s*/i, "").trim();
       if (arg.toLowerCase() === "off") {
         await this.ports.mute.unmute({ tenantId: ctx.event.tenantId, scope: ctx.scope.scope, scopeId: ctx.scope.scopeId });
@@ -1433,9 +1433,9 @@ export class Orchestrator {
     }
 
     if (commandKey === "alias link") {
-      if (!this.ports.identity?.linkAlias) return [{ kind: "reply_text", text: "Alias linking is not available." }];
+      if (!this.ports.identity?.linkAlias) return [{ kind: "reply_text", text: "Vinculação de alias não está disponível." }];
       const match = cmd.match(/^alias\s+link\s+(\S+)\s+(\S+)/i);
-      if (!match) return [{ kind: "reply_text", text: `Use: ${formatCmd("alias link <phoneNumber> <lidJid>")}` }];
+      if (!match) return [{ kind: "reply_text", text: `Uso correto: ${formatCmd("alias link <phoneNumber> <lidJid>")}` }];
       const [, phoneNumber, lidJid] = match;
       const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase?.() ?? "";
       const allowedRoles = ["ROOT", "ADMIN", "DONO", "OWNER", "PRIVILEGED"];
@@ -1528,7 +1528,8 @@ export class Orchestrator {
         remindersRepository: this.ports.remindersRepository,
         timezone: ctx.timezone,
         defaultReminderTime: ctx.defaultReminderTime,
-        now: ctx.now
+        now: ctx.now,
+        formatUsage: () => usageFor("reminder")
       }
     });
     if (reminderHandled) return reminderHandled;
@@ -1536,11 +1537,14 @@ export class Orchestrator {
     if (!match) {
       const partialUsage = usageForToken(parsed.token);
       if (partialUsage) return [{ kind: "reply_text", text: partialUsage }];
+      return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Comando desconhecido. Use ${formatCmd("help")}.`) }];
     }
     const fallbackUsage = usageForToken(commandKey.split(/\s+/)[0] ?? parsed.token);
     if (fallbackUsage) return [{ kind: "reply_text", text: fallbackUsage }];
 
-    return [];
+    const matchedUsage = usageFor(commandKey);
+    if (matchedUsage) return [{ kind: "reply_text", text: matchedUsage }];
+    return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Comando desconhecido. Use ${formatCmd("help")}.`) }];
   }
 
   async handleInboundMessage(event: InboundMessageEvent): Promise<ResponseAction[]> {
@@ -1646,6 +1650,10 @@ export class Orchestrator {
       }
     }
     if (commandActions.length > 0) return this.formatActionsForDelivery(commandActions);
+    if (ctx.classification.kind === "command") {
+      const unknownMessage = this.stylizeReply(ctx, `Comando desconhecido. Use ${formatCommand(this.commandPrefix, "help")}.`);
+      return this.formatActionsForDelivery([{ kind: "reply_text", text: unknownMessage }]);
+    }
 
     if (ctx.classification.kind === "tool_follow_up") {
       const followUp = await this.assistantAi.handlePendingToolFollowUp(ctx);

@@ -96,7 +96,7 @@ export const handleGroupCommand = async (input: {
 
     if (normalizedSub === "chat") {
       const mode = restTokens[0] === "off" ? "off" : restTokens[0] === "on" ? "on" : null;
-      if (!mode) return [{ kind: "reply_text", text: stylizeReply(`Use: ${formatCmd("set gp chat on|off")}`) }];
+      if (!mode) return [{ kind: "reply_text", text: stylizeReply(`Uso correto: ${formatCmd("set gp chat on|off")}`) }];
       const updated = await setGroupChatMode(groupAccess, {
         tenantId: ctx.event.tenantId,
         waGroupId: ctx.event.waGroupId!,
@@ -208,7 +208,7 @@ export const handleGroupCommand = async (input: {
         });
         return [{ kind: "reply_text", text: stylizeReply("Texto de boas-vindas atualizado.") }];
       }
-      return [{ kind: "reply_text", text: stylizeReply(`Use: ${formatCmd("set gp welcome on|off")} ou ${formatCmd("set gp welcome text <mensagem>")}.`) }];
+      return [{ kind: "reply_text", text: stylizeReply(`Uso correto: ${formatCmd("set gp welcome on|off")} ou ${formatCmd("set gp welcome text <mensagem>")}.`) }];
     }
 
     return [{ kind: "reply_text", text: stylizeReply("Comando set gp não reconhecido.") }];
@@ -293,7 +293,7 @@ export const handleGroupCommand = async (input: {
 
     const modeToken = lower.split(/\s+/)[1];
     const mode = modeToken === "off" ? "off" : modeToken === "on" ? "on" : null;
-    if (!mode) return [{ kind: "reply_text", text: stylizeReply(`Use: ${formatCmd("chat on|off")}`) }];
+    if (!mode) return [{ kind: "reply_text", text: stylizeReply(`Uso correto: ${formatCmd("chat on|off")}`) }];
 
     const updated = await setGroupChatMode(groupAccess, {
       tenantId: ctx.event.tenantId,

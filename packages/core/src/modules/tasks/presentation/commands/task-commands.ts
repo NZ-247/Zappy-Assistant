@@ -29,16 +29,16 @@ export const handleTaskCommand = async (input: {
   const key = commandKey as TaskCommandKey;
 
   if (key === "task add") {
-    const title = cmd.replace(/^(task add)\s+/i, "").trim();
     const usage = deps.formatUsage?.("task add");
-    if (!title) return [{ kind: "reply_text", text: usage ?? "Task title is required." }];
+    const title = cmd.replace(/^task\s+add\b/i, "").trim();
+    if (!title) return [{ kind: "reply_text", text: usage ?? "Uso correto: task add <título>" }];
     const task = await createTask(tasksRepository, {
       tenantId: ctx.event.tenantId,
       title,
       createdByWaUserId: ctx.event.waUserId,
       waGroupId: ctx.event.waGroupId
     });
-    return [{ kind: "reply_text", text: `Task created: ${task.publicId} - ${task.title}` }];
+    return [{ kind: "reply_text", text: `Tarefa criada: ${task.publicId} - ${task.title}` }];
   }
 
   if (key === "task list") {
@@ -47,7 +47,7 @@ export const handleTaskCommand = async (input: {
       waGroupId: ctx.event.waGroupId,
       waUserId: ctx.event.waUserId
     });
-    if (tasks.length === 0) return [{ kind: "reply_text", text: "No tasks yet." }];
+    if (tasks.length === 0) return [{ kind: "reply_text", text: "Nenhuma tarefa encontrada." }];
     return [
       {
         kind: "reply_list",
@@ -62,9 +62,11 @@ export const handleTaskCommand = async (input: {
 
   if (key === "task done") {
     const usage = deps.formatUsage?.("task done");
-    const taskId = cmd.replace(/^(task done)\s+/i, "").trim();
-    if (!taskId) return [{ kind: "reply_text", text: usage ?? "Usage: task done <id>" }];
-    if (!isValidTaskRef(taskId)) return [{ kind: "reply_text", text: usage ?? "Informe um ID de tarefa válido (ex: TSK001)." }];
+    const args = cmd.replace(/^task\s+done\b/i, "").trim();
+    if (!args) return [{ kind: "reply_text", text: usage ?? "Uso correto: task done <id>" }];
+    const taskId = (args.split(/\s+/).find(Boolean) ?? "").trim();
+    if (!taskId) return [{ kind: "reply_text", text: usage ?? "Uso correto: task done <id>" }];
+    if (!isValidTaskRef(taskId)) return [{ kind: "reply_text", text: "ID de tarefa inválido. Use um UUID ou ID público (ex: TSK001)." }];
     const done = await completeTask(tasksRepository, {
       tenantId: ctx.event.tenantId,
       taskRef: taskId,
@@ -72,8 +74,8 @@ export const handleTaskCommand = async (input: {
       waUserId: ctx.event.waUserId
     });
     const label = done.publicId ?? taskId;
-    if (!done.ok) return [{ kind: "reply_text", text: `Task ${label} not found.` }];
-    return [{ kind: "reply_text", text: `Task ${label} marked done.` }];
+    if (!done.ok) return [{ kind: "reply_text", text: "Tarefa não encontrada." }];
+    return [{ kind: "reply_text", text: `Tarefa ${label} marcada como concluída.` }];
   }
 
   return null;

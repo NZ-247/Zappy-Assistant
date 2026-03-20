@@ -24,13 +24,13 @@ export const handleNoteCommand = async (input: {
   if (!["note add", "note list", "note rm"].includes(commandKey)) return null;
 
   const notesRepository = deps.notesRepository;
-  if (!notesRepository) return [{ kind: "reply_text", text: "Notes module is not available." }];
+  if (!notesRepository) return [{ kind: "reply_text", text: "Módulo de notas não está disponível." }];
   const key = commandKey as NoteCommandKey;
 
   if (key === "note add") {
     const usage = deps.formatUsage?.("note add");
-    const text = cmd.replace(/^(note\s+add)\s+/i, "").replace(/^(note|notes)\s+/i, "").trim();
-    if (!text) return [{ kind: "reply_text", text: usage ?? "Note text is required." }];
+    const text = cmd.replace(/^notes?\s+add\b/i, "").replace(/^notes?\b/i, "").trim();
+    if (!text) return [{ kind: "reply_text", text: usage ?? "Uso correto: note add <texto>" }];
     const note = await addNote(notesRepository, {
       tenantId: ctx.event.tenantId,
       waGroupId: ctx.event.waGroupId,
@@ -49,7 +49,7 @@ export const handleNoteCommand = async (input: {
       scope: ctx.scope.scope,
       limit: 10
     });
-    if (notes.length === 0) return [{ kind: "reply_text", text: "Nenhuma nota ainda." }];
+    if (notes.length === 0) return [{ kind: "reply_text", text: "Nenhuma nota encontrada." }];
     return [
       {
         kind: "reply_list",
@@ -61,8 +61,9 @@ export const handleNoteCommand = async (input: {
 
   if (key === "note rm") {
     const usage = deps.formatUsage?.("note rm");
-    const publicId = cmd.replace(/^(note|notes)\s+rm\s+/i, "").trim().toUpperCase();
-    if (!publicId) return [{ kind: "reply_text", text: usage ?? "Informe o ID da nota (ex: N001)." }];
+    const args = cmd.replace(/^notes?\s+rm\b/i, "").trim();
+    const publicId = (args.split(/\s+/).find(Boolean) ?? "").toUpperCase();
+    if (!publicId) return [{ kind: "reply_text", text: usage ?? "Uso correto: note rm <id>" }];
     const removed = await removeNote(notesRepository, {
       tenantId: ctx.event.tenantId,
       waGroupId: ctx.event.waGroupId,

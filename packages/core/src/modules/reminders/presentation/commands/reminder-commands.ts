@@ -48,6 +48,7 @@ export interface ReminderCommandDeps {
   timezone: string;
   defaultReminderTime: string;
   now: Date;
+  formatUsage?: (command: "reminder") => string | null;
 }
 
 export const handleReminderCommand = async (input: {
@@ -64,7 +65,10 @@ export const handleReminderCommand = async (input: {
     timezone: deps.timezone,
     defaultReminderTime: deps.defaultReminderTime
   });
-  if (!parsed) return [{ kind: "reply_text", text: "Invalid reminder format." }];
+  if (!parsed) {
+    const usage = deps.formatUsage?.("reminder");
+    return [{ kind: "reply_text", text: usage ?? "Uso correto: reminder in <duração> <mensagem> | reminder at <DD-MM[-AAAA]> [HH:MM] <mensagem>" }];
+  }
 
   return createReminder(deps.remindersRepository, {
     tenantId: ctx.event.tenantId,
