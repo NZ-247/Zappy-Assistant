@@ -1,26 +1,26 @@
 import { Worker } from "bullmq";
 import {
   createRedisConnection,
-  getReminderById,
-  getTimerById,
-  markReminderMessage,
-  markTimerMessage,
   markWorkerHeartbeat,
-  persistOutboundMessage,
   prisma,
-  updateReminderStatus,
-  updateTimerStatus,
   createMetricsRecorder,
   createAuditTrail
 } from "@zappy/adapters";
-import { ReminderStatus, TimerStatus } from "@prisma/client";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
+import { createWaGatewayDispatchClient } from "./infrastructure/wa-gateway-dispatch-client.js";
+import { processReminderJob } from "./reminders/application/use-cases/process-reminder-job.js";
+import { processTimerJob } from "./timers/application/use-cases/process-timer-job.js";
 
 const env = loadEnv();
 const logger = createLogger("worker");
 const connection = createRedisConnection(env.REDIS_URL);
 const metrics = createMetricsRecorder(connection);
 const auditTrail = createAuditTrail();
+const gatewayClient = createWaGatewayDispatchClient({
+  baseUrl: env.WA_GATEWAY_INTERNAL_BASE_URL,
+  token: env.WA_GATEWAY_INTERNAL_TOKEN,
+  logger
+});
 const heartbeat = setInterval(() => void markWorkerHeartbeat(connection), 10_000);
 void markWorkerHeartbeat(connection);
 
@@ -36,7 +36,10 @@ printStartupBanner(logger, {
   redisStatus: "PENDING",
   dbStatus: "PENDING",
   workerStatus: "PENDING",
-  llmStatus: env.LLM_ENABLED ? "PENDING" : undefined
+  llmStatus: env.LLM_ENABLED ? "PENDING" : undefined,
+  extras: {
+    internalGatewayUrl: env.WA_GATEWAY_INTERNAL_BASE_URL
+  }
 });
 
 const reportStartupStatus = async () => {
@@ -52,137 +55,32 @@ const reportStartupStatus = async () => {
   logger.info(withCategory("SYSTEM", { target: "Redis", status: redisOk ? "OK" : "FAIL" }), `Redis ${redisOk ? "OK" : "FAIL"}`);
 };
 
-const sendViaGatewayApi = async (input: {
-  to: string;
-  text: string;
-  tenantId: string;
-  waUserId?: string | null;
-  waGroupId?: string | null;
-  action: "send_reminder" | "fire_timer";
-  referenceId: string;
-}): Promise<{ id?: string; raw?: unknown }> => {
-  const scope = input.waGroupId ? "group" : "direct";
-  const waUserId = input.waUserId ?? input.waGroupId ?? input.to;
-  logger.info(
-    withCategory("WA-OUT", {
-      tenantId: input.tenantId,
-      scope,
-      action: input.action,
-      referenceId: input.referenceId,
-      waUserId,
-      waGroupId: input.waGroupId ?? undefined,
-      target: input.to,
-      textPreview: input.text.slice(0, 80)
-    }),
-    "outbound dispatch"
-  );
-  return { id: `local-${Date.now()}`, raw: { to: input.to, text: input.text } };
-};
-
 void reportStartupStatus();
 
 const worker = new Worker(
   env.QUEUE_NAME,
   async (job) => {
     if (job.name === "send-reminder") {
-      const reminderId = String(job.data.reminderId ?? "");
-      const reminder = await getReminderById(reminderId);
-      if (!reminder) return;
-      if (reminder.status !== ReminderStatus.SCHEDULED) {
-        logger.info({ reminderId, reminderPublicId: reminder.publicId ?? reminder.id, status: reminder.status }, "reminder already processed");
+      const reminderId = String(job.data.reminderId ?? "").trim();
+      if (!reminderId) {
+        logger.warn(withCategory("WARN", { action: "send_reminder", jobId: job.id }), "job send-reminder missing reminderId");
         return;
       }
-
-      try {
-        const to = reminder.waGroupId ?? reminder.waUserId;
-        if (!to) throw new Error("Reminder has no recipient");
-        const text = `⏰ Lembrete: ${reminder.message}`;
-        const sent = await sendViaGatewayApi({
-          to,
-          text,
-          tenantId: reminder.tenantId ?? "",
-          waUserId: reminder.waUserId ?? undefined,
-          waGroupId: reminder.waGroupId ?? undefined,
-          action: "send_reminder",
-          referenceId: reminder.publicId ?? reminder.id
-        });
-        await updateReminderStatus(reminder.id, ReminderStatus.SENT);
-        await markReminderMessage({ reminderId: reminder.id, messageId: sent.id });
-        await persistOutboundMessage({
-          tenantId: reminder.tenantId ?? "",
-          userId: reminder.userId ?? undefined,
-          groupId: reminder.groupId ?? undefined,
-          waUserId: reminder.waUserId ?? reminder.waGroupId ?? to,
-          waGroupId: reminder.waGroupId ?? undefined,
-          text,
-          waMessageId: sent.id,
-          rawJson: sent.raw
-        });
-        await metrics.increment("reminders_sent_total");
-        await auditTrail.record({
-          kind: "reminder",
-          tenantId: reminder.tenantId ?? "",
-          waUserId: reminder.waUserId ?? to,
-          waGroupId: reminder.waGroupId ?? undefined,
-          reminderId: reminder.id,
-          status: "sent",
-          message: reminder.message
-        });
-      } catch (error) {
-        await updateReminderStatus(reminder.id, ReminderStatus.FAILED);
-        await auditTrail.record({
-          kind: "reminder",
-          tenantId: reminder.tenantId ?? "",
-          waUserId: reminder.waUserId ?? reminder.waGroupId ?? "",
-          waGroupId: reminder.waGroupId ?? undefined,
-          reminderId: reminder.id,
-          status: "failed",
-          message: reminder.message
-        });
-        logger.error({ reminderId, reminderPublicId: reminder.publicId ?? reminder.id, error }, "failed to process reminder");
-        throw error;
-      }
-    } else if (job.name === "fire-timer") {
-      const timerId = String(job.data.timerId ?? "");
-      const timer = await getTimerById(timerId);
-      if (!timer) return;
-      if (timer.status !== TimerStatus.SCHEDULED) {
-        logger.info({ timerId, status: timer.status }, "timer already processed");
-        return;
-      }
-
-      try {
-        const to = timer.waGroupId ?? timer.waUserId;
-        if (!to) throw new Error("Timer has no recipient");
-        const label = timer.label ? ` (${timer.label})` : "";
-        const text = `⏱ Timer finalizado${label}`;
-        const sent = await sendViaGatewayApi({
-          to,
-          text,
-          tenantId: timer.tenantId ?? "",
-          waUserId: timer.waUserId ?? undefined,
-          waGroupId: timer.waGroupId ?? undefined,
-          action: "fire_timer",
-          referenceId: timer.id
-        });
-        await updateTimerStatus(timer.id, TimerStatus.FIRED);
-        await markTimerMessage({ timerId: timer.id, messageId: sent.id });
-        await persistOutboundMessage({
-          tenantId: timer.tenantId ?? "",
-          userId: timer.userId ?? undefined,
-          groupId: timer.groupId ?? undefined,
-          waUserId: timer.waUserId ?? timer.waGroupId ?? to,
-          waGroupId: timer.waGroupId ?? undefined,
-          text,
-          waMessageId: sent.id,
-          rawJson: sent.raw
-        });
-      } catch (error) {
-        await updateTimerStatus(timerId, TimerStatus.FAILED);
-        logger.error({ timerId, error }, "failed to process timer");
-        throw error;
-      }
+      await processReminderJob(reminderId, { logger, gatewayClient, metrics, auditTrail });
+      return;
     }
+
+    if (job.name === "fire-timer") {
+      const timerId = String(job.data.timerId ?? "").trim();
+      if (!timerId) {
+        logger.warn(withCategory("WARN", { action: "fire_timer", jobId: job.id }), "job fire-timer missing timerId");
+        return;
+      }
+      await processTimerJob(timerId, { logger, gatewayClient });
+      return;
+    }
+
+    logger.warn(withCategory("WARN", { jobId: job.id, jobName: job.name }), "worker received unknown job type");
   },
   { connection: connection as unknown as any }
 );

@@ -34,9 +34,10 @@ import {
   botAdminRepository
 } from "@zappy/adapters";
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
-import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
+import { createLogger, loadEnv, printStartupBanner, withCategory, type InternalGatewaySendTextRequest } from "@zappy/shared";
 import qrcodeTerminal from "qrcode-terminal";
 import { buildBotAliases, jidMatchesBot, normalizeJid, normalizeLidJid, stripUser } from "./bot-alias.js";
+import { startInternalDispatchApi } from "./infrastructure/internal-dispatch-api.js";
 
 const env = loadEnv();
 const logger = createLogger("wa-gateway");
@@ -83,7 +84,10 @@ printStartupBanner(logger, {
   redisStatus: "PENDING",
   dbStatus: "PENDING",
   llmStatus: env.LLM_ENABLED ? (llmConfigured ? "PENDING" : "FAIL") : undefined,
-  workerStatus: "PENDING"
+  workerStatus: "PENDING",
+  extras: {
+    internalDispatchPort: env.WA_GATEWAY_INTERNAL_PORT
+  }
 });
 
 const reportStartupStatus = async () => {
@@ -200,7 +204,47 @@ const sendWithReplyFallback = async ({ to, content, quotedMessage, logContext }:
   return socket.sendMessage(to, content);
 };
 
+const dispatchInternalText = async (input: InternalGatewaySendTextRequest): Promise<{ waMessageId: string; raw?: unknown }> => {
+  const scope = input.waGroupId || input.to.endsWith("@g.us") ? "group" : "direct";
+  const sent = await sendWithReplyFallback({
+    to: input.to,
+    content: { text: input.text },
+    quotedMessage: undefined,
+    logContext: {
+      tenantId: input.tenantId,
+      scope,
+      action: input.action,
+      referenceId: input.referenceId,
+      waUserId: input.waUserId ?? input.to,
+      waGroupId: input.waGroupId
+    }
+  });
+  const waMessageId = sent?.key?.id;
+  if (!waMessageId) throw new Error("wa_message_id_missing");
+  logger.info(
+    withCategory("WA-OUT", {
+      tenantId: input.tenantId,
+      scope,
+      action: input.action,
+      referenceId: input.referenceId,
+      waUserId: input.waUserId ?? input.to,
+      waGroupId: input.waGroupId,
+      waMessageId,
+      textPreview: input.text.slice(0, 80),
+      source: "worker_internal"
+    }),
+    "outbound message"
+  );
+  return { waMessageId, raw: sent };
+};
+
 let socket: ReturnType<typeof makeWASocket> | null = null;
+const internalDispatchApi = startInternalDispatchApi({
+  port: env.WA_GATEWAY_INTERNAL_PORT,
+  token: env.WA_GATEWAY_INTERNAL_TOKEN,
+  logger,
+  dispatchText: dispatchInternalText
+});
 const heartbeat = setInterval(() => {
   void markGatewayHeartbeat(redis, Boolean(socket?.user));
 }, 10_000);
@@ -1312,6 +1356,7 @@ const connect = async () => {
 const shutdown = async () => {
   clearInterval(heartbeat);
   await markGatewayHeartbeat(redis, false);
+  await internalDispatchApi.close();
   await queue.close();
   await redis.quit();
   await prisma.$disconnect();

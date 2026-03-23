@@ -41,6 +41,7 @@ Responsibilities:
   - group admin actions
   - moderation actions
   - media updates
+- expose authenticated internal dispatch endpoint for async worker deliveries
 - write gateway heartbeat
 - collect platform-level observability
 
@@ -59,6 +60,7 @@ Responsibilities:
 - consume BullMQ jobs
 - reminders
 - delayed/background actions
+- dispatch async outbound texts through wa-gateway internal API (never directly to Baileys)
 - write worker heartbeat
 - increment metrics / audit background actions
 

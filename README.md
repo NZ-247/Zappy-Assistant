@@ -13,6 +13,7 @@ npm run prisma:generate
 - `LLM_ENABLED=false` skips the LLM fallback and keeps commands/triggers active.
 - `BOT_TIMEZONE` (default `America/Cuiaba`) controls all reminder parsing/formatting.
 - `BOT_PREFIX` (default `/`) is the global command prefix; parsing/help text respect this value.
+- Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
 ## Run

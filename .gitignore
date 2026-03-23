@@ -7,3 +7,4 @@ coverage
 .prisma
 .wa_auth/
 .zappy-dev/
+.env.1

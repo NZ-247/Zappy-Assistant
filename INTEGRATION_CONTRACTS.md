@@ -402,3 +402,62 @@ BOT_NAME=Zappy
 BOT_PREFIX=/
 BOT_TIMEZONE=America/Cuiaba
 ```
+
+## 11. Internal Worker -> WA Gateway contract
+
+Purpose
+
+Worker jobs (`send-reminder`, `fire-timer`) must send text through the real WhatsApp socket owned by `wa-gateway`.
+
+Route
+
+`POST /internal/messages/text`
+
+Auth
+
+`Authorization: Bearer <WA_GATEWAY_INTERNAL_TOKEN>`
+
+Request shape
+
+```json
+{
+  "tenantId": "tenant_1",
+  "to": "556699064658@s.whatsapp.net",
+  "text": "⏰ Lembrete: pagar boleto",
+  "action": "send_reminder",
+  "referenceId": "RMD001",
+  "waUserId": "556699064658@lid",
+  "waGroupId": null
+}
+```
+
+`action` supports:
+
+- `send_reminder`
+- `fire_timer`
+
+Success response
+
+```json
+{
+  "ok": true,
+  "waMessageId": "BAE5A9F4D0B...",
+  "raw": {}
+}
+```
+
+Failure response (minimal)
+
+```json
+{
+  "ok": false,
+  "error": "Dispatch failed",
+  "code": "DISPATCH_FAILED"
+}
+```
+
+Relevant env vars
+
+- `WA_GATEWAY_INTERNAL_PORT` (gateway listener port)
+- `WA_GATEWAY_INTERNAL_BASE_URL` (worker target base URL)
+- `WA_GATEWAY_INTERNAL_TOKEN` (shared bearer token)

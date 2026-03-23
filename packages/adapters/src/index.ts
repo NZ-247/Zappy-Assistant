@@ -1381,6 +1381,58 @@ export const updateReminderStatus = (id: string, status: ReminderStatus) => pris
 export const getTimerById = (id: string) => prisma.timer.findUnique({ where: { id } });
 export const updateTimerStatus = (id: string, status: TimerStatus) => prisma.timer.update({ where: { id }, data: { status } });
 
+export type ReminderDispatchRecord = Prisma.ReminderGetPayload<{
+  include: {
+    user: {
+      select: {
+        phoneNumber: true;
+        lidJid: true;
+        pnJid: true;
+      };
+    };
+  };
+}>;
+
+export type TimerDispatchRecord = Prisma.TimerGetPayload<{
+  include: {
+    user: {
+      select: {
+        phoneNumber: true;
+        lidJid: true;
+        pnJid: true;
+      };
+    };
+  };
+}>;
+
+export const getReminderDispatchById = (id: string) =>
+  prisma.reminder.findUnique({
+    where: { id },
+    include: {
+      user: {
+        select: {
+          phoneNumber: true,
+          lidJid: true,
+          pnJid: true
+        }
+      }
+    }
+  });
+
+export const getTimerDispatchById = (id: string) =>
+  prisma.timer.findUnique({
+    where: { id },
+    include: {
+      user: {
+        select: {
+          phoneNumber: true,
+          lidJid: true,
+          pnJid: true
+        }
+      }
+    }
+  });
+
 export type WhatsAppSender = (to: string, text: string) => Promise<{ messageId?: string; raw?: unknown }>;
 
 export const markReminderMessage = async (input: { reminderId: string; messageId?: string }) => {

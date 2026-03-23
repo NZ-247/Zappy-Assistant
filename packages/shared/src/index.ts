@@ -10,6 +10,9 @@ const envSchema = z.object({
   ADMIN_API_PORT: z.coerce.number().default(3333),
   ADMIN_UI_PORT: z.coerce.number().default(8080),
   ADMIN_API_TOKEN: z.string().min(1),
+  WA_GATEWAY_INTERNAL_PORT: z.coerce.number().default(3334),
+  WA_GATEWAY_INTERNAL_BASE_URL: z.string().url().default("http://localhost:3334"),
+  WA_GATEWAY_INTERNAL_TOKEN: z.string().min(1).default("change-me-internal"),
   QUEUE_NAME: z.string().default("reminders"),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
@@ -377,3 +380,5 @@ export const triggerSchema = z.object({
 
 export type FeatureFlagInput = z.infer<typeof featureFlagSchema>;
 export type TriggerInput = z.infer<typeof triggerSchema>;
+
+export * from "./internal-gateway-contract.js";
