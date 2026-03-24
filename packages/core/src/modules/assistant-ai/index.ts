@@ -99,3 +99,4 @@ export * from "./application/use-cases/execute-tool-intent.js";
 export * from "./services/ai-routing-service.js";
 export * from "./services/ai-fallback-service.js";
 export * from "./presentation/mappers/pipeline-to-ai-input.js";
+export * from "./ports.js";

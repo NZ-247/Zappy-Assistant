@@ -1,4 +1,4 @@
-import type { GroupAccessPort, GroupAccessState, GroupChatMode } from "../../ports/group-access.port.js";
+import type { GroupAccessPort, GroupAccessState, GroupChatMode } from "../../ports.js";
 
 export interface SetGroupChatModeInput {
   tenantId: string;

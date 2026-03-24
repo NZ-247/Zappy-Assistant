@@ -1,6 +1,6 @@
 import type { ResponseAction } from "../../../../pipeline/actions.js";
 import type { ConversationStateRecord, UserConsentRecord } from "../../../../pipeline/types.js";
-import type { AuditPort, ConsentPort, ConversationStatePort, LoggerPort } from "../../ports/consent.port.js";
+import type { AuditPort, ConsentPort, ConversationStatePort, LoggerPort } from "../../ports.js";
 import { safeRecordAudit } from "../services/consent-instrumentation.js";
 
 export interface DeclineConsentInput {

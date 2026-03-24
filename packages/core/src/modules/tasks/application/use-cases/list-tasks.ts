@@ -1,4 +1,4 @@
-import type { TasksRepositoryPort, TaskListItem } from "../../ports/tasks-repository.port.js";
+import type { TasksRepositoryPort, TaskListItem } from "../../ports.js";
 
 export interface ListTasksInput {
   tenantId: string;

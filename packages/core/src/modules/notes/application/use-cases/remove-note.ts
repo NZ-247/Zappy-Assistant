@@ -1,4 +1,4 @@
-import type { NotesRepositoryPort } from "../../ports/notes-repository.port.js";
+import type { NotesRepositoryPort } from "../../ports.js";
 
 export interface RemoveNoteInput {
   tenantId: string;

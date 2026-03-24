@@ -1,4 +1,4 @@
-import type { AuditPort, LoggerPort, MetricsPort } from "../../ports/consent.port.js";
+import type { AuditPort, LoggerPort, MetricsPort } from "../../ports.js";
 import type { AuditEvent, MetricKey } from "../../../../pipeline/types.js";
 
 export const safeRecordAudit = async (

@@ -1,10 +1,11 @@
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction, GroupAdminOperation } from "../../../../pipeline/actions.js";
-import type { GroupAccessPort, GroupAccessState } from "../../ports/group-access.port.js";
+import type { GroupAccessPort, GroupAccessState } from "../../ports.js";
 import { setGroupChatMode } from "../../application/use-cases/set-group-chat-mode.js";
 import { setGroupAllowed } from "../../application/use-cases/set-group-allowed.js";
 import { updateGroupSettings } from "../../application/use-cases/update-group-settings.js";
 import { listAllowedGroups } from "../../application/use-cases/list-allowed-groups.js";
+import { parseSetGroupCommand } from "../../infrastructure/set-group-command-parser.js";
 
 type GroupCommandKey =
   | "groupinfo"
@@ -89,10 +90,10 @@ export const handleGroupCommand = async (input: {
     if (botAdminGuard) return botAdminGuard;
     if (!groupAccess) return [{ kind: "reply_text", text: stylizeReply("Controle de grupo não está configurado.") }];
 
-    const args = cmd.replace(/^set gp\s+/i, "");
-    const [sub, ...restTokens] = args.split(/\s+/);
-    const restText = args.replace(/^\S+\s*/, "").trim();
-    const normalizedSub = (sub ?? "").toLowerCase();
+    const parsedSetGp = parseSetGroupCommand(cmd);
+    const normalizedSub = parsedSetGp.subCommand;
+    const restTokens = parsedSetGp.tokens;
+    const restText = parsedSetGp.trailingText;
 
     if (normalizedSub === "chat") {
       const mode = restTokens[0] === "off" ? "off" : restTokens[0] === "on" ? "on" : null;

@@ -263,10 +263,14 @@ modules/
       dto/
       policies/
     domain/
+    infrastructure/
     ports/
+    ports.ts
     presentation/
       commands/
     index.ts
+```
+
 Layer meaning
 application/use-cases
 

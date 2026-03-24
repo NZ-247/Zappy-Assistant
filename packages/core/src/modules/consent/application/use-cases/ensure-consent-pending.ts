@@ -1,5 +1,5 @@
 import type { ConversationStateRecord, UserConsentRecord } from "../../../../pipeline/types.js";
-import type { AuditPort, ConsentPort, ConversationStatePort, LoggerPort, MetricsPort } from "../../ports/consent.port.js";
+import type { AuditPort, ConsentPort, ConversationStatePort, LoggerPort, MetricsPort } from "../../ports.js";
 import { safeBumpMetric, safeRecordAudit } from "../services/consent-instrumentation.js";
 
 export interface EnsureConsentPendingInput {

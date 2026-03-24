@@ -7,7 +7,7 @@ import type {
   ConversationStatePort,
   LoggerPort,
   MetricsPort
-} from "../../ports/consent.port.js";
+} from "../../ports.js";
 import { ensureConsentPending } from "./ensure-consent-pending.js";
 import { acceptConsent } from "./accept-consent.js";
 import { declineConsent } from "./decline-consent.js";

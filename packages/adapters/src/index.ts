@@ -4,17 +4,12 @@ import {
   PrismaClient,
   ConsentStatus,
   ChatMode,
-  FunMode,
   ReminderStatus,
   Scope,
-  TaskStatus,
   TimerStatus,
   type MessageDirection,
-  type Task,
-  type Reminder,
   type Prisma,
-  type User,
-  type Group
+  type User
 } from "@prisma/client";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
@@ -27,8 +22,6 @@ import {
   type InboundMessageEvent,
   type LlmErrorReason,
   type LlmPort,
-  type ReminderCreateInput,
-  type TimerCreateInput,
   type ConversationState,
   type RelationshipProfile,
   type MetricKey,
@@ -36,6 +29,13 @@ import {
 } from "@zappy/core";
 import type { FeatureFlagInput, TriggerInput } from "@zappy/shared";
 import { createLogger } from "@zappy/shared";
+import { createTasksRepository } from "./tasks/repository.js";
+import { createRemindersRepository } from "./reminders/repository.js";
+import { createNotesRepository } from "./notes/repository.js";
+import { createTimersRepository } from "./timers/repository.js";
+import type { ScopedResolver } from "./shared/scoped-resolver.js";
+import { createGroupAccessRepository } from "./groups/repository.js";
+import { createBotAdminRepository } from "./identity/bot-admin-repository.js";
 
 export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -222,6 +222,12 @@ const findUserForTenant = async (tenantId: string, waUserId: string, remoteJid?:
     derived.phoneNumber ? `${derived.phoneNumber}@s.whatsapp.net` : null
   );
   return findUserByAnyIdentifier(tenantId, derived, aliases);
+};
+
+const resolveScopedUserAndGroup: ScopedResolver = async (input: { tenantId: string; waUserId: string; waGroupId?: string }) => {
+  const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
+  const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+  return { user, group };
 };
 
 const mergeUserIdentity = async (user: User, derived: DerivedIdentity, aliases: string[], displayName?: string | null) => {
@@ -749,8 +755,11 @@ export const createAuditTrail = () => ({
 
 export const coreFlagsRepository = {
   resolveFlags: async (input: { tenantId: string; waGroupId?: string; waUserId: string }) => {
-    const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const { user, group } = await resolveScopedUserAndGroup({
+      tenantId: input.tenantId,
+      waUserId: input.waUserId,
+      waGroupId: input.waGroupId
+    });
     const flags = await prisma.featureFlag.findMany({
       where: {
         enabled: true,
@@ -773,8 +782,11 @@ export const coreFlagsRepository = {
 
 export const coreTriggersRepository = {
   findActiveByScope: async (input: { tenantId: string; waGroupId?: string; waUserId: string }) => {
-    const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
+    const { user, group } = await resolveScopedUserAndGroup({
+      tenantId: input.tenantId,
+      waUserId: input.waUserId,
+      waGroupId: input.waGroupId
+    });
     const rows = await prisma.trigger.findMany({
       where: {
         enabled: true,
@@ -791,391 +803,25 @@ export const coreTriggersRepository = {
   }
 };
 
-const TASK_PUBLIC_ID_PREFIX = "TSK";
-const formatTaskPublicId = (sequence: number): string => `${TASK_PUBLIC_ID_PREFIX}${Math.max(1, sequence).toString().padStart(3, "0")}`;
-const fallbackTaskPublicIdFromId = (id: string): string => `${TASK_PUBLIC_ID_PREFIX}${id.replace(/[^a-zA-Z0-9]/g, "").slice(-6).toUpperCase()}`;
-const normalizeTaskPublicId = (value?: string | null): string | null => {
-  if (!value) return null;
-  const trimmed = value.trim().toUpperCase();
-  const withoutPrefix = trimmed.startsWith(TASK_PUBLIC_ID_PREFIX) ? trimmed.slice(TASK_PUBLIC_ID_PREFIX.length) : trimmed;
-  const digits = withoutPrefix.replace(/[^A-Z0-9]/g, "");
-  if (!digits) return null;
-  return `${TASK_PUBLIC_ID_PREFIX}${digits}`;
-};
-const parseSequenceFromPublicId = (publicId: string): number | null => {
-  const normalized = normalizeTaskPublicId(publicId);
-  if (!normalized) return null;
-  const digits = normalized.replace(TASK_PUBLIC_ID_PREFIX, "");
-  const n = Number.parseInt(digits, 10);
-  return Number.isFinite(n) && n > 0 ? n : null;
-};
-const taskScopeWhere = (input: { tenantId: string; waGroupId?: string; waUserId?: string }): Prisma.TaskWhereInput => ({
-  tenantId: input.tenantId,
-  type: "TASK",
-  waGroupId: input.waGroupId ?? undefined,
-  waUserId: input.waGroupId ? undefined : input.waUserId
+export const tasksRepository = createTasksRepository({
+  prisma,
+  resolveScopedUserAndGroup
 });
-const nextTaskSequence = async (where: Prisma.TaskWhereInput): Promise<number> => {
-  const last = await prisma.task.findFirst({ where, orderBy: { createdAt: "desc" }, select: { payload: true } });
-  const lastSeq = Number((last?.payload as Prisma.JsonObject | null)?.sequence ?? 0);
-  if (Number.isFinite(lastSeq) && lastSeq > 0) return lastSeq + 1;
-  const count = await prisma.task.count({ where });
-  return count + 1;
-};
-const buildTaskPublicId = (row: Task): string => {
-  const payload = row.payload as Prisma.JsonObject | null;
-  const stored = normalizeTaskPublicId((payload?.publicId as string | undefined) ?? null);
-  const seq = Number(payload?.sequence ?? 0);
-  if (stored) return stored;
-  if (Number.isFinite(seq) && seq > 0) return formatTaskPublicId(seq);
-  return fallbackTaskPublicIdFromId(row.id);
-};
-export const tasksRepository = {
-  addTask: async (input: { tenantId: string; title: string; createdByWaUserId: string; waGroupId?: string; runAt?: Date | null }) => {
-    const user = await findUserForTenant(input.tenantId, input.createdByWaUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    const where = taskScopeWhere({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.createdByWaUserId });
-    const sequence = await nextTaskSequence(where);
-    const publicId = formatTaskPublicId(sequence);
-    const payload: Prisma.JsonObject = { title: input.title, createdByWaUserId: input.createdByWaUserId, publicId, sequence };
-    const row = await prisma.task.create({
-      data: {
-        tenantId: input.tenantId,
-        groupId: group?.id,
-        userId: user?.id,
-        waGroupId: input.waGroupId,
-        waUserId: input.createdByWaUserId,
-        type: "TASK",
-        payload,
-        status: TaskStatus.PENDING,
-        runAt: input.runAt ?? null
-      }
-    });
-    return { id: row.id, publicId, title: input.title };
-  },
-  listTasks: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
-    const where = taskScopeWhere(input);
-    const rows = await prisma.task.findMany({ where, orderBy: { createdAt: "desc" }, take: 20 });
-    return rows.map((row) => ({
-      id: row.id,
-      publicId: buildTaskPublicId(row),
-      title: String((row.payload as Prisma.JsonObject).title ?? "untitled"),
-      done: row.status === TaskStatus.DONE,
-      runAt: row.runAt
-    }));
-  },
-  listTasksForDay: async (input: { tenantId: string; waGroupId?: string; waUserId?: string; dayStart: Date; dayEnd: Date }) => {
-    const where: Prisma.TaskWhereInput = {
-      ...taskScopeWhere(input),
-      OR: [
-        { runAt: { gte: input.dayStart, lte: input.dayEnd } },
-        { AND: [{ runAt: null }, { createdAt: { gte: input.dayStart, lte: input.dayEnd } }] }
-      ]
-    };
-    const rows = await prisma.task.findMany({ where, orderBy: { createdAt: "asc" }, take: 50 });
-    return rows.map((row) => ({
-      id: row.id,
-      publicId: buildTaskPublicId(row),
-      title: String((row.payload as Prisma.JsonObject).title ?? "untitled"),
-      done: row.status === TaskStatus.DONE,
-      runAt: row.runAt
-    }));
-  },
-  markDone: async (input: { tenantId: string; taskRef: string; waGroupId?: string; waUserId?: string }) => {
-    const scope = taskScopeWhere(input);
-    const normalizedRef = input.taskRef.trim();
-    const normalizedPublicId = normalizeTaskPublicId(normalizedRef);
 
-    let row =
-      (await prisma.task.findFirst({ where: { ...scope, id: normalizedRef } })) ??
-      (normalizedPublicId
-        ? await prisma.task.findFirst({
-            where: {
-              ...scope,
-              OR: [
-                { payload: { path: ["publicId"], equals: normalizedPublicId } },
-                parseSequenceFromPublicId(normalizedPublicId) !== null
-                  ? { payload: { path: ["sequence"], equals: parseSequenceFromPublicId(normalizedPublicId) } }
-                  : undefined
-              ].filter(Boolean) as Prisma.TaskWhereInput[]
-            }
-          })
-        : null);
-
-    if (!row && normalizedPublicId) {
-      const rows = await prisma.task.findMany({ where: scope, orderBy: { createdAt: "desc" }, take: 50 });
-      row = rows.find((candidate) => buildTaskPublicId(candidate) === normalizedPublicId) ?? null;
-    }
-    if (!row) return { ok: false };
-
-    const publicId = buildTaskPublicId(row);
-    const payload = { ...(row.payload as Prisma.JsonObject | null), publicId };
-    await prisma.task.update({ where: { id: row.id }, data: { status: TaskStatus.DONE, payload } });
-    return { ok: true, id: row.id, publicId };
-  },
-  updateTask: async (input: { tenantId: string; taskId: string; title?: string; runAt?: Date | null; waGroupId?: string; waUserId?: string }) => {
-    const row = await prisma.task.findFirst({
-      where: { id: input.taskId, tenantId: input.tenantId, type: "TASK", waGroupId: input.waGroupId ?? undefined, waUserId: input.waGroupId ? undefined : input.waUserId }
-    });
-    if (!row) return null;
-    const payload = { ...(row.payload as Prisma.JsonObject), ...(input.title ? { title: input.title } : {}) };
-    const data: Prisma.TaskUpdateInput = { payload };
-    if (input.runAt !== undefined) data.runAt = input.runAt;
-    const updated = await prisma.task.update({ where: { id: row.id }, data });
-    return { id: updated.id, title: String((payload as Prisma.JsonObject).title ?? row.id), runAt: updated.runAt };
-  },
-  deleteTask: async (input: { tenantId: string; taskId: string; waGroupId?: string; waUserId?: string }) => {
-    const row = await prisma.task.findFirst({
-      where: { id: input.taskId, tenantId: input.tenantId, type: "TASK", waGroupId: input.waGroupId ?? undefined, waUserId: input.waGroupId ? undefined : input.waUserId }
-    });
-    if (!row) return false;
-    await prisma.task.delete({ where: { id: row.id } });
-    return true;
-  },
-  countOpen: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
-    const where: Prisma.TaskWhereInput = {
-      tenantId: input.tenantId,
-      type: "TASK",
-      waGroupId: input.waGroupId ?? undefined,
-      waUserId: input.waGroupId ? undefined : input.waUserId,
-      status: { not: TaskStatus.DONE }
-    };
-    return prisma.task.count({ where });
-  }
-};
-
-const REMINDER_PUBLIC_ID_PREFIX = "RMD";
-const formatReminderPublicId = (sequence: number): string => `${REMINDER_PUBLIC_ID_PREFIX}${Math.max(1, sequence).toString().padStart(3, "0")}`;
-const fallbackReminderPublicIdFromId = (id: string): string =>
-  `${REMINDER_PUBLIC_ID_PREFIX}${id.replace(/[^a-zA-Z0-9]/g, "").slice(-6).toUpperCase()}`;
-const normalizeReminderPublicId = (value?: string | null): string | null => {
-  if (!value) return null;
-  const trimmed = value.trim().toUpperCase();
-  const withoutPrefix = trimmed.startsWith(REMINDER_PUBLIC_ID_PREFIX) ? trimmed.slice(REMINDER_PUBLIC_ID_PREFIX.length) : trimmed;
-  const normalized = withoutPrefix.replace(/[^A-Z0-9]/g, "");
-  if (!normalized) return null;
-  return `${REMINDER_PUBLIC_ID_PREFIX}${normalized}`;
-};
-const parseReminderSequenceFromPublicId = (publicId: string): number | null => {
-  const normalized = normalizeReminderPublicId(publicId);
-  if (!normalized) return null;
-  const digits = normalized.replace(REMINDER_PUBLIC_ID_PREFIX, "");
-  if (!/^\d+$/.test(digits)) return null;
-  const n = Number.parseInt(digits, 10);
-  return Number.isFinite(n) && n > 0 ? n : null;
-};
-const reminderScopeWhere = (input: { tenantId: string; waGroupId?: string; waUserId?: string }): Prisma.ReminderWhereInput => ({
-  tenantId: input.tenantId,
-  waGroupId: input.waGroupId ?? undefined,
-  waUserId: input.waGroupId ? undefined : input.waUserId
+export const remindersRepository = createRemindersRepository({
+  prisma,
+  resolveScopedUserAndGroup
 });
-const nextReminderSequence = async (input: { tenantId: string }): Promise<number> => {
-  const last = await prisma.reminder.findFirst({
-    where: { tenantId: input.tenantId },
-    orderBy: [{ sequence: "desc" }, { createdAt: "desc" }],
-    select: { sequence: true }
-  });
-  const lastSeq = Number(last?.sequence ?? 0);
-  if (Number.isFinite(lastSeq) && lastSeq > 0) return lastSeq + 1;
-  const count = await prisma.reminder.count({ where: { tenantId: input.tenantId } });
-  return count + 1;
-};
-const buildReminderPublicId = (row: Pick<Reminder, "id" | "publicId" | "sequence">): string => {
-  const stored = normalizeReminderPublicId(row.publicId);
-  if (stored) return stored;
-  const seq = Number(row.sequence ?? 0);
-  if (Number.isFinite(seq) && seq > 0) return formatReminderPublicId(seq);
-  return fallbackReminderPublicIdFromId(row.id);
-};
-const findReminderByRef = async (input: {
-  tenantId: string;
-  reminderRef: string;
-  waGroupId?: string;
-  waUserId?: string;
-}): Promise<Reminder | null> => {
-  const scope = reminderScopeWhere(input);
-  const ref = input.reminderRef.trim();
-  if (!ref) return null;
-  const normalizedPublicId = normalizeReminderPublicId(ref);
-  const parsedSequence = normalizedPublicId ? parseReminderSequenceFromPublicId(normalizedPublicId) : null;
-  const whereByRef: Prisma.ReminderWhereInput[] = [{ id: ref }];
-  if (normalizedPublicId) whereByRef.push({ publicId: normalizedPublicId });
-  if (parsedSequence !== null) whereByRef.push({ sequence: parsedSequence });
 
-  let row = await prisma.reminder.findFirst({
-    where: {
-      ...scope,
-      OR: whereByRef
-    }
-  });
-  if (row) return row;
+export const notesRepository = createNotesRepository({
+  prisma,
+  resolveScopedUserAndGroup
+});
 
-  if (normalizedPublicId) {
-    const recent = await prisma.reminder.findMany({ where: scope, orderBy: { createdAt: "desc" }, take: 200 });
-    row = recent.find((candidate) => buildReminderPublicId(candidate) === normalizedPublicId) ?? null;
-  }
-  return row;
-};
-
-export const remindersRepository = {
-  createReminder: async (input: ReminderCreateInput) => {
-    const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    const sequence = await nextReminderSequence({ tenantId: input.tenantId });
-    const publicId = formatReminderPublicId(sequence);
-    const row = await prisma.reminder.create({
-      data: {
-        tenantId: input.tenantId,
-        userId: user?.id,
-        groupId: group?.id,
-        message: input.message,
-        remindAt: input.remindAt,
-        status: ReminderStatus.SCHEDULED,
-        waUserId: input.waUserId,
-        waGroupId: input.waGroupId,
-        sequence,
-        publicId
-      },
-      select: { id: true, status: true, publicId: true, sequence: true }
-    });
-    return { id: row.id, publicId: buildReminderPublicId(row), status: row.status };
-  },
-  listForDay: async (input: { tenantId: string; waGroupId?: string; waUserId: string; dayStart: Date; dayEnd: Date }) => {
-    const where: Prisma.ReminderWhereInput = {
-      ...reminderScopeWhere(input),
-      remindAt: { gte: input.dayStart, lte: input.dayEnd },
-      status: ReminderStatus.SCHEDULED
-    };
-    const rows = await prisma.reminder.findMany({ where, orderBy: { remindAt: "asc" } });
-    return rows.map((row) => ({
-      id: row.id,
-      publicId: buildReminderPublicId(row),
-      status: row.status,
-      remindAt: row.remindAt,
-      message: row.message
-    }));
-  },
-  updateReminder: async (input: { tenantId: string; reminderId: string; waGroupId?: string; waUserId?: string; message?: string; remindAt?: Date }) => {
-    const row = await findReminderByRef({
-      tenantId: input.tenantId,
-      reminderRef: input.reminderId,
-      waGroupId: input.waGroupId,
-      waUserId: input.waUserId
-    });
-    if (!row) return null;
-    const data: Prisma.ReminderUpdateInput = {};
-    if (input.message !== undefined) data.message = input.message;
-    if (input.remindAt) data.remindAt = input.remindAt;
-    const updated = await prisma.reminder.update({ where: { id: row.id }, data });
-    return {
-      id: updated.id,
-      publicId: buildReminderPublicId(updated),
-      status: updated.status,
-      remindAt: updated.remindAt,
-      message: updated.message
-    };
-  },
-  deleteReminder: async (input: { tenantId: string; reminderId: string; waGroupId?: string; waUserId?: string }) => {
-    const row = await findReminderByRef({
-      tenantId: input.tenantId,
-      reminderRef: input.reminderId,
-      waGroupId: input.waGroupId,
-      waUserId: input.waUserId
-    });
-    if (!row) return null;
-    const updated = await prisma.reminder.update({ where: { id: row.id }, data: { status: ReminderStatus.CANCELED } });
-    return {
-      id: updated.id,
-      publicId: buildReminderPublicId(updated),
-      status: updated.status,
-      remindAt: updated.remindAt,
-      message: updated.message
-    };
-  },
-  countScheduled: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
-    const where: Prisma.ReminderWhereInput = {
-      ...reminderScopeWhere(input),
-      status: ReminderStatus.SCHEDULED,
-    };
-    return prisma.reminder.count({ where });
-  }
-};
-
-export const notesRepository = {
-  addNote: async (input: { tenantId: string; waGroupId?: string; waUserId: string; text: string; scope: Scope }) => {
-    const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    const last = await prisma.note.findFirst({
-      where: { tenantId: input.tenantId, scope: input.scope, groupId: group?.id ?? null, userId: user?.id ?? null },
-      orderBy: { sequence: "desc" }
-    });
-    const nextSeq = (last?.sequence ?? 0) + 1;
-    const publicId = `N${String(nextSeq).padStart(3, "0")}`;
-    const row = await prisma.note.create({
-      data: {
-        tenantId: input.tenantId,
-        groupId: group?.id,
-        userId: user?.id,
-        waGroupId: input.waGroupId,
-        waUserId: input.waUserId,
-        scope: input.scope,
-        text: input.text,
-        sequence: nextSeq,
-        publicId
-      }
-    });
-    return { id: row.id, publicId: row.publicId, text: row.text, createdAt: row.createdAt, scope: row.scope as Scope };
-  },
-  listNotes: async (input: { tenantId: string; waGroupId?: string; waUserId: string; scope: Scope; limit?: number }) => {
-    const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    const rows = await prisma.note.findMany({
-      where: { tenantId: input.tenantId, scope: input.scope, groupId: group?.id ?? null, userId: user?.id ?? null },
-      orderBy: { createdAt: "desc" },
-      take: input.limit ?? 10
-    });
-    return rows.map((row) => ({ id: row.id, publicId: row.publicId, text: row.text, createdAt: row.createdAt, scope: row.scope as Scope }));
-  },
-  removeNote: async (input: { tenantId: string; waGroupId?: string; waUserId: string; publicId: string }) => {
-    const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    const note = await prisma.note.findFirst({ where: { tenantId: input.tenantId, publicId: input.publicId, groupId: group?.id ?? null, userId: user?.id ?? null } });
-    if (!note) return false;
-    await prisma.note.delete({ where: { id: note.id } });
-    return true;
-  }
-};
-
-export const timersRepository = {
-  createTimer: async (input: TimerCreateInput) => {
-    const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    const row = await prisma.timer.create({
-      data: {
-        tenantId: input.tenantId,
-        groupId: group?.id,
-        userId: user?.id,
-        waUserId: input.waUserId,
-        waGroupId: input.waGroupId,
-        fireAt: input.fireAt,
-        durationMs: input.durationMs,
-        label: input.label,
-        status: TimerStatus.SCHEDULED
-      }
-    });
-    return { id: row.id, status: row.status, fireAt: row.fireAt };
-  },
-  getTimerById: async (id: string) => prisma.timer.findUnique({ where: { id } }),
-  countScheduled: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
-    const where: Prisma.TimerWhereInput = {
-      tenantId: input.tenantId,
-      status: TimerStatus.SCHEDULED,
-      waGroupId: input.waGroupId ?? undefined,
-      waUserId: input.waGroupId ? undefined : input.waUserId
-    };
-    return prisma.timer.count({ where });
-  }
-};
+export const timersRepository = createTimersRepository({
+  prisma,
+  resolveScopedUserAndGroup
+});
 
 export const messagesRepository = {
   getRecentMessages: async (input: { tenantId: string; waGroupId?: string; waUserId: string; limit: number }): Promise<ConversationMessage[]> => {
@@ -1757,260 +1403,17 @@ export const identityRepository = {
   }
 };
 
-const toChatMode = (mode?: ChatMode | null): "on" | "off" => (mode === ChatMode.OFF ? "off" : "on");
-const toFunMode = (mode?: FunMode | null): "on" | "off" | undefined => {
-  if (!mode) return undefined;
-  return mode === FunMode.ON ? "on" : "off";
-};
-
-type ModerationConfig = {
-  antiLink?: boolean;
-  autoDeleteLinks?: boolean;
-  antiSpam?: boolean;
-  tempMuteSeconds?: number;
-};
-
-const normalizeModerationConfig = (value: Prisma.JsonValue | null | undefined): ModerationConfig => {
-  if (!value || typeof value !== "object") return {};
-  const source = value as Record<string, unknown>;
-  return {
-    antiLink: Boolean(source.antiLink),
-    autoDeleteLinks: Boolean(source.autoDeleteLinks),
-    antiSpam: Boolean(source.antiSpam),
-    tempMuteSeconds: typeof source.tempMuteSeconds === "number" ? source.tempMuteSeconds : undefined
-  };
-};
-
-const mapGroupToAccessState = (group: Group) => ({
-  waGroupId: group.waGroupId,
-  groupName: group.name,
-  description: group.description,
-  allowed: group.allowed,
-  chatMode: toChatMode(group.chatMode),
-  isOpen: group.isOpen,
-  welcomeEnabled: group.welcomeEnabled,
-  welcomeText: group.welcomeText,
-  fixedMessageText: group.fixedMessageText,
-  rulesText: group.rulesText,
-  funMode: toFunMode(group.funMode),
-  moderation: normalizeModerationConfig(group.moderationConfig),
-  botIsAdmin: group.botIsAdmin,
-  botAdminCheckedAt: group.botAdminCheckedAt
+export const groupAccessRepository = createGroupAccessRepository({
+  prisma,
+  writeAudit
 });
 
-export const groupAccessRepository = {
-  getGroupAccess: async (input: { tenantId: string; waGroupId: string; groupName?: string | null; botIsAdmin?: boolean | null }) => {
-    let group = await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } });
-    const updates: Prisma.GroupUpdateInput = {};
-
-    if (!group) {
-      group = await prisma.group.create({
-        data: {
-          tenantId: input.tenantId,
-          waGroupId: input.waGroupId,
-          name: input.groupName ?? input.waGroupId,
-          chatMode: ChatMode.ON,
-          isOpen: true,
-          welcomeEnabled: false,
-          moderationConfig: {},
-          allowed: false,
-          botIsAdmin: Boolean(input.botIsAdmin ?? false),
-          botAdminCheckedAt: input.botIsAdmin === undefined ? null : new Date()
-        }
-      });
-    } else {
-      if (input.groupName && input.groupName !== group.name) updates.name = input.groupName;
-      if (typeof input.botIsAdmin === "boolean") {
-        updates.botIsAdmin = input.botIsAdmin;
-        updates.botAdminCheckedAt = new Date();
-      }
-    }
-
-    if (Object.keys(updates).length > 0) {
-      group = await prisma.group.update({ where: { id: group.id }, data: updates });
-    }
-
-    return mapGroupToAccessState(group);
-  },
-  setAllowed: async (input: { tenantId: string; waGroupId: string; allowed: boolean; actor?: string }) => {
-    const group = await prisma.group.upsert({
-      where: { waGroupId: input.waGroupId },
-      update: { allowed: input.allowed },
-      create: {
-        tenantId: input.tenantId,
-        waGroupId: input.waGroupId,
-        name: input.waGroupId,
-        allowed: input.allowed,
-        chatMode: ChatMode.ON,
-        isOpen: true,
-        welcomeEnabled: false,
-        moderationConfig: {}
-      }
-    });
-    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { allowed: input.allowed });
-    return mapGroupToAccessState(group);
-  },
-  setChatMode: async (input: { tenantId: string; waGroupId: string; mode: "on" | "off"; actor?: string }) => {
-    const chatMode = input.mode === "off" ? ChatMode.OFF : ChatMode.ON;
-    const group = await prisma.group.upsert({
-      where: { waGroupId: input.waGroupId },
-      update: { chatMode },
-      create: {
-        tenantId: input.tenantId,
-        waGroupId: input.waGroupId,
-        name: input.waGroupId,
-        chatMode,
-        allowed: false,
-        isOpen: true,
-        welcomeEnabled: false,
-        moderationConfig: {},
-        botIsAdmin: false
-      }
-    });
-    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { chatMode: input.mode });
-    return mapGroupToAccessState(group);
-  },
-  updateSettings: async (input: {
-    tenantId: string;
-    waGroupId: string;
-    settings: {
-      chatMode?: "on" | "off";
-      isOpen?: boolean;
-      welcomeEnabled?: boolean;
-      welcomeText?: string | null;
-      fixedMessageText?: string | null;
-      rulesText?: string | null;
-      funMode?: "on" | "off" | null;
-      moderation?: ModerationConfig;
-      groupName?: string | null;
-      description?: string | null;
-    };
-    actor?: string;
-  }) => {
-    const existing = await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } });
-    const updates: Prisma.GroupUpdateInput = {};
-    if (input.settings.chatMode) updates.chatMode = input.settings.chatMode === "off" ? ChatMode.OFF : ChatMode.ON;
-    if (typeof input.settings.isOpen === "boolean") updates.isOpen = input.settings.isOpen;
-    if (typeof input.settings.welcomeEnabled === "boolean") updates.welcomeEnabled = input.settings.welcomeEnabled;
-    if ("welcomeText" in input.settings) updates.welcomeText = input.settings.welcomeText ?? null;
-    if ("fixedMessageText" in input.settings) updates.fixedMessageText = input.settings.fixedMessageText ?? null;
-    if ("rulesText" in input.settings) updates.rulesText = input.settings.rulesText ?? null;
-    if ("funMode" in input.settings) {
-      updates.funMode =
-        input.settings.funMode === undefined ? undefined : input.settings.funMode === null ? null : input.settings.funMode === "on" ? FunMode.ON : FunMode.OFF;
-    }
-    if (input.settings.moderation) {
-      const base = normalizeModerationConfig(existing?.moderationConfig);
-      updates.moderationConfig = { ...base, ...(input.settings.moderation ?? {}) } as Prisma.InputJsonValue;
-    }
-    if ("groupName" in input.settings && input.settings.groupName !== undefined) updates.name = input.settings.groupName ?? undefined;
-    if ("description" in input.settings) updates.description = input.settings.description ?? undefined;
-
-    const group = await prisma.group.upsert({
-      where: { waGroupId: input.waGroupId },
-      update: updates,
-      create: {
-        tenantId: input.tenantId,
-        waGroupId: input.waGroupId,
-        name: input.settings.groupName ?? input.waGroupId,
-        description: input.settings.description,
-        chatMode: input.settings.chatMode === "off" ? ChatMode.OFF : ChatMode.ON,
-        isOpen: input.settings.isOpen ?? true,
-        welcomeEnabled: input.settings.welcomeEnabled ?? false,
-        welcomeText: input.settings.welcomeText ?? null,
-        fixedMessageText: input.settings.fixedMessageText ?? null,
-        rulesText: input.settings.rulesText ?? null,
-        funMode:
-          input.settings.funMode === undefined
-            ? null
-            : input.settings.funMode === null
-              ? null
-              : input.settings.funMode === "on"
-                ? FunMode.ON
-                : FunMode.OFF,
-        moderationConfig: (input.settings.moderation ?? {}) as Prisma.InputJsonValue,
-        allowed: false,
-        botIsAdmin: false
-      }
-    });
-    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "Group", group.id, { settings: input.settings });
-    return mapGroupToAccessState(group);
-  },
-  listAllowed: async (tenantId: string) => {
-    const groups = await prisma.group.findMany({ where: { tenantId, allowed: true }, orderBy: { name: "asc" } });
-    return groups.map((g) => mapGroupToAccessState(g));
-  }
-};
-
-export const botAdminRepository = {
-  add: async (input: { tenantId: string; waUserId: string; displayName?: string | null; actor?: string }) => {
-    const resolved = await resolveCanonicalUserIdentity({
-      tenantId: input.tenantId,
-      waUserId: input.waUserId,
-      displayName: input.displayName ?? input.waUserId
-    });
-    const user =
-      resolved.user ??
-      (await prisma.user.create({
-        data: {
-          tenantId: input.tenantId,
-          waUserId: input.waUserId,
-          displayName: input.displayName ?? input.waUserId,
-          role: "member"
-        }
-      }));
-
-    await prisma.botAdmin.upsert({
-      where: { tenantId_waUserId: { tenantId: input.tenantId, waUserId: user.waUserId } },
-      update: { userId: user.id },
-      create: { tenantId: input.tenantId, userId: user.id, waUserId: user.waUserId }
-    });
-
-    const currentRole = (user.permissionRole ?? user.role ?? "").toUpperCase();
-    if (!["ROOT", "DONO", "OWNER"].includes(currentRole)) {
-      await prisma.user.update({ where: { id: user.id }, data: { permissionRole: "ADMIN" } });
-    }
-
-    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "BotAdmin", user.id, { action: "add_admin", waUserId: user.waUserId });
-
-    return {
-      waUserId: user.waUserId,
-      displayName: user.displayName ?? user.waUserId,
-      phoneNumber: user.phoneNumber,
-      permissionRole: currentRole && currentRole !== "MEMBER" ? currentRole : "ADMIN"
-    };
-  },
-  remove: async (input: { tenantId: string; waUserId: string; actor?: string }) => {
-    const entry = await prisma.botAdmin.findUnique({ where: { tenantId_waUserId: { tenantId: input.tenantId, waUserId: input.waUserId } } });
-    if (!entry) return false;
-    await prisma.botAdmin.delete({ where: { id: entry.id } });
-
-    const user = await prisma.user.findUnique({ where: { id: entry.userId } });
-    if (user && (user.permissionRole ?? "").toUpperCase() === "ADMIN") {
-      await prisma.user.update({ where: { id: user.id }, data: { permissionRole: null } });
-    }
-
-    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "BotAdmin", entry.id, { action: "remove_admin", waUserId: input.waUserId });
-    return true;
-  },
-  list: async (tenantId: string) => {
-    const admins = await prisma.botAdmin.findMany({ where: { tenantId }, include: { user: true }, orderBy: { createdAt: "asc" } });
-    return admins.map((a) => ({
-      waUserId: a.waUserId,
-      displayName: a.user?.displayName ?? a.waUserId,
-      phoneNumber: a.user?.phoneNumber,
-      permissionRole: a.user?.permissionRole ?? a.user?.role ?? "member",
-      createdAt: a.createdAt
-    }));
-  },
-  isAdmin: async (input: { tenantId: string; waUserId: string }) => {
-    const adminEntry = await prisma.botAdmin.findUnique({ where: { tenantId_waUserId: { tenantId: input.tenantId, waUserId: input.waUserId } } });
-    if (adminEntry) return true;
-    const user = await findUserForTenant(input.tenantId, input.waUserId);
-    const role = (user?.permissionRole ?? user?.role ?? "").toUpperCase();
-    return ["ADMIN", "ROOT", "DONO", "OWNER"].includes(role);
-  }
-};
+export const botAdminRepository = createBotAdminRepository({
+  prisma,
+  writeAudit,
+  resolveCanonicalUserIdentity,
+  findUserForTenant
+});
 
 export const createStatusPort = (deps: {
   redis: Redis;

@@ -1,13 +1,10 @@
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
-import type { TasksRepositoryPort } from "../../ports/tasks-repository.port.js";
+import type { TasksRepositoryPort } from "../../ports.js";
 import { createTask } from "../../application/use-cases/create-task.js";
 import { listTasks } from "../../application/use-cases/list-tasks.js";
 import { completeTask } from "../../application/use-cases/complete-task.js";
-
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const publicIdPattern = /^TSK[0-9A-Z]{3,}$/i;
-const isValidTaskRef = (value: string): boolean => uuidPattern.test(value.trim()) || publicIdPattern.test(value.trim().toUpperCase());
+import { isValidTaskReference } from "../../infrastructure/task-reference.js";
 
 type TaskCommandKey = "task add" | "task list" | "task done";
 
@@ -66,7 +63,7 @@ export const handleTaskCommand = async (input: {
     if (!args) return [{ kind: "reply_text", text: usage ?? "Uso correto: task done <id>" }];
     const taskId = (args.split(/\s+/).find(Boolean) ?? "").trim();
     if (!taskId) return [{ kind: "reply_text", text: usage ?? "Uso correto: task done <id>" }];
-    if (!isValidTaskRef(taskId)) return [{ kind: "reply_text", text: "ID de tarefa inválido. Use um UUID ou ID público (ex: TSK001)." }];
+    if (!isValidTaskReference(taskId)) return [{ kind: "reply_text", text: "ID de tarefa inválido. Use um UUID ou ID público (ex: TSK001)." }];
     const done = await completeTask(tasksRepository, {
       tenantId: ctx.event.tenantId,
       taskRef: taskId,

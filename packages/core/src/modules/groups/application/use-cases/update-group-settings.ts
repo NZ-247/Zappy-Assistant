@@ -1,4 +1,4 @@
-import type { GroupAccessPort, GroupAccessState } from "../../ports/group-access.port.js";
+import type { GroupAccessPort, GroupAccessState } from "../../ports.js";
 import type { GroupSettingsUpdate } from "../../domain/group-settings.js";
 
 export interface UpdateGroupSettingsInput {

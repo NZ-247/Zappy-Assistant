@@ -1,11 +1,10 @@
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
-import type { NotesRepositoryPort } from "../../ports/notes-repository.port.js";
+import type { NotesRepositoryPort } from "../../ports.js";
 import { addNote } from "../../application/use-cases/add-note.js";
 import { listNotes } from "../../application/use-cases/list-notes.js";
 import { removeNote } from "../../application/use-cases/remove-note.js";
-
-const truncate = (text: string, max = 50): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
+import { truncateNoteText } from "../../infrastructure/note-text.js";
 
 type NoteCommandKey = "note add" | "note list" | "note rm";
 
@@ -54,7 +53,7 @@ export const handleNoteCommand = async (input: {
       {
         kind: "reply_list",
         header: "Notas",
-        items: notes.map((n) => ({ title: n.publicId, description: truncate(n.text, 50) }))
+        items: notes.map((n) => ({ title: n.publicId, description: truncateNoteText(n.text, 50) }))
       }
     ];
   }

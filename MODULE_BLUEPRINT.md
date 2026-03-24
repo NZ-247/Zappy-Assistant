@@ -25,8 +25,29 @@ The preferred pattern is:
 - `application/` for use cases
 - `domain/` for core concepts and rules
 - `ports/` for interfaces
+- `ports.ts` as the module-level ports export
 - `presentation/` for command/input mapping
+- `infrastructure/` for parsers/helpers internos do módulo
 - `index.ts` as module export/composition boundary
+
+Official V1+ module folder (enforced baseline):
+
+```text
+modules/<module-name>/
+  domain/
+  application/
+    use-cases/
+  presentation/
+    commands/
+  infrastructure/
+  ports/
+  ports.ts
+  index.ts
+```
+
+Quick reference template:
+
+- `docs/module-template.md`
 
 ---
 

@@ -1,12 +1,9 @@
 import {
-  addDurationToNow,
   DEFAULT_REMINDER_TIME,
   formatDateTimeInZone,
-  getDayRange,
-  normalizeTimezone,
-  parseDurationInput
+  normalizeTimezone
 } from "./time.js";
-import { resolveTargetUserFromMentionOrReply, requireGroupContext } from "./common/bot-common.js";
+import { isTriggerMatch, renderTemplate } from "./common/trigger-utils.js";
 import {
   formatCommand,
   hasCommandPrefix as hasPrefix,
@@ -14,19 +11,14 @@ import {
   stripCommandPrefix as stripPrefix
 } from "./commands/parser/prefix.js";
 import { createCommandRegistry } from "./commands/registry/index.js";
-import { buildCommandHelpLines, buildProfileNotice } from "./commands/help-renderer.js";
-import type { HelpVisibilityContext } from "./commands/help-renderer.js";
 import type { CommandRegistry } from "./commands/registry/command-types.js";
 import { parseCommandText } from "./commands/parser/parse-command.js";
-import { handleGroupCommand } from "./modules/groups/presentation/commands/group-commands.js";
-import { handleModerationCommand } from "./modules/moderation/presentation/commands/moderation-commands.js";
-import { handleReminderCommand } from "./modules/reminders/presentation/commands/reminder-commands.js";
-import { handleTaskCommand } from "./modules/tasks/presentation/commands/task-commands.js";
-import { handleNoteCommand } from "./modules/notes/presentation/commands/note-commands.js";
 import { AssistantAiModule } from "./modules/assistant-ai/index.js";
 import { checkConsentGate } from "./modules/consent/application/use-cases/check-consent-gate.js";
 import { enforceConsent } from "./modules/consent/application/use-cases/enforce-consent.js";
-import { Parser } from "expr-eval";
+import { hasRootPrivileges, resolveRelationshipProfile } from "./modules/identity/domain/relationship-profile.js";
+import { containsLink } from "./modules/moderation/infrastructure/link-detection.js";
+import { runCommandRouter as runCommandRouterStage } from "./orchestrator/command-router.js";
 import type {
   AuditEvent,
   CanonicalIdentity,
@@ -192,123 +184,7 @@ export type {
   CorePorts
 } from "./pipeline/ports.js";
 export type { PipelineContext, NormalizedEvent } from "./pipeline/context.js";
-
-const CREATOR_WA_NUMBER = "556699064658";
-const MOTHER_WA_NUMBER = "556692283438";
-const normalizeWaNumber = (value?: string | null): string => value?.replace(/\D/g, "") ?? "";
-
-const knownPrivilegedNumbers = [CREATOR_WA_NUMBER, MOTHER_WA_NUMBER];
-
-const hasRootPrivileges = (input: {
-  permissionRole?: string | null;
-  role?: string | null;
-  relationshipProfile?: RelationshipProfile | null;
-}): boolean => {
-  const role = (input.permissionRole ?? input.role ?? "").toUpperCase();
-  return role === "ROOT" || role === "DONO" || input.relationshipProfile === "creator_root";
-};
-
-const matchPrivilegedNumber = (candidates: string[]): { profile: RelationshipProfile; reason: string } | null => {
-  const normalized = candidates.map((c) => normalizeWaNumber(c)).filter(Boolean);
-  if (normalized.includes(CREATOR_WA_NUMBER)) return { profile: "creator_root", reason: "match:creator_number" };
-  if (normalized.includes(MOTHER_WA_NUMBER)) return { profile: "mother_privileged", reason: "match:mother_number" };
-  return null;
-};
-
-export const resolveRelationshipProfile = (input: {
-  waUserId: string;
-  phoneNumber?: string | null;
-  pnJid?: string | null;
-  lidJid?: string | null;
-  aliases?: string[];
-  identityRole?: string;
-  storedProfile?: RelationshipProfile | null;
-}): {
-  profile: RelationshipProfile;
-  reason: string;
-} => {
-  const candidates = [input.phoneNumber, input.pnJid, input.lidJid, input.waUserId, ...(input.aliases ?? [])].filter(Boolean) as string[];
-  const privileged = matchPrivilegedNumber(candidates);
-  if (privileged) {
-    if (input.storedProfile && input.storedProfile !== privileged.profile) {
-      return { profile: privileged.profile, reason: `${privileged.reason}_override_stored` };
-    }
-    return privileged;
-  }
-
-  if (input.storedProfile) return { profile: input.storedProfile, reason: "stored_profile" };
-
-  const role = input.identityRole?.toUpperCase?.();
-  if (role === "ROOT" || role === "DONO") return { profile: "delegated_owner", reason: "role:owner" };
-  if (role === "ADMIN" || role === "GROUP_ADMIN") return { profile: "admin", reason: "role:admin" };
-
-  return { profile: "member", reason: "default_member" };
-};
-
-const renderTemplate = (template: string, vars: Record<string, string>): string => {
-  let out = template;
-  for (const [key, value] of Object.entries(vars)) {
-    out = out.replaceAll(`{{${key}}}`, value);
-  }
-  return out;
-};
-
-const isMatch = (text: string, trigger: TriggerRule): boolean => {
-  const source = text.toLowerCase();
-  const pattern = trigger.pattern.toLowerCase();
-  if (trigger.matchType === "CONTAINS") return source.includes(pattern);
-  if (trigger.matchType === "STARTS_WITH") return source.startsWith(pattern);
-  try {
-    return new RegExp(trigger.pattern, "i").test(text);
-  } catch {
-    return false;
-  }
-};
-
-const truncate = (text: string, max = 60): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
-
-const evaluateExpression = (expression: string): number => {
-  const parser = new Parser({ operators: { logical: false, comparison: true }, allowMemberAccess: false });
-  const result = parser.evaluate(expression);
-  if (typeof result !== "number" || Number.isNaN(result) || !Number.isFinite(result)) throw new Error("Resultado inválido para a expressão.");
-  return result;
-};
-
-const containsLink = (text: string): boolean => {
-  const linkRegex = /(https?:\/\/\S+)|(www\.\S+)|(t\.me\/\S+)|(wa\.me\/\d+)|([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i;
-  const domainRegex = /\b[a-z0-9.-]+\.[a-z]{2,}(\/\S*)?/i;
-  return linkRegex.test(text) || domainRegex.test(text);
-};
-
-const formatAgenda = (input: {
-  dateLabel: string;
-  timezone: string;
-  tasks: TaskListItem[];
-  reminders: ReminderRecord[];
-}) => {
-  const lines: string[] = [
-    `📅 Agenda ${input.dateLabel} (${input.timezone})`
-  ];
-  lines.push("\nTarefas:");
-  if (input.tasks.length === 0) lines.push("- Nenhuma tarefa para hoje.");
-  else
-    lines.push(
-      ...input.tasks.map((t) => {
-        const timePart = t.runAt ? ` @ ${formatDateTimeInZone(t.runAt, input.timezone)}` : "";
-        return `${t.done ? "✅" : "⬜"} ${t.publicId}: ${t.title}${timePart}`;
-      })
-    );
-  lines.push("\nLembretes:");
-  if (input.reminders.length === 0) lines.push("- Nenhum lembrete para hoje.");
-  else
-    lines.push(
-      ...input.reminders.map((r) => {
-        const timePart = r.remindAt ? formatDateTimeInZone(r.remindAt, input.timezone) : "";
-        return `⏰ ${r.publicId} ${timePart} - ${r.message ?? "(sem mensagem)"}`;
-      })
-    );
-  return lines.join("\n");
-};
+export { resolveRelationshipProfile } from "./modules/identity/domain/relationship-profile.js";
 
 export class Orchestrator {
   private readonly ports: CorePorts;
@@ -991,7 +867,7 @@ export class Orchestrator {
 
     for (const trigger of triggers) {
       if (!trigger.enabled) continue;
-      if (!isMatch(ctx.event.normalizedText, trigger)) continue;
+      if (!isTriggerMatch(ctx.event.normalizedText, trigger)) continue;
       if (trigger.name.toLowerCase().includes("fun") && ctx.funMode !== "on") continue;
       const isGreetingTrigger = this.isGreetingPattern(trigger.pattern);
       if (isGreetingTrigger) {
@@ -1031,520 +907,72 @@ export class Orchestrator {
     return [];
   }
 
-  private formatRequesterLabel(ctx: PipelineContext): string {
-    const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "member").toUpperCase();
-    const profile = ctx.relationshipProfile ?? ctx.identity?.relationshipProfile ?? "member";
-    return profile && profile !== "member" ? `${role} (${profile})` : role;
-  }
-
-  private formatGroupAccessBotAdmin(group: GroupAccessState, now: Date): string {
-    const checkedAt = group.botAdminCheckedAt ?? undefined;
-    const isFresh = checkedAt ? now.getTime() - checkedAt.getTime() < this.botAdminStaleMs : false;
-    if (typeof group.botIsAdmin === "boolean" && isFresh) return group.botIsAdmin ? "verified yes" : "verified no";
-    if (typeof group.botIsAdmin === "boolean") return group.botIsAdmin ? "yes (stale)" : "no (stale)";
-    return "unknown";
-  }
-
-  private formatBotAdminStatus(ctx: PipelineContext): { label: string; detail?: string } {
-    if (!ctx.event.isGroup) return { label: "n/a" };
-
-    const source = ctx.botAdminStatusSource ?? ctx.botAdminSourceUsed ?? "unknown";
-    const checkedAt = ctx.botAdminCheckedAt ?? ctx.groupAccess?.botAdminCheckedAt ?? undefined;
-    const usedOptimisticDefault = (ctx.botAdminSourceUsed ?? "").startsWith("default");
-    const window = source === "operation" ? this.botAdminOperationStaleMs : this.botAdminStaleMs;
-    const isFresh = checkedAt ? ctx.now.getTime() - checkedAt.getTime() < window : false;
-
-    if (!ctx.botAdminCheckFailed && !usedOptimisticDefault && typeof ctx.botIsGroupAdmin === "boolean" && isFresh) {
-      return { label: ctx.botIsGroupAdmin ? "verified yes" : source === "operation" ? "verified no" : "likely no", detail: source };
-    }
-
-    if (ctx.botAdminCheckFailed) {
-      return { label: "unknown (metadata unavailable)", detail: ctx.botAdminCheckError ?? source };
-    }
-
-    return { label: "unknown / not recently verified", detail: isFresh ? source : undefined };
-  }
-
-  private buildHelpResponse(ctx: PipelineContext): string {
-    const isRoot = this.hasRootPrivilege(ctx);
-    const visibility: HelpVisibilityContext = {
-      isGroup: ctx.event.isGroup,
-      isAdmin: this.isRequesterAdmin(ctx),
-      isRoot,
-      isGroupAdmin: ctx.requesterIsGroupAdmin ?? false,
-      relationshipProfile: ctx.relationshipProfile ?? ctx.identity?.relationshipProfile ?? null,
-      botIsGroupAdmin: ctx.botIsGroupAdmin
-    };
-    const commands = buildCommandHelpLines({
-      registry: this.commandRegistry,
-      prefix: this.commandPrefix,
-      visibility
-    });
-    const withPrefix = (body: string) => formatCommand(this.commandPrefix, body);
-    const requester = this.formatRequesterLabel(ctx);
-    const botAdminStatus = this.formatBotAdminStatus(ctx);
-    const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
-    const prefixLine = `Prefixo: ${this.commandPrefix}`;
-
-    if (!ctx.event.isGroup) {
-      const profileNotice = buildProfileNotice(visibility.relationshipProfile, isRoot);
-      const lines = [
-        prefixLine,
-        `Você: ${requester}`,
-        "Comandos:",
-        ...commands
-      ];
-      if (profileNotice) lines.unshift(profileNotice);
-      return lines.join("\n");
-    }
-
-    const groupLabel = ctx.identity?.groupName ?? ctx.groupAccess?.groupName ?? ctx.event.waGroupId ?? "grupo";
-    const aiActive = ctx.assistantMode !== "off" && ctx.groupChatMode === "on";
-    const aiLabel = aiActive ? "ativo (menções/respostas)" : "restrito";
-    const lines = [
-      `Grupo: ${groupLabel}`,
-      `ID: ${ctx.event.waGroupId ?? "-"}`,
-      `Permitido: ${ctx.groupAllowed ? "sim" : "não"}`,
-      `Bot admin: ${botAdminLabel}`,
-      `Abertura: ${ctx.groupIsOpen ? "aberto" : "fechado"}`,
-      `Welcome: ${ctx.groupWelcomeEnabled ? "on" : "off"}`,
-      `Chat: ${ctx.groupChatMode.toUpperCase()}`,
-      `AI: ${aiLabel}`,
-      prefixLine,
-      `Você: ${requester}`
-    ];
-    const missing: string[] = [];
-    if (!ctx.groupAllowed) missing.push(`Grupo não autorizado (use ${withPrefix("add gp allowed_groups")}).`);
-    if (ctx.groupChatMode === "off") missing.push(`Chat do bot está OFF (use ${withPrefix("chat on")}).`);
-    if (ctx.assistantMode === "off") missing.push("AI desativada (assistant_mode=off).");
-    if (missing.length > 0) {
-      lines.push("Pendências:");
-      lines.push(...missing.map((m) => `- ${m}`));
-    }
-    lines.push("Comandos:");
-    lines.push(...commands);
-    return lines.join("\n");
-  }
-
   private async runCommandRouter(ctx: PipelineContext): Promise<ResponseAction[]> {
-    const commandStartedAt = this.ports.clock?.now?.() ?? new Date();
-    const parsed = parseCommandText(ctx.event.normalizedText, this.commandRegistry);
-    if (!parsed) return [];
-    const { raw: rawCmd, body: cmd, lower, match } = parsed;
-    const commandKey = match?.command.name ?? parsed.token;
-    const formatCmd = (body: string) => formatCommand(this.commandPrefix, body);
-    const usageFor = (name: string): string | null => {
-      const def = this.commandRegistry.find(name);
-      if (!def) return null;
-      return this.stylizeReply(ctx, `Uso correto: ${formatCmd(def.usage)}`);
-    };
-    const usageForToken = (token: string): string | null => {
-      if (!token) return null;
-      const candidates = this.commandRegistry
-        .list()
-        .filter((cmd) => {
-          const first = cmd.name.split(/\s+/)[0] ?? cmd.name;
-          const aliasFirsts = cmd.aliases?.map((a) => a.split(/\s+/)[0] ?? a) ?? [];
-          return first === token || aliasFirsts.includes(token);
-        });
-      if (candidates.length === 0) return null;
-      const lines = candidates.slice(0, 4).map((cmd) => `- ${formatCmd(cmd.usage)} — ${cmd.description}`);
-      return this.stylizeReply(ctx, `Comando incompleto. Exemplos:\n${lines.join("\n")}`);
-    };
-    const botAdminStatus = this.formatBotAdminStatus(ctx);
-    const botAdminLabel = botAdminStatus.detail ? `${botAdminStatus.label} (${botAdminStatus.detail})` : botAdminStatus.label;
-
-    const requireAdmin = (): ResponseAction[] | null => {
-      if (this.isRequesterAdmin(ctx)) return null;
-      if (process.env.NODE_ENV !== "production" && lower.startsWith("chat")) {
-        this.ports.logger?.debug?.(
-          {
-            category: "BOT_ADMIN_GUARD",
-            tenantId: ctx.event.tenantId,
-            waGroupId: ctx.event.waGroupId,
-            command: rawCmd,
-            guard: "require_bot_admin_user",
-            decision: "deny",
-            botIsAdmin: ctx.botIsGroupAdmin,
-            sourceUsed: ctx.botAdminSourceUsed,
-            statusSource: ctx.botAdminStatusSource,
-            requesterIsAdmin: false
-          },
-          "bot admin user guard blocked command"
-        );
-      }
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, "Somente admins do bot podem usar este comando.") }];
-    };
-
-    const requireGroup = (): ResponseAction[] | null => {
-      const check = requireGroupContext(ctx.event);
-      if (check.ok) return null;
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, check.message ?? "Disponível apenas em grupos.") }];
-    };
-
-    const enforceBotAdminForOperation = (command: string): ResponseAction[] | null => {
-      if (!ctx.event.isGroup) return null;
-      if (!this.commandRequiresGroupAdmin(command)) return null;
-      if (ctx.botAdminStatusSource === "operation") {
-        if (ctx.botIsGroupAdmin === true) return null;
-        if (ctx.botIsGroupAdmin === false) {
-          return [
-            {
-              kind: "reply_text",
-              text: this.stylizeReply(ctx, "Preciso ser admin do grupo para executar este comando. Promova o bot e tente novamente.")
-            }
-          ];
-        }
-        return [
-          {
-            kind: "reply_text",
-            text: this.stylizeReply(ctx, "Não consegui confirmar se sou admin agora. Tente novamente em instantes.")
-          }
-        ];
-      }
-      return null;
-    };
-
-    const botAdminWarning = (command: string): string | null => {
-      if (!ctx.event.isGroup) return null;
-      if (!this.commandRequiresGroupAdmin(command)) return null;
-      if (ctx.botAdminStatusSource === "operation") return null;
-      if (ctx.botAdminCheckFailed) return "Aviso: status de admin não foi verificado agora; confirme se o bot é admin.";
-      if (typeof ctx.botIsGroupAdmin === "boolean" && ctx.botIsGroupAdmin === false) {
-        return "Aviso: metadata sugere que o bot não é admin; se falhar, torne o bot admin e repita.";
-      }
-      return null;
-    };
-
-    const formatIdentity = async (waUserId: string, waGroupId?: string): Promise<string> => {
-      if (!this.ports.identity) {
-        return `Usuário: ${waUserId}`;
-      }
-      const identity = await this.ports.identity.getIdentity({
-        tenantId: ctx.event.tenantId,
-        waUserId,
-        waGroupId
-      });
-      const resolvedProfile = identity?.relationshipProfile ?? null;
-      const permRole = (identity?.permissionRole ?? identity?.role ?? "member").toUpperCase();
-      const isAdminListed = this.ports.adminAccess
-        ? await this.ports.adminAccess.isAdmin({ tenantId: ctx.event.tenantId, waUserId })
-        : permRole === "ADMIN";
-      const lines = [
-        `Usuário: ${identity?.displayName ?? waUserId}`,
-        `waUserId: ${waUserId}`,
-        `Permissão: ${permRole}${isAdminListed ? " (bot admin)" : ""}`,
-        `Permissões efetivas: ${identity?.permissions.join(", ") || "nenhuma"}`
-      ];
-      const canonical = identity?.canonicalIdentity;
-      if (canonical?.phoneNumber) lines.push(`Telefone: ${canonical.phoneNumber}`);
-      if (canonical?.lidJid) lines.push(`LID: ${canonical.lidJid}`);
-      if (canonical?.pnJid) lines.push(`PN: ${canonical.pnJid}`);
-    if (resolvedProfile) lines.push(`Perfil: ${resolvedProfile}`);
-    if (identity?.groupName) lines.push(`Grupo: ${identity.groupName}`);
-    return lines.join("\n");
-  };
-
-    const groupHandled = await handleGroupCommand({
-      commandKey,
-      lower,
-      cmd,
-      ctx,
-      deps: {
-        groupAccess: this.ports.groupAccess,
-        botAdminLabel,
-        requireGroup,
-        requireAdmin,
-        enforceBotAdmin: enforceBotAdminForOperation,
-        botAdminWarning,
-        stylizeReply: (text) => this.stylizeReply(ctx, text),
-        formatCmd,
-        now: ctx.now,
-        formatGroupAccessBotAdmin: (state, nowDate) => this.formatGroupAccessBotAdmin(state, nowDate)
-      }
+    return runCommandRouterStage(ctx, {
+      ports: this.ports,
+      commandPrefix: this.commandPrefix,
+      commandRegistry: this.commandRegistry,
+      botAdminStaleMs: this.botAdminStaleMs,
+      botAdminOperationStaleMs: this.botAdminOperationStaleMs,
+      hasRootPrivilege: (input) => this.hasRootPrivilege(input),
+      isRequesterAdmin: (input) => this.isRequesterAdmin(input),
+      commandRequiresGroupAdmin: (name) => this.commandRequiresGroupAdmin(name),
+      stylizeReply: (input, text, options) => this.stylizeReply(input, text, options)
     });
-    if (groupHandled) return groupHandled;
+  }
 
-    if (commandKey === "help") {
-      return [
-        {
-          kind: "reply_text",
-          text: this.buildHelpResponse(ctx)
-        }
-      ];
-    }
+  private async runPolicyAndConsentStages(ctx: PipelineContext): Promise<ResponseAction[] | null> {
+    const policyResult = this.applyPolicies(ctx);
+    if (policyResult.stop) return policyResult.stop;
 
-    if (commandKey === "ping") {
-      const elapsedMs = (this.ports.clock?.now?.() ?? new Date()).getTime() - commandStartedAt.getTime();
-      return [{ kind: "reply_text", text: `Pong! 🏓\nms: ${elapsedMs}` }];
-    }
+    const moderationActions = this.enforceModeration(ctx);
+    if (moderationActions.length > 0) return moderationActions;
 
-    if (commandKey === "add user admins") {
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
-      const target = resolveTargetUserFromMentionOrReply(ctx.event);
-      if (!target) return [{ kind: "reply_text", text: "Mencione ou responda a quem deseja promover a admin." }];
-      const added = await this.ports.adminAccess.add({
-        tenantId: ctx.event.tenantId,
-        waUserId: target,
-        displayName: ctx.event.waUserId === target ? ctx.identity?.displayName : undefined,
-        actor: ctx.event.waUserId
-      });
-      return [
-        {
-          kind: "reply_text",
-          text: this.stylizeReply(ctx, `Admin adicionado: ${added.displayName ?? added.waUserId} (${added.waUserId}). Permissão=${added.permissionRole ?? "ADMIN"}.`)
-        }
-      ];
-    }
+    const groupPolicy = this.enforceGroupPolicies(ctx);
+    ctx.groupPolicy = { commandsOnly: groupPolicy.commandsOnly };
+    if (groupPolicy.stop) return groupPolicy.stop;
 
-    if (commandKey === "rm user admins") {
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
-      const target = resolveTargetUserFromMentionOrReply(ctx.event);
-      if (!target) return [{ kind: "reply_text", text: "Mencione ou responda a quem deseja remover da lista de admins." }];
-      const removed = await this.ports.adminAccess.remove({
-        tenantId: ctx.event.tenantId,
-        waUserId: target,
-        actor: ctx.event.waUserId
-      });
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, removed ? `Admin removido: ${target}.` : `Usuário ${target} não estava na lista de admins.`) }];
-    }
-
-    if (commandKey === "list user admins") {
-      const adminCheck = requireAdmin();
-      if (adminCheck) return adminCheck;
-      if (!this.ports.adminAccess) return [{ kind: "reply_text", text: "Lista de admins não está configurada." }];
-      const admins = await this.ports.adminAccess.list(ctx.event.tenantId);
-      if (admins.length === 0) return [{ kind: "reply_text", text: "Nenhum admin cadastrado." }];
-      return [
-        {
-          kind: "reply_list",
-          header: "Admins do bot",
-          items: admins.map((a) => ({
-            title: a.displayName ?? a.waUserId,
-            description: `${a.waUserId}${a.permissionRole ? ` · ${a.permissionRole}` : ""}`
-          }))
-        }
-      ];
-    }
-
-    const moderationHandled = handleModerationCommand({
-      commandKey,
-      lower,
-      cmd,
-      ctx,
-      deps: {
-        requireGroup,
-        requireAdmin,
-        enforceBotAdmin: enforceBotAdminForOperation,
-        stylizeReply: (text) => this.stylizeReply(ctx, text),
-        formatCmd
-      }
+    const consentResult = await enforceConsent(ctx, {
+      consentPort: this.ports.consent,
+      conversationState: this.ports.conversationState,
+      audit: this.ports.audit,
+      metrics: this.ports.metrics,
+      logger: this.ports.logger,
+      consentLink: this.consentLink,
+      consentVersion: this.consentTermsVersion,
+      consentSource: this.consentSource,
+      commandPrefix: this.commandPrefix,
+      pendingStateTtlMs: this.pendingStateTtlMs,
+      now: ctx.now,
+      stylizeReply: (text, options) => this.stylizeReply(ctx, text, options)
     });
-    if (moderationHandled) return moderationHandled;
+    if (consentResult.consent) ctx.consent = consentResult.consent;
+    if (consentResult.consentRequired !== undefined) ctx.consentRequired = consentResult.consentRequired;
+    if (consentResult.conversationState) ctx.conversationState = consentResult.conversationState;
+    if (consentResult.actions.length > 0) return consentResult.actions;
 
-    const taskHandled = await handleTaskCommand({
-      commandKey,
-      cmd,
-      ctx,
-      deps: { tasksRepository: this.ports.tasksRepository, formatUsage: (name) => usageFor(name) }
-    });
-    if (taskHandled) return taskHandled;
+    return null;
+  }
 
-    const noteHandled = await handleNoteCommand({
-      commandKey,
-      cmd,
-      ctx,
-      deps: { notesRepository: this.ports.notesRepository, formatUsage: (name) => usageFor(name) }
-    });
-    if (noteHandled) return noteHandled;
-
-    if (commandKey === "agenda") {
-      const range = getDayRange({ date: ctx.now, timezone: ctx.timezone });
-      const tasks = await this.ports.tasksRepository.listTasksForDay({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId,
-        dayStart: range.start,
-        dayEnd: range.end
-      });
-      const reminders = await this.ports.remindersRepository.listForDay({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId,
-        dayStart: range.start,
-        dayEnd: range.end
-      });
-      return [{ kind: "reply_text", text: formatAgenda({ dateLabel: range.label, timezone: ctx.timezone, tasks, reminders }) }];
+  private async runAiFallbackStages(ctx: PipelineContext): Promise<ResponseAction[]> {
+    if (ctx.classification.kind === "tool_follow_up") {
+      const followUp = await this.assistantAi.handlePendingToolFollowUp(ctx);
+      if (followUp.length > 0) return followUp;
     }
 
-    if (commandKey === "calc") {
-      const expression = cmd.replace(/^(calc)\s+/i, "").trim();
-      if (!expression) return [{ kind: "reply_text", text: "Forneça uma expressão (ex: 5+10*3)." }];
-      try {
-        const result = evaluateExpression(expression);
-        return [{ kind: "reply_text", text: `${expression} = ${result}` }];
-      } catch (error) {
-        return [{ kind: "reply_text", text: `Expressão inválida: ${(error as Error).message}` }];
-      }
-    }
+    const naturalActions = await this.assistantAi.handleAddressedMessage(ctx);
+    if (naturalActions.length > 0) return naturalActions;
 
-    if (commandKey === "timer") {
-      if (!this.ports.timersRepository) return [{ kind: "reply_text", text: "Módulo de timer não está disponível." }];
-      const durationToken = cmd.replace(/^(timer)\s+/i, "").trim();
-      const duration = parseDurationInput(durationToken);
-      if (!duration) return [{ kind: "reply_text", text: "Formato de duração inválido. Use algo como 10m ou 1h." }];
-      const { date, pretty } = addDurationToNow({ durationMs: duration.milliseconds, timezone: ctx.timezone, now: ctx.now });
-      const timer = await this.ports.timersRepository.createTimer({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId,
-        fireAt: date,
-        durationMs: duration.milliseconds,
-        label: duration.pretty
-      });
-      return [
-        { kind: "reply_text", text: `Timer ${timer.id} definido para ${pretty} (${ctx.timezone}).` },
-        { kind: "enqueue_job", jobType: "timer", payload: { id: timer.id, runAt: date } }
-      ];
-    }
+    const fallbackActions = await this.assistantAi.runFallback(ctx);
+    if (fallbackActions.length > 0) return fallbackActions;
 
-    if (commandKey === "mute") {
-      if (!this.ports.mute) return [{ kind: "reply_text", text: "Controle de silêncio não está disponível." }];
-      const arg = cmd.replace(/^mute\s*/i, "").trim();
-      if (arg.toLowerCase() === "off") {
-        await this.ports.mute.unmute({ tenantId: ctx.event.tenantId, scope: ctx.scope.scope, scopeId: ctx.scope.scopeId });
-        return [{ kind: "reply_text", text: "Silêncio desativado." }];
-      }
-      const duration = parseDurationInput(arg);
-      if (!duration) return [{ kind: "reply_text", text: "Informe a duração (ex: 30m, 2h)." }];
-      const muted = await this.ports.mute.mute({
-        tenantId: ctx.event.tenantId,
-        scope: ctx.scope.scope,
-        scopeId: ctx.scope.scopeId,
-        durationMs: duration.milliseconds,
-        now: ctx.now
-      });
-      const untilPretty = formatDateTimeInZone(muted.until, ctx.timezone);
-      return [{ kind: "reply_text", text: `🤫 Silenciado até ${untilPretty}.` }];
-    }
+    return [];
+  }
 
-    if (commandKey === "alias link") {
-      if (!this.ports.identity?.linkAlias) return [{ kind: "reply_text", text: "Vinculação de alias não está disponível." }];
-      const match = cmd.match(/^alias\s+link\s+(\S+)\s+(\S+)/i);
-      if (!match) return [{ kind: "reply_text", text: `Uso correto: ${formatCmd("alias link <phoneNumber> <lidJid>")}` }];
-      const [, phoneNumber, lidJid] = match;
-      const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase?.() ?? "";
-      const allowedRoles = ["ROOT", "ADMIN", "DONO", "OWNER", "PRIVILEGED"];
-      const allowedProfile = ctx.relationshipProfile === "creator_root" || ctx.relationshipProfile === "mother_privileged";
-      if (!allowedRoles.includes(role) && !allowedProfile) {
-        return [{ kind: "reply_text", text: "Somente admin/owner podem vincular aliases." }];
-      }
-      try {
-        const result = await this.ports.identity.linkAlias({
-          tenantId: ctx.event.tenantId,
-          phoneNumber,
-          lidJid,
-          actor: ctx.event.waUserId
-        });
-        const resolvedProfile = result.relationshipProfile ?? ctx.relationshipProfile;
-        const resolvedRole = result.permissionRole ?? ctx.identity?.permissionRole ?? ctx.identity?.role;
-        const lines = [
-          "Alias vinculado com sucesso.",
-          `Telefone: ${result.canonicalIdentity.phoneNumber ?? phoneNumber}`,
-          `LID: ${result.canonicalIdentity.lidJid ?? lidJid}`,
-          `Perfil: ${resolvedProfile ?? "n/d"}`,
-          `Permissão: ${resolvedRole ?? "n/d"}`
-        ];
-        return [{ kind: "reply_text", text: lines.join("\n") }];
-      } catch (error) {
-        return [{ kind: "reply_text", text: `Falha ao vincular alias: ${(error as Error).message}` }];
-      }
-    }
-
-    if (commandKey === "whoami") {
-      const summary = await formatIdentity(ctx.event.waUserId, ctx.event.waGroupId);
-      const lines = [summary];
-      lines.push(`Admin/root: ${this.isRequesterAdmin(ctx) ? "sim" : "não"}`);
-      if (ctx.event.isGroup) {
-        lines.push(
-          `Grupo: ${ctx.event.waGroupId ?? "-"}`,
-          `Grupo permitido: ${ctx.groupAllowed ? "sim" : "não"}`,
-          `Modo de chat: ${ctx.groupChatMode}`,
-          `Bot admin: ${botAdminLabel}`
-        );
-      }
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, lines.join("\n")) }];
-    }
-
-    if (commandKey === "userinfo") {
-      const target = resolveTargetUserFromMentionOrReply(ctx.event);
-      if (!target) return [{ kind: "reply_text", text: `Responda ou mencione um usuário para usar ${formatCmd("userinfo")}.` }];
-      const summary = await formatIdentity(target, ctx.event.waGroupId);
-      return [{ kind: "reply_text", text: summary }];
-    }
-
-    if (commandKey === "status") {
-      if (!this.ports.status) return [{ kind: "reply_text", text: "Status não disponível." }];
-      const status = await this.ports.status.getStatus({
-        tenantId: ctx.event.tenantId,
-        waGroupId: ctx.event.waGroupId,
-        waUserId: ctx.event.waUserId
-      });
-      const isRoot = this.hasRootPrivilege(ctx);
-      const profileLabel = ctx.identity?.relationshipProfile ?? ctx.relationshipProfile;
-      const lines = ["📊 Status do bot:"];
-      if (isRoot) {
-        lines.push(`Contexto: ROOT${profileLabel === "creator_root" ? " (criador)" : ""}. Todos os comandos administrativos liberados.`);
-      } else if (profileLabel === "mother_privileged") {
-        lines.push("Contexto: contato privilegiado (mãe). Mantendo respostas respeitosas e carinhosas.");
-      }
-      lines.push(
-        `Gateway: ${status.gateway.ok ? "ok" : "erro"}${status.gateway.at ? ` (${status.gateway.at})` : ""}`,
-        `Worker: ${status.worker.ok ? "ok" : "erro"}${status.worker.at ? ` (${status.worker.at})` : ""}`,
-        `DB: ${status.db.ok ? "ok" : "erro"}`,
-        `Redis: ${status.redis.ok ? "ok" : "erro"}`,
-        `LLM: ${status.llm.enabled ? (status.llm.ok ? "ok" : `erro (${status.llm.reason ?? "desconhecido"})`) : "desativado"}`,
-        `Tarefas abertas: ${status.counts.tasksOpen}`,
-        `Lembretes agendados: ${status.counts.remindersScheduled}`,
-        `Timers agendados: ${status.counts.timersScheduled}`
-      );
-      if (status.queue) {
-        lines.push(
-          `Fila: waiting=${status.queue.waiting ?? 0}, active=${status.queue.active ?? 0}, delayed=${status.queue.delayed ?? 0}`
-        );
-      }
-      return [{ kind: "reply_text", text: lines.join("\n") }];
-    }
-
-    const reminderHandled = await handleReminderCommand({
-      commandKey,
-      cmd,
-      ctx,
-      deps: {
-        remindersRepository: this.ports.remindersRepository,
-        timezone: ctx.timezone,
-        defaultReminderTime: ctx.defaultReminderTime,
-        now: ctx.now,
-        formatUsage: () => usageFor("reminder")
-      }
-    });
-    if (reminderHandled) return reminderHandled;
-
-    if (!match) {
-      const partialUsage = usageForToken(parsed.token);
-      if (partialUsage) return [{ kind: "reply_text", text: partialUsage }];
-      return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Comando desconhecido. Use ${formatCmd("help")}.`) }];
-    }
-    const fallbackUsage = usageForToken(commandKey.split(/\s+/)[0] ?? parsed.token);
-    if (fallbackUsage) return [{ kind: "reply_text", text: fallbackUsage }];
-
-    const matchedUsage = usageFor(commandKey);
-    if (matchedUsage) return [{ kind: "reply_text", text: matchedUsage }];
-    return [{ kind: "reply_text", text: this.stylizeReply(ctx, `Comando desconhecido. Use ${formatCmd("help")}.`) }];
+  private async resolveContextAndClassification(normalized: NormalizedEvent): Promise<PipelineContext> {
+    const ctx = await this.buildContext(normalized);
+    ctx.classification = await this.classifyMessage(ctx);
+    return ctx;
   }
 
   async handleInboundMessage(event: InboundMessageEvent): Promise<ResponseAction[]> {
@@ -1553,8 +981,7 @@ export class Orchestrator {
     const rate = await this.enforceRateLimits(normalized);
     if (!rate.allowed) return this.formatActionsForDelivery(rate.action ? [rate.action] : [{ kind: "noop", reason: "rate_limit" }]);
 
-    const ctx = await this.buildContext(normalized);
-    ctx.classification = await this.classifyMessage(ctx);
+    const ctx = await this.resolveContextAndClassification(normalized);
 
     if (process.env.NODE_ENV !== "production" && ctx.event.isGroup) {
       this.ports.logger?.debug?.(
@@ -1583,34 +1010,8 @@ export class Orchestrator {
       return this.formatActionsForDelivery([{ kind: "noop", reason: ctx.classification.reason ?? ctx.classification.kind }]);
     }
 
-    const policyResult = this.applyPolicies(ctx);
-    if (policyResult.stop) return this.formatActionsForDelivery(policyResult.stop);
-
-    const moderationActions = this.enforceModeration(ctx);
-    if (moderationActions.length > 0) return this.formatActionsForDelivery(moderationActions);
-
-    const groupPolicy = this.enforceGroupPolicies(ctx);
-    ctx.groupPolicy = { commandsOnly: groupPolicy.commandsOnly };
-    if (groupPolicy.stop) return this.formatActionsForDelivery(groupPolicy.stop);
-
-    const consentResult = await enforceConsent(ctx, {
-      consentPort: this.ports.consent,
-      conversationState: this.ports.conversationState,
-      audit: this.ports.audit,
-      metrics: this.ports.metrics,
-      logger: this.ports.logger,
-      consentLink: this.consentLink,
-      consentVersion: this.consentTermsVersion,
-      consentSource: this.consentSource,
-      commandPrefix: this.commandPrefix,
-      pendingStateTtlMs: this.pendingStateTtlMs,
-      now: ctx.now,
-      stylizeReply: (text, options) => this.stylizeReply(ctx, text, options)
-    });
-    if (consentResult.consent) ctx.consent = consentResult.consent;
-    if (consentResult.consentRequired !== undefined) ctx.consentRequired = consentResult.consentRequired;
-    if (consentResult.conversationState) ctx.conversationState = consentResult.conversationState;
-    if (consentResult.actions.length > 0) return this.formatActionsForDelivery(consentResult.actions);
+    const policyActions = await this.runPolicyAndConsentStages(ctx);
+    if (policyActions) return this.formatActionsForDelivery(policyActions);
 
     const greetingActions = await this.runGreetingStage(ctx);
     if (greetingActions.length > 0) return this.formatActionsForDelivery(greetingActions);
@@ -1655,15 +1056,7 @@ export class Orchestrator {
       return this.formatActionsForDelivery([{ kind: "reply_text", text: unknownMessage }]);
     }
 
-    if (ctx.classification.kind === "tool_follow_up") {
-      const followUp = await this.assistantAi.handlePendingToolFollowUp(ctx);
-      if (followUp.length > 0) return this.formatActionsForDelivery(followUp);
-    }
-
-    const naturalActions = await this.assistantAi.handleAddressedMessage(ctx);
-    if (naturalActions.length > 0) return this.formatActionsForDelivery(naturalActions);
-
-    const aiActions = await this.assistantAi.runFallback(ctx);
+    const aiActions = await this.runAiFallbackStages(ctx);
     if (aiActions.length > 0) return this.formatActionsForDelivery(aiActions);
 
     if (ctx.policyMuted) {

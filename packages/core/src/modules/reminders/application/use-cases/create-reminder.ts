@@ -1,5 +1,5 @@
 import type { ResponseAction } from "../../../../pipeline/actions.js";
-import type { RemindersRepositoryPort } from "../../ports/reminder-repository.port.js";
+import type { RemindersRepositoryPort } from "../../ports.js";
 import type { ReminderCreateInput } from "../../../../pipeline/types.js";
 
 export interface CreateReminderInput extends ReminderCreateInput {
