@@ -60,7 +60,8 @@ const logOutbound = (
   action: string,
   waMessageId: string,
   text: string,
-  scope: "group" | "direct"
+  scope: "group" | "direct",
+  responseActionId: string
 ) => {
   input.logger.info?.(
     input.withCategory("WA-OUT", {
@@ -73,6 +74,9 @@ const logOutbound = (
       relationshipProfile: input.relationshipProfile,
       waGroupId: input.event.waGroupId,
       waMessageId,
+      inboundWaMessageId: input.event.waMessageId,
+      executionId: input.event.executionId,
+      responseActionId,
       action,
       textPreview: text.slice(0, 80)
     }),
@@ -80,8 +84,35 @@ const logOutbound = (
   );
 };
 
+const buildResponseActionId = (input: ExecuteOutboundActionsInput, action: any, actionIndex: number): string => {
+  const baseExecutionId =
+    (typeof input.event.executionId === "string" && input.event.executionId.trim().length > 0
+      ? input.event.executionId
+      : input.event.waMessageId) ?? "noexec";
+  return `${baseExecutionId}:a${actionIndex + 1}:${action.kind ?? "unknown"}`;
+};
+
+const buildActionLogContext = (
+  input: ExecuteOutboundActionsInput,
+  actionName: string,
+  scope: "group" | "direct",
+  responseActionId: string
+): Record<string, unknown> => ({
+  tenantId: input.event.tenantId,
+  scope,
+  action: actionName,
+  waUserId: input.waUserId,
+  waGroupId: input.event.waGroupId,
+  inboundWaMessageId: input.event.waMessageId,
+  executionId: input.event.executionId,
+  responseActionId
+});
+
 export const executeOutboundActions = async (input: ExecuteOutboundActionsInput): Promise<void> => {
-  for (const action of input.actions) {
+  for (let actionIndex = 0; actionIndex < input.actions.length; actionIndex += 1) {
+    const action = input.actions[actionIndex];
+    const responseActionId = buildResponseActionId(input, action, actionIndex);
+
     if (action.kind === "enqueue_job") {
       const runAt = action.payload.runAt ? new Date(action.payload.runAt) : new Date();
       if (action.jobType === "reminder") {
@@ -105,13 +136,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
         to,
         content: { text: note },
         quotedMessage: input.message,
-        logContext: {
-          tenantId: input.event.tenantId,
-          scope: input.isGroup ? "group" : "direct",
-          action: "handoff",
-          waUserId: input.waUserId,
-          waGroupId: input.event.waGroupId
-        }
+        logContext: buildActionLogContext(input, "handoff", input.isGroup ? "group" : "direct", responseActionId)
       });
       await input.persistOutboundMessage({
         tenantId: input.context.tenant.id,
@@ -123,7 +148,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
         waMessageId: sent.key.id,
         rawJson: sent
       });
-      logOutbound(input, "handoff", sent.key.id, note, input.isGroup ? "group" : "direct");
+      logOutbound(input, "handoff", sent.key.id, note, input.isGroup ? "group" : "direct", responseActionId);
       continue;
     }
 
@@ -136,13 +161,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
         to,
         content: { text: textToSend },
         quotedMessage: input.message,
-        logContext: {
-          tenantId: input.event.tenantId,
-          scope: input.isGroup ? "group" : "direct",
-          action: "ai_tool_suggestion",
-          waUserId: input.waUserId,
-          waGroupId: input.event.waGroupId
-        }
+        logContext: buildActionLogContext(input, "ai_tool_suggestion", input.isGroup ? "group" : "direct", responseActionId)
       });
       await input.persistOutboundMessage({
         tenantId: input.context.tenant.id,
@@ -154,7 +173,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
         waMessageId: sent.key.id,
         rawJson: sent
       });
-      logOutbound(input, "ai_tool_suggestion", sent.key.id, textToSend, input.isGroup ? "group" : "direct");
+      logOutbound(input, "ai_tool_suggestion", sent.key.id, textToSend, input.isGroup ? "group" : "direct", responseActionId);
       continue;
     }
 
@@ -261,13 +280,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
         to,
         content: { text: replyText },
         quotedMessage: input.message,
-        logContext: {
-          tenantId: input.event.tenantId,
-          scope: "group",
-          action: "group_admin_action",
-          waUserId: input.waUserId,
-          waGroupId: input.event.waGroupId
-        }
+        logContext: buildActionLogContext(input, "group_admin_action", "group", responseActionId)
       });
       await input.persistOutboundMessage({
         tenantId: input.context.tenant.id,
@@ -279,7 +292,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
         waMessageId: sent.key.id,
         rawJson: sent
       });
-      logOutbound(input, "group_admin_action", sent.key.id, replyText, "group");
+      logOutbound(input, "group_admin_action", sent.key.id, replyText, "group", responseActionId);
       continue;
     }
 
@@ -314,13 +327,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
           to: input.event.waGroupId ?? input.remoteJid,
           content: { text: action.text ?? "", mentions },
           quotedMessage: input.message,
-          logContext: {
-            tenantId: input.event.tenantId,
-            scope: "group",
-            action: "hidetag",
-            waUserId: input.waUserId,
-            waGroupId: input.event.waGroupId
-          }
+          logContext: buildActionLogContext(input, "hidetag", "group", responseActionId)
         });
         await input.persistOutboundMessage({
           tenantId: input.context.tenant.id,
@@ -332,7 +339,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
           waMessageId: sent.key.id,
           rawJson: sent
         });
-        logOutbound(input, "hidetag", sent.key.id, action.text ?? "", "group");
+        logOutbound(input, "hidetag", sent.key.id, action.text ?? "", "group", responseActionId);
         resultLabel = "hidetag";
         continue;
       } else if (action.action === "ban" || action.action === "kick") {
@@ -419,13 +426,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
         to: input.event.waGroupId ?? input.remoteJid,
         content: { text: replyText },
         quotedMessage: input.message,
-        logContext: {
-          tenantId: input.event.tenantId,
-          scope: "group",
-          action: action.action,
-          waUserId: input.waUserId,
-          waGroupId: input.event.waGroupId
-        }
+        logContext: buildActionLogContext(input, action.action, "group", responseActionId)
       });
       if (shouldPersist) {
         await input.persistOutboundMessage({
@@ -439,7 +440,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
           rawJson: sent
         });
       }
-      logOutbound(input, action.action, sent.key.id, replyText, "group");
+      logOutbound(input, action.action, sent.key.id, replyText, "group", responseActionId);
       await input.metrics.increment("moderation_actions_total");
       await input.auditTrail.record({
         kind: "moderation",
@@ -467,13 +468,7 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
       to,
       content: { text: textToSend },
       quotedMessage: input.message,
-      logContext: {
-        tenantId: input.event.tenantId,
-        scope: input.isGroup ? "group" : "direct",
-        action: action.kind,
-        waUserId: input.waUserId,
-        waGroupId: input.event.waGroupId
-      }
+      logContext: buildActionLogContext(input, action.kind, input.isGroup ? "group" : "direct", responseActionId)
     });
     await input.persistOutboundMessage({
       tenantId: input.context.tenant.id,
@@ -485,6 +480,6 @@ export const executeOutboundActions = async (input: ExecuteOutboundActionsInput)
       waMessageId: sent.key.id,
       rawJson: sent
     });
-    logOutbound(input, action.kind, sent.key.id, textToSend, input.isGroup ? "group" : "direct");
+    logOutbound(input, action.kind, sent.key.id, textToSend, input.isGroup ? "group" : "direct", responseActionId);
   }
 };

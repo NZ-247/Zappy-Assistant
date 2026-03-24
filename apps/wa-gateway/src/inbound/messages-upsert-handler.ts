@@ -1,4 +1,5 @@
 import type { InboundMessageEvent, Orchestrator } from "@zappy/core";
+import { createHash, randomUUID } from "node:crypto";
 
 type InboundUpsertMessage = {
   key: { fromMe?: boolean; remoteJid?: string; participant?: string; id?: string };
@@ -48,6 +49,8 @@ interface MessagesUpsertHandlerDeps {
     operationFirst?: boolean;
   }) => Promise<any>;
   groupAdminOperationCacheTtlMs: number;
+  claimInboundMessage: (input: { remoteJid: string; waMessageId: string }) => Promise<boolean>;
+  inboundMessageClaimTtlSeconds: number;
   persistInboundMessage: (input: InboundMessageEvent & { userId: string; groupId?: string; rawJson: unknown }) => Promise<{ conversationId: string }>;
   logger: {
     debug: (payload: unknown, message?: string) => void;
@@ -69,6 +72,35 @@ interface MessagesUpsertHandlerDeps {
   };
 }
 
+const buildInboundMessageId = (input: {
+  message: InboundUpsertMessage;
+  remoteJid: string;
+  waUserId: string;
+  text: string;
+  mediaPresent: boolean;
+}): string => {
+  const explicit = input.message.key.id?.trim();
+  if (explicit) return explicit;
+
+  const timestamp = input.message.messageTimestamp ? Number(input.message.messageTimestamp) : Date.now();
+  const rawType = Object.keys(input.message.message ?? {})[0] ?? "unknown";
+  const seed = [
+    input.remoteJid,
+    input.waUserId,
+    input.message.key.participant ?? "",
+    Number.isFinite(timestamp) ? String(timestamp) : "",
+    rawType,
+    input.mediaPresent ? "media" : "text",
+    input.text.slice(0, 160)
+  ].join("|");
+  const hash = createHash("sha1").update(seed).digest("hex").slice(0, 20);
+  return `auto_${hash}`;
+};
+
+const buildExecutionId = (waMessageId: string): string => {
+  return `exec_${Date.now().toString(36)}_${waMessageId.slice(-8)}_${randomUUID().slice(0, 8)}`;
+};
+
 export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => {
   return async ({ messages, type }: InboundUpsertPayload) => {
     const socket = deps.getSocket();
@@ -86,6 +118,8 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const text = rawText.trim();
       const mediaPresent = deps.hasInboundMedia(message.message);
       if (!text && !mediaPresent) continue;
+      const inboundMessageId = buildInboundMessageId({ message, remoteJid, waUserId, text, mediaPresent });
+      const executionId = buildExecutionId(inboundMessageId);
 
       const botJid = socket.user?.id ? deps.normalizeJid(socket.user.id) : undefined;
       deps.setBotSelfLidKey(botJid);
@@ -167,7 +201,7 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const botAdminCheckFailed =
         botAdminStatus?.source === "fallback" || botAdminStatus?.actionResultKind === "failed_metadata_unavailable";
       const messageKey = {
-        id: message.key.id ?? `${Date.now()}`,
+        id: inboundMessageId,
         remoteJid: message.key.remoteJid,
         fromMe: message.key.fromMe,
         participant: message.key.participant
@@ -179,7 +213,7 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         waGroupId: isGroup ? remoteJid : undefined,
         waUserId,
         text,
-        waMessageId: message.key.id ?? `${Date.now()}`,
+        waMessageId: inboundMessageId,
         timestamp: new Date((message.messageTimestamp ? Number(message.messageTimestamp) : Date.now() / 1000) * 1000),
         isGroup,
         remoteJid,
@@ -200,8 +234,27 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         botAdminCheckError: botAdminError,
         botAdminCheckedAt,
         groupName: context.group?.name ?? message.pushName ?? remoteJid ?? undefined,
-        messageKey
+        messageKey,
+        executionId
       };
+
+      const claimed = await deps.claimInboundMessage({ remoteJid, waMessageId: inboundMessageId });
+      if (!claimed) {
+        deps.logger.info(
+          deps.withCategory("WA-IN", {
+            status: "duplicate_inbound_skipped",
+            tenantId: event.tenantId,
+            waGroupId: event.waGroupId,
+            waMessageId: inboundMessageId,
+            remoteJid,
+            waUserId,
+            executionId,
+            claimTtlSeconds: deps.inboundMessageClaimTtlSeconds
+          }),
+          "duplicate inbound message skipped"
+        );
+        continue;
+      }
 
       const persisted = await deps.persistInboundMessage({
         ...event,
@@ -226,7 +279,10 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
           relationshipProfile,
           permissionRole,
           waMessageId: event.waMessageId,
+          inboundMessageId: event.waMessageId,
+          executionId: event.executionId,
           waGroupId: event.waGroupId,
+          messageKeyId: event.messageKey?.id,
           textPreview: text.slice(0, 80),
           hasMedia: event.hasMedia,
           messageType: event.rawMessageType

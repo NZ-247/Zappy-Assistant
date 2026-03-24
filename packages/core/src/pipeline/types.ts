@@ -158,6 +158,7 @@ export type AuditEvent =
 export interface InboundMessageEvent {
   tenantId: string;
   conversationId?: string;
+  executionId?: string;
   waGroupId?: string;
   waUserId: string;
   text: string;

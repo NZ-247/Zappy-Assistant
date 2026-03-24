@@ -199,10 +199,19 @@ const formatWaLine = (obj: any, tz?: string): string => {
   const role = obj.permissionRole ?? obj.role ?? "";
   const profile = obj.relationshipProfile ?? "";
   const number = normalizeNumber(obj.phoneNumber ?? obj.waUserId) ?? "-";
+  const traceParts = [
+    obj.waMessageId ? `msg=${obj.waMessageId}` : null,
+    obj.inboundWaMessageId ? `in=${obj.inboundWaMessageId}` : null,
+    obj.executionId ? `exec=${obj.executionId}` : null,
+    obj.responseActionId ? `resp=${obj.responseActionId}` : null
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const trace = traceParts ? ` ${traceParts}` : "";
   const action = obj.action ? ` action=${obj.action}` : "";
   const previewSource = obj.textPreview ?? obj.text ?? obj.msg ?? "";
   const preview = previewSource ? ` -> "${truncate(String(previewSource).replace(/\s+/g, " ").trim(), 80)}"` : "";
-  return `[${time}] [${obj.category}] [${scope}] ${role || ""} ${profile || ""} ${number}${action}${preview}`.replace(/\s+/g, " ").trim();
+  return `[${time}] [${obj.category}] [${scope}] ${role || ""} ${profile || ""} ${number}${trace}${action}${preview}`.replace(/\s+/g, " ").trim();
 };
 
 const formatErrorBlock = (obj: any, tz?: string, levelLabel?: string, verboseStacks?: boolean): string => {
@@ -242,7 +251,23 @@ const formatGenericLine = (obj: any, tz?: string): string => {
   const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
   const cat = obj.category ?? "SYSTEM";
   const msg = obj.msg ?? obj.message ?? "";
-  const detailFields = ["status", "route", "method", "code", "jobId", "queue", "model"]
+  const detailFields = [
+    "status",
+    "route",
+    "method",
+    "code",
+    "jobId",
+    "queue",
+    "model",
+    "phase",
+    "commandName",
+    "resultSummary",
+    "waMessageId",
+    "inboundWaMessageId",
+    "executionId",
+    "commandExecutionId",
+    "responseActionId"
+  ]
     .map((key) => (obj[key] !== undefined ? `${key}=${obj[key]}` : null))
     .filter(Boolean);
   const details = detailFields.length ? ` ${detailFields.join(" ")}` : "";
@@ -259,7 +284,10 @@ const createPrettyStream = (ctx: PrettyContext) => {
         const parsed = JSON.parse(chunk.toString());
         const obj = sanitizeBaileysLog(parsed);
         if (silenceNoise && isBaileysNoise(obj) && process.env.DEBUG !== "trace") return cb();
-        const key = obj.category?.startsWith("WA-") && obj.waMessageId ? `${obj.category}:${obj.waMessageId}` : null;
+        const key =
+          obj.category?.startsWith("WA-") && obj.waMessageId
+            ? `${obj.category}:${obj.waMessageId}:${obj.action ?? obj.status ?? obj.responseActionId ?? obj.phase ?? ""}`
+            : null;
         if (dedupSeen(key)) return cb();
 
         const level = Number(obj.level ?? 30);

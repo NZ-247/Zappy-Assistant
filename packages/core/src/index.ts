@@ -755,10 +755,47 @@ export class Orchestrator {
     const triggerActions = await this.runBusinessTriggers(ctx);
     if (triggerActions.length > 0) return this.formatActionsForDelivery(triggerActions);
 
+    const commandExecutionId =
+      ctx.classification.kind === "command"
+        ? `cmd_${(ctx.event.executionId ?? ctx.event.waMessageId).replace(/[^a-zA-Z0-9_-]/g, "").slice(-24)}_${ctx.now.getTime().toString(36)}`
+        : undefined;
+    if (ctx.classification.kind === "command") {
+      this.ports.logger?.info?.(
+        {
+          category: "COMMAND_TRACE",
+          phase: "start",
+          tenantId: ctx.event.tenantId,
+          waGroupId: ctx.event.waGroupId,
+          waUserId: ctx.event.waUserId,
+          waMessageId: ctx.event.waMessageId,
+          executionId: ctx.event.executionId,
+          commandExecutionId,
+          commandName: ctx.classification.commandName
+        },
+        "command execution started"
+      );
+    }
+
     const commandActions = await this.runCommandRouter(ctx);
     if (ctx.classification.kind === "command") {
       const hasError = commandActions.some((a) => a.kind === "error");
       const summary = commandActions.length === 0 ? "noop" : commandActions.map((a) => a.kind).join(",");
+      this.ports.logger?.info?.(
+        {
+          category: "COMMAND_TRACE",
+          phase: "finish",
+          tenantId: ctx.event.tenantId,
+          waGroupId: ctx.event.waGroupId,
+          waUserId: ctx.event.waUserId,
+          waMessageId: ctx.event.waMessageId,
+          executionId: ctx.event.executionId,
+          commandExecutionId,
+          commandName: ctx.classification.commandName,
+          resultSummary: summary,
+          status: hasError ? "error" : "ok"
+        },
+        "command execution finished"
+      );
       await this.recordAudit({
         kind: "command",
         tenantId: ctx.event.tenantId,
@@ -769,7 +806,13 @@ export class Orchestrator {
         inputText: ctx.event.text,
         resultSummary: summary,
         status: hasError ? "error" : "ok",
-        metadata: { classification: ctx.classification.kind }
+        metadata: {
+          classification: ctx.classification.kind,
+          commandName: ctx.classification.commandName,
+          executionId: ctx.event.executionId,
+          commandExecutionId,
+          inboundWaMessageId: ctx.event.waMessageId
+        }
       });
       await this.bumpMetric("commands_executed_total");
       for (const action of commandActions) {

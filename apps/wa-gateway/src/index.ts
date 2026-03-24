@@ -40,6 +40,7 @@ import { createCommandGuards } from "./infrastructure/command-guards.js";
 import { getInboundContextInfo, getInboundText, hasInboundMedia } from "./infrastructure/inbound-message.js";
 import { createBotSelfLidService } from "./infrastructure/bot-self-lid.js";
 import { createBotAdminStatusService, GROUP_ADMIN_OPERATION_CACHE_TTL_MS } from "./infrastructure/bot-admin-status.js";
+import { createBaileysRuntimeLogger } from "./infrastructure/baileys-runtime-logger.js";
 import { executeOutboundActions } from "./infrastructure/outbound-actions.js";
 import { createGroupParticipantsUpdateHandler } from "./inbound/group-participants-handler.js";
 import { createMessagesUpsertHandler } from "./inbound/messages-upsert-handler.js";
@@ -48,11 +49,17 @@ import { createWhatsAppConnector } from "./bootstrap/connect-whatsapp.js";
 
 const env = loadEnv();
 const logger = createLogger("wa-gateway");
-const baileysLogger = logger.child({ name: "baileys", module: "baileys" }, { level: process.env.DEBUG === "trace" ? "debug" : "warn" });
+const rawBaileysLogger = logger.child({ name: "baileys", module: "baileys" }, { level: process.env.DEBUG === "trace" ? "debug" : "warn" });
+const baileysLogger = createBaileysRuntimeLogger({
+  baseLogger: rawBaileysLogger as any,
+  appLogger: logger as any,
+  withCategory
+});
 const redis = createRedisConnection(env.REDIS_URL);
 const metrics = createMetricsRecorder(redis);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const queueAdapter = createQueueAdapter(queue);
+const INBOUND_MESSAGE_CLAIM_TTL_SECONDS = 120;
 const llmConfigured = Boolean(env.OPENAI_API_KEY);
 const llmModel = env.LLM_MODEL ?? env.OPENAI_MODEL;
 const baseSystemPrompt = buildBaseSystemPrompt({
@@ -317,6 +324,12 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
   resolveSenderGroupAdmin,
   refreshBotAdminState,
   groupAdminOperationCacheTtlMs: GROUP_ADMIN_OPERATION_CACHE_TTL_MS,
+  claimInboundMessage: async ({ remoteJid, waMessageId }) => {
+    const claimKey = `wa:inbound:claim:${normalizeJid(remoteJid)}:${waMessageId}`;
+    const claimed = await redis.set(claimKey, "1", "EX", INBOUND_MESSAGE_CLAIM_TTL_SECONDS, "NX");
+    return claimed === "OK";
+  },
+  inboundMessageClaimTtlSeconds: INBOUND_MESSAGE_CLAIM_TTL_SECONDS,
   persistInboundMessage,
   logger,
   withCategory,
