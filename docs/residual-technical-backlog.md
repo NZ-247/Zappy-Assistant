@@ -1,20 +1,20 @@
 # Residual Technical Backlog (Post Modular Migration)
 
-Status em 2026-03-24:
-- backlog residual **curto**
+Status em 2026-03-24 (fechamento):
+- backlog residual **encerrado**
 - sem bloqueio para evolução funcional
-- foco em extrações incrementais sem mudança de comportamento
+- extrações realizadas sem mudança funcional intencional
 
-## Itens residuais priorizados
+## Itens residuais (resultado)
 
-| Arquivo | Por que ainda merece extração | Direção sugerida |
+| Arquivo | Situação final | Resultado aplicado |
 |---|---|---|
-| `packages/core/src/orchestrator/command-router.ts` | Arquivo ainda concentra muitas rotas/branches de comando e regras de fluxo, dificultando evolução isolada por módulo. | Quebrar por capacidades de comando e manter no router apenas dispatch/orquestração. |
-| `apps/wa-gateway/src/infrastructure/outbound-actions.ts` | Mistura muitos tipos de ação de saída em um único fluxo (mensagens, admin de grupo, fila, auditoria/métrica), com alto acoplamento operacional. | Extrair executores por `action.kind` e manter um orquestrador mínimo de outbound no gateway. |
-| `packages/shared/src/index.ts` | Ponto único muito carregado (env, logger, schemas e utilitários), elevando acoplamento transversal entre apps/pacotes. | Separar por domínio (`env`, `logging`, `contracts`, `utils`) e manter `index.ts` como barrel/composição leve. |
-| `apps/assistant-api/src/index.ts` | Ainda combina bootstrap + wiring + definição de rotas + checks operacionais no mesmo arquivo. | Mover rotas e serviços operacionais para módulos próprios, deixando `index.ts` como composition root. |
+| `packages/core/src/orchestrator/command-router.ts` | Concluído | Extraído para `command-router-runtime.ts` e `command-router-stages.ts`; arquivo principal ficou como dispatcher do pipeline. |
+| `apps/wa-gateway/src/infrastructure/outbound-actions.ts` | Concluído | Extraído para dispatcher + handlers por `action.kind` em `infrastructure/outbound/*`. |
+| `packages/shared/src/index.ts` | Concluído | Separado em `env/`, `logging/`, `contracts/` e `index.ts` virou barrel leve. |
+| `apps/assistant-api/src/index.ts` | Concluído | `index.ts` virou composition root; bootstrap/checks/rotas/admin auth movidos para módulos próprios. |
 
-## Regra de execução desse backlog
+## Critérios aplicados no fechamento
 
 - realizar em passos pequenos (PR-style)
 - preservar comportamento funcional

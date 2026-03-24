@@ -48,6 +48,7 @@ modules/<module-name>/
 Quick reference template:
 
 - `docs/module-template.md`
+- capabilities/tools (multimídia/utilitários): `docs/capability-modules-blueprint.md`
 
 ---
 

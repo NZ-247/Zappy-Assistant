@@ -136,25 +136,37 @@ Regra central:
 - `/help` deve permanecer orientado por metadata do registry
 - comandos desconhecidos não devem cair em AI por acidente; somente por política explícita
 
-## 8. Backlog técnico residual (curto)
+## 8. Backlog técnico residual (encerrado em 24/03/2026)
 
 As pendências residuais não bloqueiam evolução funcional e estão formalizadas em:
 - `docs/residual-technical-backlog.md`
 
-Escopo residual atual:
-- `packages/core/src/orchestrator/command-router.ts`
-- `apps/wa-gateway/src/infrastructure/outbound-actions.ts`
-- `packages/shared/src/index.ts`
-- `apps/assistant-api/src/index.ts`
+Itens encerrados com extração incremental e sem mudança funcional intencional:
+- `packages/core/src/orchestrator/command-router.ts` -> extraído para runtime + stages
+- `apps/wa-gateway/src/infrastructure/outbound-actions.ts` -> extraído para dispatcher + handlers por `action.kind`
+- `packages/shared/src/index.ts` -> transformado em barrel com separação `env`/`logging`/`contracts`
+- `apps/assistant-api/src/index.ts` -> reduzido a composition root com bootstrap/rotas em módulos
 
-Diretriz:
-- tratar esse backlog em incrementos pequenos e seguros, sem alterar comportamento funcional.
+Referência detalhada:
+- `docs/residual-technical-backlog.md`
 
-## 9. Diretriz para próxima fase funcional
+## 9. Padrão oficial para capabilities (tools)
+
+Diretriz oficial para próxima fase (multimídia/utilitários):
+- módulo-first também para ferramentas do assistente
+- capabilities separadas em `modules/tools/<capability>`
+- dependências pesadas isoladas em adapters e carregadas sob demanda
+- ativação gradual por feature flag/política
+
+Referência detalhada:
+- `docs/capability-modules-blueprint.md`
+
+## 10. Diretriz para próxima fase funcional
 
 A partir deste marco:
 - novas features devem nascer já no padrão modular oficial
 - evitar expansão de lógica em arquivos centrais
 - preservar o core como orquestrador e composition root
+- manter desenho resource-aware (baixo consumo, execução sob demanda, limites explícitos)
 
-Este documento passa a registrar oficialmente a migração modular como encerrada na prática em **24/03/2026**, com apenas backlog residual técnico de baixo risco.
+Este documento registra oficialmente a migração modular como encerrada na prática em **24/03/2026** e a base pronta para expansão de capabilities sem iniciar moderação nesta etapa.
