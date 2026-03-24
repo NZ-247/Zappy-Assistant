@@ -3,27 +3,22 @@ import {
   MatchType,
   PrismaClient,
   ConsentStatus,
-  ChatMode,
   ReminderStatus,
   Scope,
   TimerStatus,
   type MessageDirection,
-  type Prisma,
-  type User
+  type Prisma
 } from "@prisma/client";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import OpenAI from "openai";
 import {
   LlmError,
-  resolveRelationshipProfile,
-  type CanonicalIdentity,
   type ConversationMessage,
   type InboundMessageEvent,
   type LlmErrorReason,
   type LlmPort,
   type ConversationState,
-  type RelationshipProfile,
   type MetricKey,
   type AuditEvent
 } from "@zappy/core";
@@ -36,6 +31,16 @@ import { createTimersRepository } from "./timers/repository.js";
 import type { ScopedResolver } from "./shared/scoped-resolver.js";
 import { createGroupAccessRepository } from "./groups/repository.js";
 import { createBotAdminRepository } from "./identity/bot-admin-repository.js";
+import { createCanonicalIdentityServices } from "./identity/canonical-identity.js";
+import { createTenantContextRepository } from "./tenant-context/repository.js";
+import { createIdentityRepository } from "./identity/repository.js";
+import {
+  createStatusPort as createStatusPortRepository,
+  getGatewayHeartbeat,
+  getWorkerHeartbeat,
+  markGatewayHeartbeat,
+  markWorkerHeartbeat
+} from "./status/repository.js";
 
 export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -81,148 +86,18 @@ const writeAudit = async (actor: string, action: AuditAction, entity: string, en
   await prisma.auditLog.create({ data: { actor, action, entity, entityId, metadata: metadata as Prisma.JsonObject | undefined } });
 };
 
-type DerivedIdentity = {
-  waUserId: string;
-  phoneNumber?: string | null;
-  lidJid?: string | null;
-  pnJid?: string | null;
-};
-
-const normalizePhoneNumber = (value?: string | null): string | null => {
-  if (!value) return null;
-  const digits = value.replace(/\\D/g, "");
-  return digits.length ? digits : null;
-};
-
-const parsePhoneFromJid = (jid?: string | null): string | null => {
-  if (!jid) return null;
-  const match = jid.match(/^(\\d+)/);
-  if (match?.[1]) return normalizePhoneNumber(match[1]);
-  return null;
-};
-
-const extractIdentityParts = (waUserId: string, remoteJid?: string): DerivedIdentity => {
-  const lidJid = waUserId?.endsWith?.("@lid") ? waUserId : remoteJid?.endsWith?.("@lid") ? remoteJid : null;
-  const pnJidRaw =
-    waUserId?.includes("@s.whatsapp.net") || waUserId?.includes("@c.us")
-      ? waUserId
-      : remoteJid?.includes?.("@s.whatsapp.net") || remoteJid?.includes?.("@c.us")
-        ? remoteJid
-        : null;
-  const phoneFromId = normalizePhoneNumber(parsePhoneFromJid(pnJidRaw ?? waUserId));
-  const pnJid = phoneFromId ? `${phoneFromId}@s.whatsapp.net` : pnJidRaw;
-  return {
-    waUserId,
-    phoneNumber: phoneFromId,
-    lidJid,
-    pnJid
-  };
-};
-
-const collectAliases = (...values: Array<string | null | undefined>): string[] => {
-  const set = new Set<string>();
-  for (const value of values) {
-    if (value && value.trim()) set.add(value.trim());
-  }
-  return Array.from(set);
-};
-
-const normalizeLidJid = (value?: string | null): string | null => {
-  if (!value) return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.includes("@") ? trimmed : `${trimmed}@lid`;
-};
-
-const aliasSeeds: Array<{ lidJid: string; phoneNumber: string; label: string }> = [
-  { lidJid: "70029643092123@lid", phoneNumber: "556699064658", label: "creator_root" },
-  { lidJid: "151608402911288@lid", phoneNumber: "556692283438", label: "mother_privileged" }
-];
-
 const identityLogger = createLogger("identity-resolver");
-
-const applyAliasSeed = (derived: DerivedIdentity): { applied: boolean; seedLabel?: string } => {
-  if (derived.phoneNumber) return { applied: false };
-  const lid = normalizeLidJid(derived.lidJid ?? derived.waUserId);
-  if (!lid) return { applied: false };
-  const match = aliasSeeds.find((seed) => seed.lidJid === lid);
-  if (!match) return { applied: false };
-  derived.phoneNumber = match.phoneNumber;
-  derived.pnJid = `${match.phoneNumber}@s.whatsapp.net`;
-  derived.lidJid = lid;
-  return { applied: true, seedLabel: match.label };
-};
-
-const toRelationshipProfile = (value?: string | null): RelationshipProfile | null => {
-  const allowed: RelationshipProfile[] = [
-    "creator_root",
-    "mother_privileged",
-    "delegated_owner",
-    "admin",
-    "member",
-    "external_contact"
-  ];
-  if (!value) return null;
-  return allowed.includes(value as RelationshipProfile) ? (value as RelationshipProfile) : null;
-};
-
-const buildCanonicalIdentity = (user: User, derived: DerivedIdentity, extraAliases: string[] = []): CanonicalIdentity => {
-  const phoneNumber = user.phoneNumber ?? derived.phoneNumber ?? null;
-  const lidJid = user.lidJid ?? derived.lidJid ?? null;
-  const pnJid = user.pnJid ?? (phoneNumber ? `${phoneNumber}@s.whatsapp.net` : derived.pnJid ?? null);
-  const aliases = collectAliases(
-    ...extraAliases,
-    user.waUserId,
-    lidJid,
-    pnJid,
-    phoneNumber,
-    derived.waUserId,
-    derived.lidJid,
-    derived.pnJid,
-    derived.phoneNumber
-  );
-  const canonicalUserKey = phoneNumber ?? lidJid ?? pnJid ?? user.waUserId;
-  return {
-    canonicalUserKey,
-    waUserId: user.waUserId,
-    phoneNumber,
-    lidJid,
-    pnJid,
-    aliases,
-    displayName: user.displayName ?? null,
-    permissionRole: user.permissionRole ?? null,
-    relationshipProfile: toRelationshipProfile(user.relationshipProfile)
-  };
-};
-
-const findUserByAnyIdentifier = async (tenantId: string, identifiers: DerivedIdentity, aliases: string[]): Promise<User | null> => {
-  const prioritizedFilters: Array<Prisma.UserWhereInput | null> = [
-    identifiers.phoneNumber ? { phoneNumber: identifiers.phoneNumber } : null,
-    identifiers.pnJid ? { pnJid: identifiers.pnJid } : null,
-    identifiers.lidJid ? { lidJid: identifiers.lidJid } : null,
-    aliases.length > 0 ? { aliases: { hasSome: aliases } } : null,
-    identifiers.waUserId ? { waUserId: identifiers.waUserId } : null
-  ];
-
-  for (const filter of prioritizedFilters) {
-    if (!filter) continue;
-    const user = await prisma.user.findFirst({ where: { tenantId, ...filter } });
-    if (user) return user;
-  }
-  return null;
-};
-
-const findUserForTenant = async (tenantId: string, waUserId: string, remoteJid?: string) => {
-  const derived = extractIdentityParts(waUserId, remoteJid);
-  const aliases = collectAliases(
-    waUserId,
-    derived.pnJid,
-    derived.lidJid,
-    derived.phoneNumber,
-    derived.phoneNumber ? `${derived.phoneNumber}@s.whatsapp.net` : null
-  );
-  return findUserByAnyIdentifier(tenantId, derived, aliases);
-};
+const canonicalIdentityServices = createCanonicalIdentityServices({ prisma });
+export const {
+  collectAliases,
+  normalizePhoneNumber,
+  normalizeLidJid,
+  toRelationshipProfile,
+  buildCanonicalIdentity,
+  findUserByAnyIdentifier,
+  findUserForTenant,
+  resolveCanonicalUserIdentity
+} = canonicalIdentityServices;
 
 const resolveScopedUserAndGroup: ScopedResolver = async (input: { tenantId: string; waUserId: string; waGroupId?: string }) => {
   const user = await findUserForTenant(input.tenantId, input.waUserId, input.waGroupId);
@@ -230,262 +105,13 @@ const resolveScopedUserAndGroup: ScopedResolver = async (input: { tenantId: stri
   return { user, group };
 };
 
-const mergeUserIdentity = async (user: User, derived: DerivedIdentity, aliases: string[], displayName?: string | null) => {
-  const updates: Prisma.UserUpdateInput = {};
-  const updatedFields: string[] = [];
-  if (displayName && !user.displayName) {
-    updates.displayName = displayName;
-    updatedFields.push("displayName");
-  }
-  if (derived.phoneNumber && !user.phoneNumber) {
-    updates.phoneNumber = derived.phoneNumber;
-    updatedFields.push("phoneNumber");
-  }
-  const normalizedPnJid = derived.phoneNumber ? `${derived.phoneNumber}@s.whatsapp.net` : derived.pnJid ?? null;
-  if (normalizedPnJid && !user.pnJid) {
-    updates.pnJid = normalizedPnJid;
-    updatedFields.push("pnJid");
-  }
-  if (derived.lidJid && !user.lidJid) {
-    updates.lidJid = derived.lidJid;
-    updatedFields.push("lidJid");
-  }
-  const mergedAliases = Array.from(new Set([...(user.aliases ?? []), ...aliases]));
-  if (mergedAliases.length !== (user.aliases?.length ?? 0)) {
-    updates.aliases = mergedAliases;
-    updatedFields.push("aliases");
-  }
-
-  if (Object.keys(updates).length > 0) {
-    const updated = await prisma.user.update({ where: { id: user.id }, data: updates });
-    return { user: updated, updatedFields };
-  }
-  return { user, updatedFields };
-};
-
-export const resolveCanonicalUserIdentity = async (input: {
-  tenantId: string;
-  waUserId: string;
-  remoteJid?: string;
-  displayName?: string | null;
-  aliases?: string[];
-  allowCreate?: boolean;
-}): Promise<{
-  user: User | null;
-  canonical: CanonicalIdentity;
-  created: boolean;
-  updatedFields: string[];
-  relationship?: RelationshipProfile;
-  relationshipReason?: string;
-  permissionRoleSource?: string;
-}> => {
-  const derived = extractIdentityParts(input.waUserId, input.remoteJid);
-  applyAliasSeed(derived);
-  const aliasCandidates = collectAliases(
-    ...collectAliases(derived.waUserId, derived.lidJid, derived.pnJid, derived.phoneNumber),
-    ...(input.aliases ?? []),
-    derived.phoneNumber ? `${derived.phoneNumber}@s.whatsapp.net` : null
-  );
-
-  let user = await findUserByAnyIdentifier(input.tenantId, derived, aliasCandidates);
-  let created = false;
-
-  if (!user && input.allowCreate !== false) {
-    const pnJid = derived.pnJid ?? (derived.phoneNumber ? `${derived.phoneNumber}@s.whatsapp.net` : null);
-    user = await prisma.user.create({
-      data: {
-        tenantId: input.tenantId,
-        waUserId: derived.waUserId,
-        displayName: input.displayName ?? derived.phoneNumber ?? derived.waUserId,
-        phoneNumber: derived.phoneNumber,
-        lidJid: derived.lidJid,
-        pnJid,
-        aliases: aliasCandidates,
-        role: "member"
-      }
-    });
-    created = true;
-  }
-
-  if (!user) {
-    const canonicalUserKey = derived.phoneNumber ?? derived.lidJid ?? derived.pnJid ?? derived.waUserId;
-    return {
-      user: null,
-      canonical: {
-        canonicalUserKey,
-        waUserId: derived.waUserId,
-        phoneNumber: derived.phoneNumber ?? null,
-        lidJid: derived.lidJid ?? null,
-        pnJid: derived.pnJid ?? null,
-        aliases: aliasCandidates,
-        displayName: input.displayName ?? null,
-        permissionRole: null,
-        relationshipProfile: null
-      },
-      created,
-      updatedFields: [],
-      relationship: undefined
-    };
-  }
-
-  const mergeResult = await mergeUserIdentity(user, derived, aliasCandidates, input.displayName);
-  user = mergeResult.user;
-
-  const canonical = buildCanonicalIdentity(user, derived, aliasCandidates);
-  const storedRelationshipProfile = toRelationshipProfile(user.relationshipProfile);
-  const storedPermissionRole = user.permissionRole ?? null;
-  const relationship = resolveRelationshipProfile({
-    waUserId: canonical.waUserId,
-    phoneNumber: canonical.phoneNumber,
-    pnJid: canonical.pnJid,
-    lidJid: canonical.lidJid,
-    aliases: canonical.aliases,
-    storedProfile: storedRelationshipProfile,
-    identityRole: user.permissionRole ?? user.role
-  });
-
-  const privilegedPermissionRole =
-    relationship.profile === "creator_root"
-      ? "ROOT"
-      : relationship.profile === "mother_privileged"
-        ? "PRIVILEGED"
-        : null;
-  const permissionRoleTarget = privilegedPermissionRole ?? storedPermissionRole ?? null;
-
-  const updates: Prisma.UserUpdateInput = {};
-  const updatedFields = [...mergeResult.updatedFields];
-  const shouldPersistRelationship =
-    (!user.relationshipProfile || toRelationshipProfile(user.relationshipProfile) !== relationship.profile) && relationship.reason !== "stored_profile";
-  if (shouldPersistRelationship) {
-    updates.relationshipProfile = relationship.profile;
-    canonical.relationshipProfile = relationship.profile;
-  } else {
-    canonical.relationshipProfile = storedRelationshipProfile ?? relationship.profile;
-  }
-  const shouldUpdatePermission = permissionRoleTarget !== null && permissionRoleTarget !== storedPermissionRole;
-  if (shouldUpdatePermission) {
-    updates.permissionRole = permissionRoleTarget;
-    canonical.permissionRole = permissionRoleTarget;
-  }
-  if (Object.keys(updates).length > 0) {
-    user = await prisma.user.update({ where: { id: user.id }, data: updates });
-    updatedFields.push(...Object.keys(updates));
-  } else if (!canonical.permissionRole) {
-    canonical.permissionRole = storedPermissionRole;
-  }
-
-  return {
-    user,
-    canonical,
-    created,
-    updatedFields,
-    relationship: relationship.profile,
-    relationshipReason: relationship.reason,
-    permissionRoleSource: shouldUpdatePermission
-      ? "privileged_override"
-      : storedPermissionRole
-        ? "stored_permission_role"
-        : permissionRoleTarget
-          ? "inferred_from_privileged_profile"
-          : "none"
-  };
-};
-
-export const ensureTenantContext = async (input: {
-  waGroupId?: string;
-  waUserId: string;
-  defaultTenantName: string;
-  onlyGroupId?: string;
-  remoteJid?: string;
-  userName?: string | null;
-}) => {
-  let tenant = await prisma.tenant.findFirst({ where: { name: input.defaultTenantName } });
-  if (!tenant) tenant = await prisma.tenant.create({ data: { name: input.defaultTenantName } });
-
-  let group = input.waGroupId
-    ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } })
-    : input.onlyGroupId
-      ? await prisma.group.findUnique({ where: { waGroupId: input.onlyGroupId } })
-      : null;
-
-  if (!group && (input.waGroupId || input.onlyGroupId)) {
-    const waGroupId = input.waGroupId ?? input.onlyGroupId!;
-    const shouldAutoAllow = Boolean(input.onlyGroupId && input.onlyGroupId === waGroupId);
-    group = await prisma.group.create({
-      data: {
-        tenantId: tenant.id,
-        waGroupId,
-        name: waGroupId,
-        allowed: shouldAutoAllow,
-        chatMode: ChatMode.ON,
-        isOpen: true,
-        welcomeEnabled: false,
-        moderationConfig: {}
-      }
-    });
-  }
-
-  const resolvedIdentity = await resolveCanonicalUserIdentity({
-    tenantId: tenant.id,
-    waUserId: input.waUserId,
-    remoteJid: input.remoteJid,
-    displayName: input.userName,
-    aliases: collectAliases(input.userName)
-  });
-  const user =
-    resolvedIdentity.user ??
-    (await prisma.user.create({
-      data: {
-        tenantId: tenant.id,
-        waUserId: input.waUserId,
-        displayName: input.userName ?? input.waUserId,
-        role: "member"
-      }
-    }));
-
-  if (process.env.NODE_ENV !== "production") {
-    const relationshipSource =
-      resolvedIdentity.relationshipReason?.startsWith("match:")
-        ? "privileged_override"
-        : resolvedIdentity.relationshipReason === "stored_profile"
-          ? "db"
-          : resolvedIdentity.relationshipReason?.startsWith("role:")
-            ? "role"
-            : "default";
-    const permissionRoleSource = resolvedIdentity.permissionRoleSource ?? (resolvedIdentity.canonical.permissionRole ? "db" : "none");
-    const permissionRole = resolvedIdentity.canonical.permissionRole ?? user.permissionRole ?? user.role;
-    const relationshipProfile = resolvedIdentity.relationship ?? resolvedIdentity.canonical.relationshipProfile ?? null;
-    identityLogger.debug(
-      {
-        stage: "ensureTenantContext",
-        tenantId: tenant.id,
-        waUserId: input.waUserId,
-        phoneNumber: resolvedIdentity.canonical.phoneNumber,
-        pnJid: resolvedIdentity.canonical.pnJid,
-        lidJid: resolvedIdentity.canonical.lidJid,
-        relationshipProfile,
-        relationshipReason: resolvedIdentity.relationshipReason,
-        relationshipSource,
-        permissionRole,
-        permissionRoleSource,
-        matchedPrivilegedRule: resolvedIdentity.relationshipReason?.startsWith("match:") ?? false,
-        updatedFields: resolvedIdentity.updatedFields,
-        created: resolvedIdentity.created
-      },
-      "identity resolved"
-    );
-  }
-
-  return {
-    tenant,
-    group,
-    user,
-    canonicalIdentity: resolvedIdentity.canonical,
-    relationshipProfile: resolvedIdentity.relationship,
-    relationshipReason: resolvedIdentity.relationshipReason,
-    permissionRoleSource: resolvedIdentity.permissionRoleSource
-  };
-};
+const { ensureTenantContext } = createTenantContextRepository({
+  prisma,
+  resolveCanonicalUserIdentity,
+  collectAliases,
+  identityLogger
+});
+export { ensureTenantContext };
 
 export const persistInboundMessage = async (input: InboundMessageEvent & { userId: string; groupId?: string; rawJson: unknown }) => {
   const conversation =
@@ -992,31 +618,7 @@ export const createOpenAiAdapter = (apiKey: string | undefined, model: string): 
   };
 };
 
-export const markGatewayHeartbeat = async (redis: Redis, isConnected: boolean) => {
-  await redis.set("gateway:heartbeat", JSON.stringify({ isConnected, at: new Date().toISOString() }), "EX", 30);
-};
-
-export const getGatewayHeartbeat = async (redis: Redis) => {
-  const raw = await redis.get("gateway:heartbeat");
-  if (!raw) return { isConnected: false, at: null, online: false, ageSeconds: null as number | null };
-  const parsed = JSON.parse(raw) as { isConnected: boolean; at: string };
-  const ageSeconds = parsed.at ? Math.round((Date.now() - new Date(parsed.at).getTime()) / 1000) : null;
-  const online = ageSeconds !== null ? ageSeconds < 30 : false;
-  return { ...parsed, ageSeconds, online };
-};
-
-export const markWorkerHeartbeat = async (redis: Redis) => {
-  await redis.set("worker:heartbeat", JSON.stringify({ ok: true, at: new Date().toISOString() }), "EX", 30);
-};
-
-export const getWorkerHeartbeat = async (redis: Redis) => {
-  const raw = await redis.get("worker:heartbeat");
-  if (!raw) return { ok: false, at: null, online: false, ageSeconds: null as number | null };
-  const parsed = JSON.parse(raw) as { ok: boolean; at: string };
-  const ageSeconds = parsed.at ? Math.round((Date.now() - new Date(parsed.at).getTime()) / 1000) : null;
-  const online = ageSeconds !== null ? ageSeconds < 30 : false;
-  return { ...parsed, ageSeconds, online };
-};
+export { markGatewayHeartbeat, getGatewayHeartbeat, markWorkerHeartbeat, getWorkerHeartbeat };
 
 export const getRecentMessages = (limit: number) =>
   prisma.message.findMany({ orderBy: { createdAt: "desc" }, take: limit, select: { id: true, body: true, createdAt: true, waUserId: true, waGroupId: true, direction: true } });
@@ -1224,184 +826,18 @@ export const consentRepository = {
   }
 };
 
-const mergeUsers = async (sourceId: string, targetId: string) => {
-  if (sourceId === targetId) return;
-  await prisma.$transaction([
-    prisma.message.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.reminder.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.featureFlag.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.trigger.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.task.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.note.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.timer.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.user.delete({ where: { id: sourceId } })
-  ]);
-};
-
-export const identityRepository = {
-  getIdentity: async (input: { tenantId: string; waUserId: string; waGroupId?: string }) => {
-    const resolved = await resolveCanonicalUserIdentity({
-      tenantId: input.tenantId,
-      waUserId: input.waUserId,
-      remoteJid: input.waGroupId,
-      allowCreate: false
-    });
-    const user = resolved.user;
-    const group = input.waGroupId ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } }) : null;
-    const role = user?.role ?? "member";
-    const permissionRole = resolved.canonical.permissionRole ?? user?.permissionRole ?? null;
-    const basePermissions = ["task", "reminder", "note", "agenda", "calc", "timer", "status"];
-    const adminPermissions = ["admin:flags", "admin:triggers", "admin:status"];
-    const effectiveRole = (permissionRole ?? role)?.toLowerCase?.() ?? "member";
-    const elevated = ["admin", "root", "owner"].includes(effectiveRole);
-    const permissions = elevated ? [...basePermissions, ...adminPermissions] : basePermissions;
-    const canonical = resolved.canonical;
-    const relationship =
-      resolved.relationship && resolved.relationshipReason
-        ? { profile: resolved.relationship, reason: resolved.relationshipReason }
-        : resolveRelationshipProfile({
-            waUserId: canonical.waUserId,
-            phoneNumber: canonical.phoneNumber,
-            pnJid: canonical.pnJid,
-            lidJid: canonical.lidJid,
-            aliases: canonical.aliases,
-            storedProfile: canonical.relationshipProfile ?? null,
-            identityRole: permissionRole ?? role
-          });
-
-    if (process.env.NODE_ENV !== "production") {
-      const relationshipSource =
-        relationship.reason?.startsWith("match:")
-          ? "privileged_override"
-          : relationship.reason === "stored_profile"
-            ? "db"
-            : relationship.reason?.startsWith("role:")
-              ? "role"
-              : "default";
-      const permissionRoleSource = resolved.permissionRoleSource ?? (permissionRole ? "db" : "none");
-      identityLogger.debug(
-        {
-          stage: "identityRepository.getIdentity",
-          tenantId: input.tenantId,
-          waUserId: input.waUserId,
-          phoneNumber: canonical.phoneNumber,
-          pnJid: canonical.pnJid,
-          lidJid: canonical.lidJid,
-          relationshipProfile: relationship.profile,
-          relationshipReason: relationship.reason,
-          relationshipSource,
-          permissionRole,
-          permissionRoleSource,
-          matchedPrivilegedRule: relationship.reason?.startsWith("match:") ?? false,
-          updatedFields: resolved.updatedFields,
-          created: resolved.created
-        },
-        "identity resolved"
-      );
-    }
-
-    return {
-      displayName: user?.displayName ?? canonical.displayName ?? canonical.phoneNumber ?? canonical.waUserId,
-      role,
-      permissionRole,
-      permissions,
-      groupName: group?.name,
-      canonicalIdentity: { ...canonical, relationshipProfile: relationship.profile },
-      relationshipProfile: relationship.profile,
-      relationshipReason: relationship.reason
-    };
-  },
-  linkAlias: async (input: { tenantId: string; phoneNumber: string; lidJid: string; actor?: string }) => {
-    const phoneNumber = normalizePhoneNumber(input.phoneNumber);
-    if (!phoneNumber) throw new Error("Invalid phone number");
-    const lidJid = normalizeLidJid(input.lidJid);
-    if (!lidJid) throw new Error("Invalid LID identifier");
-    const pnJid = `${phoneNumber}@s.whatsapp.net`;
-    const aliasTokens = collectAliases(lidJid, pnJid, phoneNumber, input.phoneNumber, `${phoneNumber}@c.us`);
-
-    const phoneDerived: DerivedIdentity = { waUserId: pnJid, phoneNumber, pnJid, lidJid };
-    let targetUser =
-      (await findUserByAnyIdentifier(input.tenantId, phoneDerived, aliasTokens)) ??
-      (await prisma.user.create({
-        data: {
-          tenantId: input.tenantId,
-          waUserId: pnJid,
-          phoneNumber,
-          pnJid,
-          lidJid: null,
-          aliases: aliasTokens,
-          role: "member",
-          displayName: phoneNumber
-        }
-      }));
-
-    const lidUser = await findUserByAnyIdentifier(
-      input.tenantId,
-      { waUserId: lidJid, phoneNumber: null, pnJid: null, lidJid },
-      aliasTokens
-    );
-
-    if (lidUser && lidUser.id !== targetUser.id) {
-      await mergeUsers(lidUser.id, targetUser.id);
-    }
-
-    const mergedAliases = Array.from(new Set([...(targetUser.aliases ?? []), ...(lidUser?.aliases ?? []), ...aliasTokens]));
-    const updates: Prisma.UserUpdateInput = {};
-    if (!targetUser.phoneNumber) updates.phoneNumber = phoneNumber;
-    if (!targetUser.pnJid) updates.pnJid = pnJid;
-    if (!targetUser.lidJid) updates.lidJid = lidJid;
-    updates.aliases = mergedAliases;
-    if (!targetUser.displayName) updates.displayName = phoneNumber;
-
-    const resolvedPhoneNumber = targetUser.phoneNumber ?? phoneNumber;
-    const resolvedPnJid = targetUser.pnJid ?? pnJid;
-    const resolvedLidJid = targetUser.lidJid ?? lidJid;
-
-    const relationship = resolveRelationshipProfile({
-      waUserId: targetUser.waUserId,
-      phoneNumber: resolvedPhoneNumber,
-      pnJid: resolvedPnJid,
-      lidJid: resolvedLidJid,
-      aliases: mergedAliases,
-      storedProfile: toRelationshipProfile(targetUser.relationshipProfile),
-      identityRole: targetUser.permissionRole ?? targetUser.role
-    });
-    const privilegedPermissionRole =
-      relationship.profile === "creator_root"
-        ? "ROOT"
-        : relationship.profile === "mother_privileged"
-          ? "PRIVILEGED"
-          : null;
-    const permissionRoleTarget = privilegedPermissionRole ?? targetUser.permissionRole ?? null;
-
-    if (!targetUser.relationshipProfile || toRelationshipProfile(targetUser.relationshipProfile) !== relationship.profile) {
-      updates.relationshipProfile = relationship.profile;
-    }
-    if (permissionRoleTarget && targetUser.permissionRole !== permissionRoleTarget) {
-      updates.permissionRole = permissionRoleTarget;
-    }
-
-    const updatedUser =
-      Object.keys(updates).length > 0 ? await prisma.user.update({ where: { id: targetUser.id }, data: updates }) : targetUser;
-
-    const canonical = buildCanonicalIdentity(updatedUser, { ...phoneDerived, waUserId: updatedUser.waUserId });
-    canonical.permissionRole = updatedUser.permissionRole ?? canonical.permissionRole;
-    canonical.relationshipProfile = toRelationshipProfile(updatedUser.relationshipProfile) ?? canonical.relationshipProfile;
-
-    await writeAudit(input.actor ?? "system", AuditAction.UPDATE, "User", updatedUser.id, {
-      action: "link_alias",
-      phoneNumber,
-      lidJid
-    });
-
-    return {
-      user: updatedUser,
-      canonicalIdentity: canonical,
-      relationshipProfile: canonical.relationshipProfile ?? relationship.profile,
-      permissionRole: canonical.permissionRole ?? permissionRoleTarget ?? null
-    };
-  }
-};
+export const identityRepository = createIdentityRepository({
+  prisma,
+  writeAudit,
+  resolveCanonicalUserIdentity,
+  findUserByAnyIdentifier,
+  buildCanonicalIdentity,
+  normalizePhoneNumber,
+  normalizeLidJid,
+  collectAliases,
+  toRelationshipProfile,
+  identityLogger
+});
 
 export const groupAccessRepository = createGroupAccessRepository({
   prisma,
@@ -1420,39 +856,14 @@ export const createStatusPort = (deps: {
   queue: Queue;
   llmEnabled: boolean;
   llmConfigured: boolean;
-}) => ({
-  getStatus: async (input: { tenantId: string; waGroupId?: string; waUserId?: string }) => {
-    const [dbOk, redisOk, gateway, worker, jobCounts, tasksOpen, remindersScheduled, timersScheduled] = await Promise.all([
-      prisma
-        .$queryRaw`SELECT 1`
-        .then(() => true)
-        .catch(() => false),
-      deps.redis
-        .ping()
-        .then(() => true)
-        .catch(() => false),
-      getGatewayHeartbeat(deps.redis),
-      getWorkerHeartbeat(deps.redis),
-      deps.queue.getJobCounts("waiting", "active", "completed", "failed", "delayed"),
-      tasksRepository.countOpen({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId }),
-      remindersRepository.countScheduled({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId }),
-      timersRepository.countScheduled({ tenantId: input.tenantId, waGroupId: input.waGroupId, waUserId: input.waUserId })
-    ]);
-
-    return {
-      gateway: { ok: gateway.isConnected, at: gateway.at, online: gateway.online, ageSeconds: gateway.ageSeconds },
-      worker: { ok: worker.ok, at: worker.at, online: worker.online, ageSeconds: worker.ageSeconds },
-      db: { ok: dbOk },
-      redis: { ok: redisOk },
-      llm: { enabled: deps.llmEnabled, ok: deps.llmEnabled ? deps.llmConfigured : false, reason: deps.llmEnabled && !deps.llmConfigured ? "missing-key" : undefined },
-      counts: { tasksOpen, remindersScheduled, timersScheduled },
-      queue: {
-        waiting: jobCounts.waiting ?? 0,
-        active: jobCounts.active ?? 0,
-        completed: jobCounts.completed ?? 0,
-        failed: jobCounts.failed ?? 0,
-        delayed: jobCounts.delayed ?? 0
-      }
-    };
-  }
-});
+}) =>
+  createStatusPortRepository({
+    redis: deps.redis,
+    queue: deps.queue,
+    llmEnabled: deps.llmEnabled,
+    llmConfigured: deps.llmConfigured,
+    prisma,
+    tasksRepository,
+    remindersRepository,
+    timersRepository
+  });

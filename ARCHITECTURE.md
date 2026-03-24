@@ -1,627 +1,160 @@
----
-
-# `ARCHITECTURE.md`
-
-```md
-# ARCHITECTURE.md
-
 # Zappy Assistant — Architecture
 
-## 1. Architectural style
+## 1. Status da migração modular (2026-03-24)
 
-Zappy Assistant is a **modular monolith** implemented as a monorepo with multiple runtime apps.
+As etapas 2A.1, 2A.2 e 2A.3 foram concluídas com sucesso.
 
-The target architecture is:
+Status oficial desta data:
+- migração modular **praticamente concluída**
+- sem bloqueio para evolução funcional
+- pendências residuais pequenas, localizadas e já mapeadas
 
+Encerramento prático da fase de migração:
+- concluído para fins de evolução do produto
+- novas capacidades devem iniciar no padrão modular oficial
+
+### Consolidação já aplicada
+
+Evidências de consolidação estrutural já presentes no código:
+- `packages/core/src/index.ts` delegando classificação/policies para `packages/core/src/orchestrator/*`
+- `packages/adapters/src/index.ts` compondo adapters especializados (`identity`, `tenant-context`, `status`)
+- `apps/wa-gateway/src/index.ts` reduzido para composição, com handlers inbound e bootstrap extraídos
+
+## 2. Direção arquitetural oficial
+
+Zappy Assistant segue arquitetura de:
 - **Modular Monolith**
-- **Hexagonal Architecture / Ports and Adapters**
-- **Use Cases per Module**
-- **Transport-agnostic Core**
-- **Single deployable codebase with multiple processes**
+- **Hexagonal Architecture (Ports and Adapters)**
+- **Use cases por módulo**
+- **Core transport-agnostic**
+- **Codebase única com múltiplos runtimes**
 
-This architecture was chosen because it gives:
-- lower operational complexity than microservices
-- strong internal modularity
-- easier testing and maintenance
-- easier future expansion to new platforms and APIs
+Objetivo permanente:
+- manter alta coesão por domínio
+- evitar crescimento de arquivos centrais como god-file
+- preservar extensibilidade para novos módulos e novos transports
 
----
-
-## 2. High-level runtime topology
-
-## 2.1 Runtime apps
+## 3. Topologia de runtime
 
 ### `apps/wa-gateway`
-Responsibilities:
-- connect to WhatsApp via Baileys
-- normalize inbound WhatsApp messages into internal message DTOs
-- detect mentions/replies/group metadata
-- execute platform actions:
-  - send replies
-  - group admin actions
-  - moderation actions
-  - media updates
-- expose authenticated internal dispatch endpoint for async worker deliveries
-- write gateway heartbeat
-- collect platform-level observability
+Responsável por ingress/egress WhatsApp (Baileys), normalização de eventos e execução de ações de plataforma.
 
 ### `apps/assistant-api`
-Responsibilities:
-- expose Admin API endpoints
-- status/health
-- queues
-- metrics
-- commands/messages feeds
-- administrative read/write endpoints over time
-- validate `ADMIN_API_TOKEN`
+Responsável por endpoints administrativos, status, métricas, filas e auditoria.
 
 ### `apps/worker`
-Responsibilities:
-- consume BullMQ jobs
-- reminders
-- delayed/background actions
-- dispatch async outbound texts through wa-gateway internal API (never directly to Baileys)
-- write worker heartbeat
-- increment metrics / audit background actions
+Responsável por jobs assíncronos, lembretes, timers e processamento em background.
 
 ### `apps/admin-ui`
-Responsibilities:
-- consume Admin API only
-- show operational status, queues, metrics, messages, commands
-- provide simple admin workflows over documented contracts
+Consome apenas `assistant-api`, sem lógica de domínio embarcada.
 
----
+### Pacotes compartilhados
+- `packages/core`: pipeline de aplicação, orquestração e dispatch
+- `packages/adapters`: implementações concretas de portas (Prisma, Redis, BullMQ, OpenAI, etc.)
+- `packages/shared`: env, logger, contratos e utilitários compartilhados
+- `packages/ai`: persona, prompt building e orquestração de memória/intents
 
-## 2.2 Shared packages
+## 4. Fluxo lógico de aplicação (alto nível)
 
-### `packages/core`
-Application pipeline and dispatch layer.
+1. Normalização de entrada
+2. Resolução de identidade e contexto
+3. Verificações de consentimento/acesso
+4. Classificação de intenção
+5. Dispatch para módulo/use-case
+6. Execução da regra de negócio
+7. Normalização de ações de saída
+8. Renderização por plataforma
+9. Auditoria e métricas
 
-Long-term role:
-- ingress processing pipeline
-- context resolution orchestration
-- module dispatch
-- normalized outbound action generation
+## 5. Padrão oficial de módulo (V1+)
 
-It should **not** remain the permanent home for all business logic.
-
-### `packages/ai`
-Responsibilities:
-- persona definitions
-- prompt building
-- tool-intent support
-- AI memory orchestration
-- AI assistant response generation
-
-### `packages/adapters`
-Responsibilities:
-- Prisma repository implementations
-- Redis implementations
-- BullMQ implementations
-- OpenAI implementation
-- audit and metrics persistence
-- platform helper adapters
-
-### `packages/shared`
-Responsibilities:
-- env loading
-- logger
-- shared types/constants/utilities
-
----
-
-## 3. Core application flow
-
-The logical inbound pipeline is:
-
-1. **Ingress normalization**
-   - WhatsApp/Baileys message -> internal `InboundMessage`
-
-2. **Identity and context resolution**
-   - canonical identity
-   - relationship profile
-   - role/permissions
-   - tenant/group context
-
-3. **Consent and access checks**
-   - direct-chat consent gate
-   - allowed group checks
-   - chat on/off rules
-   - mention/reply addressed checks
-
-4. **Intent classification**
-   - prefix command
-   - trigger
-   - addressed AI
-   - ignored chatter
-   - system/moderation event
-
-5. **Module dispatch**
-   - route to the proper module / use case
-
-6. **Use-case execution**
-   - business rules
-   - repositories
-   - platform ports
-   - queue ports
-   - audit/metrics
-
-7. **Outbound action normalization**
-   - `reply_text`
-   - `reply_list`
-   - `group_admin_action`
-   - `moderation_action`
-   - `enqueue_job`
-   - `hidetag`
-   - `noop`
-
-8. **Platform rendering**
-   - wa-gateway translates outbound action into Baileys/platform calls
-
-9. **Observability**
-   - audit logs
-   - metrics
-   - heartbeats
-   - status endpoints
-
----
-
-## 4. Domain modules (target structure)
-
-Zappy should be organized by business capability modules.
-
-## 4.1 Identity
-Responsibilities:
-- canonical user identity
-- PN/LID alias mapping
-- relationship profiles
-- role inference
-- bot self alias resolution
-
-## 4.2 Consent
-Responsibilities:
-- onboarding
-- terms acceptance / decline
-- bypass policies for privileged identities
-
-## 4.3 Groups
-Responsibilities:
-- allowed groups
-- chat mode
-- group settings
-- group info
-- group open/close
-- welcome/rules/fixed messages
-
-## 4.4 Tasks
-Responsibilities:
-- create/list/update/complete/remove tasks
-- group/direct scoping where applicable
-
-## 4.5 Reminders
-Responsibilities:
-- create/list/cancel reminders
-- scheduling through queue
-- slot-filling where needed
-
-## 4.6 Notes
-Responsibilities:
-- group/direct notes
-- list/add/remove
-
-## 4.7 Moderation
-Responsibilities:
-- mute/unmute
-- ban/kick
-- hidetag
-- anti-link
-- temporary moderation states
-
-## 4.8 Assistant AI
-Responsibilities:
-- addressed conversational behavior
-- persona
-- tool-intent recognition
-- slot-filling support
-- structured fallback
-
-## 4.9 Admin
-Responsibilities:
-- status
-- commands/messages feeds
-- settings exposure
-- operational APIs
-
-## 4.10 Observability
-Responsibilities:
-- heartbeats
-- metrics
-- command audit
-- moderation audit
-- queue visibility
-
-## 4.11 Media / Fun (future)
-Responsibilities:
-- stickers
-- TTS
-- search
-- image search
-- downloads
-- fun mode capabilities
-
----
-
-## 5. Recommended internal module structure
-
-Target structure inside `packages/core/src/modules/<module-name>/`:
+Toda feature nova deve nascer sob `packages/core/src/modules/<module-name>/`:
 
 ```text
-modules/
-  reminders/
-    application/
-      use-cases/
-      dto/
-      policies/
-    domain/
-    infrastructure/
-    ports/
-    ports.ts
-    presentation/
-      commands/
-    index.ts
+<module-name>/
+  domain/
+  application/
+    use-cases/
+  presentation/
+    commands/
+  infrastructure/
+  ports/
+  ports.ts
+  index.ts
 ```
 
-Layer meaning
-application/use-cases
+Regras do padrão:
+- `presentation/commands`: parsing e validação leve; delega para use-cases
+- `application/use-cases`: regra de negócio e orquestração de domínio
+- `domain`: entidades, regras e invariantes
+- `ports`/`ports.ts`: contratos de dependência do módulo
+- `infrastructure` (dentro do módulo): helpers/parsers internos sem SDK externo
+- `index.ts` do módulo: composição/export do módulo, sem regra de negócio inline
 
-Business workflows:
+## 6. Regras de fronteira e responsabilidade
 
-create reminder
+### 6.1 `index.ts` como composition root
 
-mute user
+Arquivos `index.ts` (especialmente em apps e no core) devem ser usados para:
+- composição de dependências
+- orquestração de alto nível
+- inicialização/bootstrapping
 
-set group name
+Não devem concentrar regra de negócio.
 
-list notes
+### 6.2 Handlers e comandos devem ser finos
 
-domain
+Handlers/comandos devem:
+- interpretar entrada
+- validar pré-condições simples
+- delegar rapidamente para use-cases
 
-Core rules/entities/value objects if needed.
+Devem evitar decisões de negócio complexas no próprio handler.
 
-ports
+### 6.3 Regra de negócio em use-cases/domínio
 
-Interfaces the module depends on:
+Toda decisão de negócio deve viver em:
+- `application/use-cases`
+- `domain`
 
-repositories
+Isso garante testabilidade isolada e evolução segura por módulo.
 
-queue
+### 6.4 Separação entre adapters e infrastructure
 
-metrics
+Separação oficial:
+- `packages/adapters` e infraestrutura de apps: integração com SDK/framework/IO externo
+- `infrastructure` interna do módulo no core: utilitários internos sem acoplamento de plataforma
 
-audit
+Regra central:
+- use-cases do core dependem de **ports**, nunca de SDK concreto.
 
-platform ports
+## 7. Sistema de comandos e prefixo
 
-presentation/commands
+- comando deve ser registrado no Command Registry com metadados (`name`, `aliases`, `scope`, `requiredRole`, `botAdminRequired`, `description`, `usage`, `examples`)
+- prefixo global via `BOT_PREFIX` (default `/`)
+- parsing e help devem respeitar o prefixo ativo
+- `/help` deve permanecer orientado por metadata do registry
+- comandos desconhecidos não devem cair em AI por acidente; somente por política explícita
 
-Command parsing and mapping to use cases.
+## 8. Backlog técnico residual (curto)
 
-6. Command system architecture
+As pendências residuais não bloqueiam evolução funcional e estão formalizadas em:
+- `docs/residual-technical-backlog.md`
 
-Zappy must move toward a central Command Registry.
+Escopo residual atual:
+- `packages/core/src/orchestrator/command-router.ts`
+- `apps/wa-gateway/src/infrastructure/outbound-actions.ts`
+- `packages/shared/src/index.ts`
+- `apps/assistant-api/src/index.ts`
 
-Each command should define:
+Diretriz:
+- tratar esse backlog em incrementos pequenos e seguros, sem alterar comportamento funcional.
 
-name
+## 9. Diretriz para próxima fase funcional
 
-aliases
+A partir deste marco:
+- novas features devem nascer já no padrão modular oficial
+- evitar expansão de lógica em arquivos centrais
+- preservar o core como orquestrador e composition root
 
-scope
-
-requiredRole
-
-botAdminRequired
-
-description
-
-usage
-
-examples
-
-bound use case or handler
-
-Prefix
-
-Prefix is globally configurable through:
-
-BOT_PREFIX=/
-
-Rules:
-
-parser must respect active prefix
-
-help output must use active prefix
-
-commands must not hardcode /
-
-Implementation status:
-
-- The command registry, parser, and prefix helpers live in `packages/core/src/commands/registry/*` and `packages/core/src/commands/parser/*` (`command-groups.ts`, `index.ts`, `parse-command.ts`, `prefix.ts`, `utils.ts`). Registry metadata covers name/aliases/scope/role/botAdminRequired/description/usage and lookup honors the active prefix.
-- Command parsing in `Orchestrator` now goes through the shared parser/registry instead of inline string checks.
-- First moduleized command handlers exist under `packages/core/src/modules/` for `groups`, `moderation`, and `reminders` (presentation/commands/*), keeping feature logic out of the core entrypoint.
-
-Help generation
-
-/help should become registry-driven.
-
-7. Platform and transport boundaries
-
-The core must remain transport-agnostic.
-
-WhatsApp-specific concerns belong in gateway/adapters
-
-Examples:
-
-Baileys message shape
-
-mentionedJid parsing
-
-quoted participant parsing
-
-LID/PN specifics
-
-group invite code / metadata probing
-
-profile picture update mechanics
-
-Core only sees normalized concepts
-
-Examples:
-
-isBotMentioned
-
-isReplyToBot
-
-groupId
-
-senderId
-
-commandName
-
-outboundAction
-
-8. Ports and adapters
-8.1 Core-side ports
-
-Typical ports include:
-
-LlmPort
-
-QueuePort
-
-AuditPort
-
-MetricsPort
-
-TaskRepositoryPort
-
-ReminderRepositoryPort
-
-GroupRepositoryPort
-
-ConsentRepositoryPort
-
-GroupPlatformPort
-
-MessagePlatformPort
-
-8.2 Adapter implementations
-
-Typical adapters include:
-
-Prisma repositories
-
-Redis metrics/state
-
-BullMQ queue adapter
-
-OpenAI adapter
-
-Baileys/WhatsApp action adapter
-
-9. Operation-first group admin strategy
-
-In WhatsApp groups, metadata-based admin detection may be unreliable because of PN/LID differences.
-
-Therefore:
-
-requester authorization is checked independently
-
-bot-admin is treated operationally
-
-commands that require bot admin use operation-first behavior:
-
-attempt platform action
-
-if success -> confirmed
-
-if failure by permission -> user-friendly error
-
-metadata serves as informational status, not the main gate
-
-This reduces false negatives and keeps behavior closer to real platform capability.
-
-10. Observability architecture
-10.1 Heartbeats
-
-gateway heartbeat in Redis
-
-worker heartbeat in Redis
-
-10.2 Status
-
-Admin API exposes:
-
-service status
-
-bot connection state
-
-DB/Redis status
-
-queue state
-
-LLM enabled/disabled
-
-10.3 Metrics
-
-Redis-backed counters for:
-
-messages received
-
-commands executed
-
-triggers matched
-
-AI requests/failures
-
-reminders created/sent
-
-moderation actions
-
-onboarding states
-
-10.4 Audit
-
-Structured command/action audit through persistence (CommandLog and related events).
-
-11. Admin API / Admin UI contract model
-
-Admin UI must consume Admin API only.
-
-Examples of API domains:
-
-/admin/status
-
-/admin/queues
-
-/admin/metrics/summary
-
-/admin/commands
-
-/admin/messages
-
-Payload contracts are documented separately in INTEGRATION_CONTRACTS.md.
-
-12. External integrations
-
-Current external integrations:
-
-WhatsApp via Baileys
-
-OpenAI
-
-PostgreSQL via Prisma
-
-Redis
-
-BullMQ
-
-Future integrations may include:
-
-other chat platforms
-
-web chat
-
-email
-
-CRM / ERP / finance systems
-
-document/file backends such as Nextcloud
-
-Rule
-
-New integrations must enter via ports/adapters, not directly into core use cases.
-
-13. Current pain points and refactor intent
-
-The current codebase still concentrates too much logic in packages/core/src/index.ts.
-
-This is acceptable for a transitional phase, but not for long-term growth.
-
-Refactor goals:
-
-introduce command registry
-
-extract commands into modules
-
-move business rules into use cases
-
-keep gateway platform-specific
-
-keep API/UI contract-driven
-
-preserve behavior while improving structure
-
-14. Refactor roadmap (high-level)
-Phase 1
-
-add configurable prefix
-
-introduce command registry
-
-stop growing core index
-
-Phase 2
-
-extract groups module
-
-extract moderation module
-
-extract reminders/tasks/notes modules
-
-Phase 3
-
-extract assistant-ai module boundaries
-
-reduce gateway/core coupling
-
-Phase 4
-
-make help fully registry-driven
-
-stabilize integration contracts
-
-prepare media/fun module on top of modular base
-
-15. Architecture decision summary
-
-Zappy is intentionally evolving toward:
-
-Modular Monolith + Hexagonal Architecture + Use Cases per Module + Registry-driven Commands
-
-This is the preferred long-term structure for maintainability, extensibility, and future multi-platform evolution.
-
-
----
-
-# `INTEGRATION_CONTRACTS.md`
-
-```md
-# INTEGRATION_CONTRACTS.md
-
-# Zappy Assistant — Integration Contracts
-
-This document defines the expected contracts for Admin API, Admin UI, and external builders/platforms such as Lovable, Cody, or other UI generators.
-
----
-
-## 1. Authentication
-
-All protected admin endpoints require:
-
-```http
-Authorization: Bearer <ADMIN_API_TOKEN>
-
-If invalid or missing:
-
-{ "error": "Unauthorized" }
+Este documento passa a registrar oficialmente a migração modular como encerrada na prática em **24/03/2026**, com apenas backlog residual técnico de baixo risco.

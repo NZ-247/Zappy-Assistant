@@ -3,22 +3,33 @@ import {
   formatDateTimeInZone,
   normalizeTimezone
 } from "./time.js";
-import { isTriggerMatch, renderTemplate } from "./common/trigger-utils.js";
 import {
   formatCommand,
-  hasCommandPrefix as hasPrefix,
-  normalizeCommandPrefix,
-  stripCommandPrefix as stripPrefix
+  normalizeCommandPrefix
 } from "./commands/parser/prefix.js";
 import { createCommandRegistry } from "./commands/registry/index.js";
 import type { CommandRegistry } from "./commands/registry/command-types.js";
-import { parseCommandText } from "./commands/parser/parse-command.js";
 import { AssistantAiModule } from "./modules/assistant-ai/index.js";
 import { checkConsentGate } from "./modules/consent/application/use-cases/check-consent-gate.js";
 import { enforceConsent } from "./modules/consent/application/use-cases/enforce-consent.js";
 import { hasRootPrivileges, resolveRelationshipProfile } from "./modules/identity/domain/relationship-profile.js";
-import { containsLink } from "./modules/moderation/infrastructure/link-detection.js";
 import { runCommandRouter as runCommandRouterStage } from "./orchestrator/command-router.js";
+import {
+  classifyMessage as classifyMessageStage,
+  isGreetingMessage as isGreetingMessagePolicy,
+  isGreetingPattern as isGreetingPatternPolicy,
+  shouldSkipGenericGreeting as shouldSkipGenericGreetingPolicy
+} from "./orchestrator/message-classification.js";
+import {
+  applyPolicies as applyPoliciesStage,
+  commandRequiresGroupAdmin,
+  enforceGroupPolicies as enforceGroupPoliciesStage,
+  enforceModeration as enforceModerationStage
+} from "./orchestrator/policy-stages.js";
+import {
+  runBusinessTriggers as runBusinessTriggersStage,
+  runGreetingStage as runGreetingPolicyStage
+} from "./orchestrator/policy-triggers.js";
 import type {
   AuditEvent,
   CanonicalIdentity,
@@ -238,18 +249,6 @@ export class Orchestrator {
     }
   }
 
-  private hasCommandPrefix(text: string): boolean {
-    return hasPrefix(text, this.commandPrefix);
-  }
-
-  private stripCommandPrefix(text: string): string {
-    return stripPrefix(text, this.commandPrefix);
-  }
-
-  private normalizeCommandLower(text: string): string {
-    return this.stripCommandPrefix(text).toLowerCase();
-  }
-
   private hasRootPrivilege(ctx: PipelineContext): boolean {
     return hasRootPrivileges({
       permissionRole: ctx.identity?.permissionRole,
@@ -264,35 +263,6 @@ export class Orchestrator {
     const role = (ctx.identity?.permissionRole ?? ctx.identity?.role ?? "").toUpperCase();
     if (["ADMIN", "GROUP_ADMIN", "OWNER", "DONO"].includes(role)) return true;
     return ctx.requesterIsAdmin;
-  }
-
-  private isAccessControlCommand(text: string): boolean {
-    if (!this.hasCommandPrefix(text)) return false;
-    const lower = this.normalizeCommandLower(text);
-    return (
-      lower === "add gp allowed_groups" ||
-      lower === "rm gp allowed_groups" ||
-      lower === "list gp allowed_groups" ||
-      lower.startsWith("add user admins") ||
-      lower.startsWith("rm user admins") ||
-      lower === "list user admins" ||
-      lower.startsWith("set gp chat") ||
-      lower.startsWith("chat on") ||
-      lower.startsWith("chat off")
-    );
-  }
-
-  private commandRequiresGroupAdmin(commandName?: string): boolean {
-    if (!commandName) return false;
-    const cmd = this.normalizeCommandLower(commandName);
-    if (cmd.startsWith("chat")) return true;
-    if (cmd.startsWith("set gp chat")) return true;
-    if (cmd.startsWith("set gp open") || cmd.startsWith("set gp close")) return true;
-    if (cmd.startsWith("set gp name") || cmd.startsWith("set gp dcr") || cmd.startsWith("set gp img")) return true;
-    if (cmd.startsWith("ban") || cmd.startsWith("kick") || cmd.startsWith("hidetag")) return true;
-    if (cmd.startsWith("add gp allowed_groups")) return true;
-    if (cmd.startsWith("rm gp allowed_groups")) return true;
-    return false;
   }
 
   private getScope(event: InboundMessageEvent): { scope: Scope; scopeId: string } {
@@ -558,223 +528,32 @@ export class Orchestrator {
     return !(await this.ports.cooldown.canFire(key, this.dedupTtlSeconds));
   }
 
-  private normalizeGreetingText(text: string): string {
-    return text
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, " ");
-  }
-
-  private isGreetingPattern(pattern: string): boolean {
-    const normalized = this.normalizeGreetingText(pattern);
-    const greetings = new Set(["oi", "oii", "ola", "bom dia", "boa tarde", "boa noite"]);
-    return greetings.has(normalized);
-  }
-
-  private isGreetingMessage(text: string): boolean {
-    const normalized = this.normalizeGreetingText(text);
-    if (!normalized) return false;
-    const tokens = normalized.split(" ");
-    if (tokens.length > 2) return false;
-    const singleGreetings = new Set(["oi", "oii", "ola"]);
-    const duoGreetings = new Set(["bom dia", "boa tarde", "boa noite"]);
-    if (tokens.length === 1) return singleGreetings.has(tokens[0]);
-    const joined = tokens.join(" ");
-    return duoGreetings.has(joined);
-  }
-
-  private getPriorMessages(ctx: PipelineContext): ConversationMessage[] {
-    const history = ctx.recentMessages ?? [];
-    if (history.length === 0) return [];
-    const last = history[history.length - 1];
-    const sameAsCurrent = last.role === "user" && last.content?.trim?.() === ctx.event.text?.trim?.();
-    return sameAsCurrent ? history.slice(0, -1) : history;
-  }
-
-  private hasConversationContext(ctx: PipelineContext): boolean {
-    const prior = this.getPriorMessages(ctx);
-    return prior.length > 0;
-  }
-
-  private isPrivilegedChat(ctx: PipelineContext): boolean {
-    if (this.hasRootPrivilege(ctx)) return true;
-    return ["creator_root", "mother_privileged", "delegated_owner"].includes(ctx.relationshipProfile);
-  }
-
-  private isSmallTalkFollowUp(ctx: PipelineContext): boolean {
-    if (!this.hasConversationContext(ctx)) return false;
-    const normalized = this.normalizeGreetingText(ctx.event.normalizedText);
-    if (!normalized) return false;
-    const smallTalkTokens = new Set(["bele", "beleza", "ta", "t", "joia", "kk", "kkk"]);
-    const tokens = normalized.split(" ");
-    if (tokens.length > 3) return false;
-    return tokens.every((token) => smallTalkTokens.has(token)) || smallTalkTokens.has(normalized);
-  }
-
-  private shouldSkipGenericGreeting(ctx: PipelineContext): boolean {
-    if (this.isPrivilegedChat(ctx)) return true;
-    if (this.hasConversationContext(ctx)) return true;
-    if (this.isSmallTalkFollowUp(ctx)) return true;
-    return false;
-  }
-
-  private isEchoFromAssistant(ctx: PipelineContext): boolean {
-    const lastAssistant = [...ctx.recentMessages].reverse().find((m) => m.role === "assistant");
-    return Boolean(lastAssistant && lastAssistant.content.trim() === ctx.event.normalizedText);
-  }
-
   private async classifyMessage(ctx: PipelineContext): Promise<MessageClassification> {
-    const { event } = ctx;
-
-    if (event.isStatusBroadcast) return { kind: "ignored_event", reason: "status_broadcast" };
-    if (event.isFromBot) return { kind: "ignored_event", reason: "from_bot" };
-    if (event.messageKind === "system") return { kind: "system_event" };
-    if (ctx.conversationState.state === "WAITING_CONSENT") return { kind: "consent_pending", reason: "consent_required" };
-    if (!event.normalizedText && !event.hasMedia) return { kind: "ignored_event", reason: "empty_payload" };
-    if (event.hasMedia && !event.normalizedText && ctx.downloadsMode === "off") {
-      return { kind: "ignored_event", reason: "media_not_allowed" };
-    }
-    if (await this.isDuplicate(event)) return { kind: "ignored_event", reason: "duplicate" };
-    if (this.isEchoFromAssistant(ctx)) return { kind: "ignored_event", reason: "loop_guard" };
-    if (ctx.conversationState.state !== "NONE") return { kind: "tool_follow_up", reason: ctx.conversationState.state };
-    const parsedCommand = parseCommandText(event.normalizedText, this.commandRegistry);
-    if (parsedCommand) {
-      const match = parsedCommand.match;
-      const commandName = match?.command.name ?? parsedCommand.token;
-      return { kind: "command", commandName, commandKnown: Boolean(match), reason: match ? undefined : "unknown_command" };
-    }
-    if (event.isGroup && (ctx.isBotMentioned || ctx.isReplyToBot)) {
-      return { kind: "ai_candidate", reason: "addressed_in_group" };
-    }
-    if (event.normalizedText.length > 120 || event.normalizedText.includes("?") || event.normalizedText.split(/\s+/).length > 6) {
-      return { kind: "ai_candidate" };
-    }
-    return { kind: "trigger_candidate" };
+    return classifyMessageStage(ctx, {
+      commandRegistry: this.commandRegistry,
+      isDuplicate: async (event) => this.isDuplicate(event),
+      hasRootPrivilege: (input) => this.hasRootPrivilege(input)
+    });
   }
 
   private enforceGroupPolicies(ctx: PipelineContext): { stop?: ResponseAction[]; commandsOnly?: boolean } {
-    if (!ctx.event.isGroup) return { commandsOnly: false };
-    const isCommand = ctx.classification.kind === "command";
-    const isToolFollowUp = ctx.classification.kind === "tool_follow_up";
-    const isAccessCommand = this.isAccessControlCommand(ctx.event.normalizedText);
-    const addressed = ctx.isBotMentioned || ctx.isReplyToBot;
-    const directedToBot = isCommand || isToolFollowUp || addressed;
-    const isPrivileged = this.isRequesterAdmin(ctx);
-    const routingReason = isCommand
-      ? "prefix"
-      : ctx.isBotMentioned
-        ? "mention"
-        : ctx.isReplyToBot
-          ? "reply"
-          : isToolFollowUp
-            ? "follow_up"
-            : "none";
-
-    if (ctx.event.isGroup && process.env.NODE_ENV !== "production") {
-      const textPreview = ctx.event.normalizedText?.slice(0, 120)?.replace(/"/g, '\\"') ?? "";
-      const routeLine = [
-        "[GROUP_ROUTE]",
-        `directedToBot=${directedToBot}`,
-        `reason=${routingReason}`,
-        `mention=${ctx.isBotMentioned}`,
-        `reply=${ctx.isReplyToBot}`,
-        `text="${textPreview}"`
-      ].join(" ");
-      this.ports.logger?.debug?.(routeLine);
-    }
-
-    if (!directedToBot) {
-      return { stop: [{ kind: "noop", reason: "group_not_addressed" }] };
-    }
-
-    if (!ctx.groupAllowed) {
-      if (isAccessCommand && isPrivileged) return { commandsOnly: true };
-      const text = `Este grupo não está autorizado a usar o bot. Um admin deve enviar ${formatCommand(this.commandPrefix, "add gp allowed_groups")} para liberar. Comandos privados continuam disponíveis.`;
-      return { stop: [{ kind: "reply_text", text: this.stylizeReply(ctx, text) }] };
-    }
-
-    if (ctx.groupChatMode === "off") {
-      if (isCommand || isToolFollowUp || isAccessCommand) return { commandsOnly: true };
-      return { stop: [{ kind: "noop", reason: "chat_mode_off" }] };
-    }
-
-    const requiresGroupAdmin = isCommand && this.commandRequiresGroupAdmin(ctx.classification.commandName);
-    if (requiresGroupAdmin && (ctx.botAdminCheckFailed || !ctx.botIsGroupAdmin) && process.env.NODE_ENV !== "production") {
-      this.ports.logger?.debug?.(
-        {
-          category: "BOT_ADMIN_GUARD",
-          tenantId: ctx.event.tenantId,
-          waGroupId: ctx.event.waGroupId,
-          command: ctx.classification.commandName,
-          guard: "requires_group_admin",
-          decision: "proceed_operation_first",
-          botIsAdmin: ctx.botIsGroupAdmin,
-          sourceUsed: ctx.botAdminSourceUsed,
-          statusSource: ctx.botAdminStatusSource,
-          eventBotIsAdmin: ctx.event.botIsGroupAdmin,
-          eventBotAdminSource: ctx.event.botAdminStatusSource,
-          groupBotIsAdmin: ctx.groupAccess?.botIsAdmin,
-          groupBotCheckedAt: ctx.groupAccess?.botAdminCheckedAt?.toISOString?.(),
-          botAdminCheckedAt: ctx.botAdminCheckedAt?.toISOString?.(),
-          resolutionPath: ctx.botAdminResolutionPath?.map((c) => ({ source: c.source, value: c.value })),
-          checkFailed: ctx.botAdminCheckFailed,
-          checkError: ctx.botAdminCheckError
-        },
-        "bot admin pre-check bypassed (operation-first)"
-      );
-    }
-
-    if (!isCommand && !isToolFollowUp && !addressed) {
-      return { stop: [{ kind: "noop", reason: "group_not_addressed" }] };
-    }
-
-    return { commandsOnly: false };
+    return enforceGroupPoliciesStage(ctx, {
+      commandPrefix: this.commandPrefix,
+      logger: this.ports.logger,
+      isRequesterAdmin: (input) => this.isRequesterAdmin(input),
+      stylizeReply: (input, text, options) => this.stylizeReply(input, text, options)
+    });
   }
 
   private applyPolicies(ctx: PipelineContext): { stop?: ResponseAction[] } {
-    if (ctx.conversationState.state === "HANDOFF_ACTIVE") {
-      return { stop: [{ kind: "handoff", target: "human", note: "Handoff ativo para este chat." }] };
-    }
-    const muteActive =
-      (ctx.muteInfo && ctx.muteInfo.until.getTime() > ctx.now.getTime()) ||
-      (ctx.userMuteInfo && ctx.userMuteInfo.until.getTime() > ctx.now.getTime());
-    if (muteActive) ctx.policyMuted = true;
-    return {};
+    return applyPoliciesStage(ctx);
   }
 
   private enforceModeration(ctx: PipelineContext): ResponseAction[] {
-    if (!ctx.event.isGroup) return [];
-    if (!ctx.groupModeration) return [];
-    const actions: ResponseAction[] = [];
-    const isAdmin = this.isRequesterAdmin(ctx);
-
-    if (ctx.groupModeration.antiLink && !isAdmin && containsLink(ctx.event.normalizedText)) {
-      if (ctx.groupModeration.autoDeleteLinks && ctx.event.messageKey) {
-        actions.push({
-          kind: "moderation_action",
-          action: "delete_message",
-          waGroupId: ctx.event.waGroupId!,
-          messageKey: ctx.event.messageKey
-        });
-      }
-      const warning = this.stylizeReply(ctx, "Links não são permitidos neste grupo.");
-      actions.push({ kind: "reply_text", text: warning });
-      if (ctx.groupModeration.tempMuteSeconds && ctx.event.waGroupId) {
-        actions.push({
-          kind: "moderation_action",
-          action: "mute",
-          waGroupId: ctx.event.waGroupId,
-          targetWaUserId: ctx.event.waUserId,
-          durationMs: ctx.groupModeration.tempMuteSeconds * 1000
-        });
-      }
-      return actions;
-    }
-
-    return actions;
+    return enforceModerationStage(ctx, {
+      isRequesterAdmin: (input) => this.isRequesterAdmin(input),
+      stylizeReply: (input, text, options) => this.stylizeReply(input, text, options)
+    });
   }
 
   private formatList(action: ReplyListAction): string {
@@ -829,82 +608,39 @@ export class Orchestrator {
   }
 
   private async runGreetingStage(ctx: PipelineContext): Promise<ResponseAction[]> {
-    if (ctx.groupPolicy?.commandsOnly) return [];
-    if (ctx.policyMuted) return [];
-    if (ctx.consentRequired) return [];
-    if (this.shouldSkipGenericGreeting(ctx)) return [];
-    if (ctx.classification.kind !== "trigger_candidate" && ctx.classification.kind !== "ai_candidate") return [];
-    if (!this.isGreetingMessage(ctx.event.normalizedText)) return [];
-
-    const scopePart = ctx.event.waGroupId ?? ctx.event.waUserId;
-    const key = `greeting:${ctx.event.tenantId}:${scopePart}`;
-    const canFire = await this.ports.cooldown.canFire(key, this.greetingCooldownSeconds);
-    if (!canFire) return [];
-
-    const text = this.stylizeReply(
-      ctx,
-      "Olá! Sou Zappy, assistente digital da Services.NET. Posso ajudar com suporte, orçamento, agendamento ou dúvidas. Como posso ajudar?"
-    );
-    return [{ kind: "reply_text", text }];
+    return runGreetingPolicyStage(ctx, {
+      greetingCooldownSeconds: this.greetingCooldownSeconds,
+      botName: this.ports.botName,
+      stylizeReply: (input, text, options) => this.stylizeReply(input, text, options),
+      shouldSkipGenericGreeting: (input) =>
+        shouldSkipGenericGreetingPolicy(input, {
+          hasRootPrivilege: (pipelineInput) => this.hasRootPrivilege(pipelineInput)
+        }),
+      isGreetingMessage: (text) => isGreetingMessagePolicy(text),
+      isGreetingPattern: (pattern) => isGreetingPatternPolicy(pattern),
+      recordAudit: async (event) => this.recordAudit(event),
+      bumpMetric: async (key, by) => this.bumpMetric(key, by),
+      loadTriggers: async (input) => this.ports.triggersRepository.findActiveByScope(input),
+      canFireCooldown: async (key, ttlSeconds) => this.ports.cooldown.canFire(key, ttlSeconds)
+    });
   }
 
   private async runBusinessTriggers(ctx: PipelineContext): Promise<ResponseAction[]> {
-    if (ctx.groupPolicy?.commandsOnly) return [];
-    if (ctx.policyMuted) return [];
-    if (ctx.classification.kind === "command") return [];
-    if (ctx.classification.kind === "tool_follow_up") return [];
-    if (ctx.classification.kind === "ignored_event" || ctx.classification.kind === "system_event") return [];
-    const suppressGreeting = this.shouldSkipGenericGreeting(ctx);
-
-    const triggers = await this.ports.triggersRepository.findActiveByScope({
-      tenantId: ctx.event.tenantId,
-      waGroupId: ctx.event.waGroupId,
-      waUserId: ctx.event.waUserId
+    return runBusinessTriggersStage(ctx, {
+      greetingCooldownSeconds: this.greetingCooldownSeconds,
+      botName: this.ports.botName,
+      stylizeReply: (input, text, options) => this.stylizeReply(input, text, options),
+      shouldSkipGenericGreeting: (input) =>
+        shouldSkipGenericGreetingPolicy(input, {
+          hasRootPrivilege: (pipelineInput) => this.hasRootPrivilege(pipelineInput)
+        }),
+      isGreetingMessage: (text) => isGreetingMessagePolicy(text),
+      isGreetingPattern: (pattern) => isGreetingPatternPolicy(pattern),
+      recordAudit: async (event) => this.recordAudit(event),
+      bumpMetric: async (key, by) => this.bumpMetric(key, by),
+      loadTriggers: async (input) => this.ports.triggersRepository.findActiveByScope(input),
+      canFireCooldown: async (key, ttlSeconds) => this.ports.cooldown.canFire(key, ttlSeconds)
     });
-
-    const bot = this.ports.botName ?? "Zappy";
-    const nowFormatted = formatDateTimeInZone(ctx.now, ctx.timezone);
-
-    for (const trigger of triggers) {
-      if (!trigger.enabled) continue;
-      if (!isTriggerMatch(ctx.event.normalizedText, trigger)) continue;
-      if (trigger.name.toLowerCase().includes("fun") && ctx.funMode !== "on") continue;
-      const isGreetingTrigger = this.isGreetingPattern(trigger.pattern);
-      if (isGreetingTrigger) {
-        if (suppressGreeting) continue;
-        if (!this.isGreetingMessage(ctx.event.normalizedText)) continue;
-      }
-
-      const scopePart = ctx.event.waGroupId ?? ctx.event.waUserId;
-      const key = `cooldown:${trigger.id}:${scopePart}`;
-      const canFire = await this.ports.cooldown.canFire(key, Math.max(1, trigger.cooldownSeconds));
-      if (!canFire) continue;
-
-      await this.recordAudit({
-        kind: "trigger",
-        tenantId: ctx.event.tenantId,
-        waUserId: ctx.event.waUserId,
-        waGroupId: ctx.event.waGroupId,
-        conversationId: ctx.event.conversationId,
-        triggerId: trigger.id,
-        triggerName: trigger.name
-      });
-      await this.bumpMetric("trigger_matches_total");
-
-      return [
-        {
-          kind: "reply_text",
-          text: renderTemplate(trigger.responseTemplate, {
-            user: ctx.event.waUserId,
-            group: ctx.event.waGroupId ?? "direct",
-            bot,
-            date: nowFormatted
-          })
-        }
-      ];
-    }
-
-    return [];
   }
 
   private async runCommandRouter(ctx: PipelineContext): Promise<ResponseAction[]> {
@@ -916,7 +652,7 @@ export class Orchestrator {
       botAdminOperationStaleMs: this.botAdminOperationStaleMs,
       hasRootPrivilege: (input) => this.hasRootPrivilege(input),
       isRequesterAdmin: (input) => this.isRequesterAdmin(input),
-      commandRequiresGroupAdmin: (name) => this.commandRequiresGroupAdmin(name),
+      commandRequiresGroupAdmin: (name) => commandRequiresGroupAdmin(name),
       stylizeReply: (input, text, options) => this.stylizeReply(input, text, options)
     });
   }
