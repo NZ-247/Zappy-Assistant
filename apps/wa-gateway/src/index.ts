@@ -26,6 +26,7 @@ import {
   timersRepository,
   createMuteAdapter,
   createOpenAiAdapter,
+  createOpenAiSpeechToTextAdapter,
   createConversationStateAdapter,
   conversationMemoryRepository,
   consentRepository,
@@ -68,6 +69,15 @@ const baseSystemPrompt = buildBaseSystemPrompt({
   policyNotes: ["Priorize o contexto do chat atual."]
 });
 const llmAdapter = createOpenAiAdapter(env.OPENAI_API_KEY, llmModel);
+const speechToTextAdapter = createOpenAiSpeechToTextAdapter({
+  apiKey: env.OPENAI_API_KEY,
+  model: env.AUDIO_STT_MODEL,
+  timeoutMs: env.AUDIO_STT_TIMEOUT_MS,
+  language: env.AUDIO_STT_LANGUAGE
+});
+const audioCommandAllowlist = env.AUDIO_COMMAND_ALLOWLIST.split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
 const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
 const muteAdapter = createMuteAdapter(redis);
 const auditTrail = createAuditTrail();
@@ -262,6 +272,9 @@ const orchestrator = new Orchestrator({
   commandPrefix: env.BOT_PREFIX,
   baseSystemPrompt,
   llmMemoryMessages: env.LLM_MEMORY_MESSAGES,
+  audioCapabilityEnabled: env.AUDIO_CAPABILITY_ENABLED,
+  audioAutoTranscribeEnabled: env.AUDIO_AUTO_TRANSCRIBE_ENABLED,
+  audioCommandDispatchEnabled: env.AUDIO_COMMAND_DISPATCH_ENABLED,
   consentTermsVersion: env.CONSENT_TERMS_VERSION,
   consentLink: env.CONSENT_LINK,
   consentSource: env.CONSENT_SOURCE,
@@ -346,7 +359,28 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
     baileysLogger,
     metrics,
     auditTrail,
-    stickerMaxVideoSeconds: env.STICKER_MAX_VIDEO_SECONDS
+    stickerMaxVideoSeconds: env.STICKER_MAX_VIDEO_SECONDS,
+    commandPrefix: env.BOT_PREFIX,
+    progressReactions: {
+      enabled: env.WA_REACTIONS_ENABLED,
+      processingEmoji: env.WA_REACTION_PROGRESS,
+      successEmoji: env.WA_REACTION_SUCCESS,
+      failureEmoji: env.WA_REACTION_FAILURE
+    },
+    audioConfig: {
+      enabled: env.AUDIO_CAPABILITY_ENABLED,
+      sttModel: env.AUDIO_STT_MODEL,
+      sttTimeoutMs: env.AUDIO_STT_TIMEOUT_MS,
+      maxDurationSeconds: env.AUDIO_MAX_DURATION_SECONDS,
+      maxBytes: env.AUDIO_MAX_BYTES,
+      language: env.AUDIO_STT_LANGUAGE,
+      commandDispatchEnabled: env.AUDIO_COMMAND_DISPATCH_ENABLED,
+      commandPrefix: env.BOT_PREFIX,
+      commandAllowlist: audioCommandAllowlist,
+      commandMinConfidence: env.AUDIO_COMMAND_MIN_CONFIDENCE,
+      transcriptPreviewChars: env.AUDIO_TRANSCRIPT_PREVIEW_CHARS
+    },
+    speechToText: speechToTextAdapter
   }
 });
 

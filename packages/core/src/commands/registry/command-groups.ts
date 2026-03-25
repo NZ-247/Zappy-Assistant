@@ -248,6 +248,18 @@ export const stickerCommands: CommandDefinition[] = [
   }
 ];
 
+export const audioCommands: CommandDefinition[] = [
+  {
+    category: "tools",
+    name: "transcribe",
+    aliases: ["tr"],
+    scope: "both",
+    description: "Transcreve áudio (responda um áudio) e habilita fluxo automático para áudio direto.",
+    usage: "transcribe",
+    examples: ["transcribe (respondendo um áudio)"]
+  }
+];
+
 export const identityCommands: CommandDefinition[] = [
   {
     category: "identity",
@@ -273,6 +285,7 @@ export const allCommands: CommandDefinition[] = [
   ...taskCommands,
   ...noteCommands,
   ...stickerCommands,
+  ...audioCommands,
   ...reminderCommands,
   ...identityCommands
 ];

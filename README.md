@@ -15,6 +15,9 @@ npm run prisma:generate
 - `BOT_PREFIX` (default `/`) is the global command prefix; parsing/help text respect this value.
 - `INBOUND_MAX_MESSAGE_AGE_SECONDS` (default `30`) discards stale backlog messages on reconnect/new instance before command/AI processing. If timestamp is unavailable, message is accepted (safe fallback) and logged at debug level.
 - `STICKER_MAX_VIDEO_SECONDS` (default `10`) limits short-video sticker generation; videos above this threshold are rejected with friendly feedback.
+- Operational reactions are configurable via `WA_REACTIONS_ENABLED`, `WA_REACTION_PROGRESS`, `WA_REACTION_SUCCESS`, `WA_REACTION_FAILURE` (defaults: `⏱️`, `✅`, `❌`).
+- Audio STT-first capability is controlled by `AUDIO_CAPABILITY_ENABLED`, `AUDIO_AUTO_TRANSCRIBE_ENABLED`, `AUDIO_STT_MODEL`, `AUDIO_STT_TIMEOUT_MS`, `AUDIO_MAX_DURATION_SECONDS`, `AUDIO_MAX_BYTES`, `AUDIO_STT_LANGUAGE`.
+- Audio dynamic command dispatch is controlled by `AUDIO_COMMAND_DISPATCH_ENABLED`, `AUDIO_COMMAND_ALLOWLIST`, `AUDIO_COMMAND_MIN_CONFIDENCE`, `AUDIO_TRANSCRIPT_PREVIEW_CHARS`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
@@ -86,12 +89,19 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
-- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg` e `/rnfig`.
+- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
   - `/toimg` funciona apenas respondendo uma figurinha válida.
   - `/rnfig Autor|Pacote` atualiza apenas metadados EXIF de autor/pacote ao responder uma figurinha.
+  - Operações pesadas de sticker disparam reação de progresso (`⏱️`) e conclusão (`✅`/`❌`) na mensagem de origem (best-effort).
   - Limitações atuais: vídeo curto apenas (limitado por `STICKER_MAX_VIDEO_SECONDS`), sem gif avançado, sem editor visual, sem suporte a vídeos longos.
+- Audio capability (STT-first):
+  - `/transcribe` transcreve áudio ao responder uma mensagem de áudio.
+  - Áudio enviado diretamente ao bot pode ser transcrito e roteado para resposta no fluxo existente.
+  - Dispatch dinâmico por voz usa estratégia controlada: prefixo explícito (`/`), comando falado `slash|barra <comando>`, ou primeiro token da allowlist (`AUDIO_COMMAND_ALLOWLIST`) com confiança mínima (`AUDIO_COMMAND_MIN_CONFIDENCE`).
+  - Em baixa confiança, o bot não executa comando dinâmico e responde com fallback amigável/transcrição curta.
+  - Limitações atuais: STT apenas (sem TTS), suporte focado em áudio/PTT e limites rígidos de tamanho/duração para preservar recursos.
 - Reminders:
   - `/reminder in <duration> <message>` where duration accepts `1`, `10m`, `1h40m30s`, `2d`.
   - `/reminder at <DD-MM[-YYYY]> [HH:MM] <message>` uses `BOT_TIMEZONE` and defaults time to `08:00`.
@@ -114,6 +124,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Identity resolution
 - Canonical identity tracks `waUserId`, normalized `phoneNumber`, `pnJid` (`@s.whatsapp.net`), `lidJid` (`@lid`), `aliases[]`, `displayName`, `permissionRole`, and `relationshipProfile`.
 - Resolution order: `phoneNumber` → `pnJid` → `lidJid` → `waUserId` → `aliases`. Every inbound identifier is merged into the alias set to prevent future mismatches.
+- UX guardrail: AI addressing name resolves safely (`displayName` confiável → friendly context name → fallback `você`) and never uses internal role labels as vocative name (`ROOT`, `creator_root`, `bot_admin`, etc.).
 - Privileged mapping (by phone/pnJid/lidJid/aliases): `556699064658` → `creator_root` + permission role `ROOT`; `556692283438` → `mother_privileged` + permission role `PRIVILEGED`.
 - LID ids differ from phone numbers because WhatsApp obfuscates contact ids; add aliases when mapping a new LID to a known phone to keep profiles aligned.
 - Admin/root command to bind aliases when WhatsApp hides the phone number: `/alias link <phoneNumber> <lidJid>` (example: `/alias link 556699064658 70029643092123@lid`). The link is stored, relationshipProfile/permissionRole are recalculated immediately, and duplicate users are merged.

@@ -1,4 +1,5 @@
 import { buildResponseActionId } from "./outbound/context.js";
+import { handleAudioOutboundAction } from "./outbound/handlers/audio-action.js";
 import { handleBasicOutboundAction } from "./outbound/handlers/basic-actions.js";
 import { handleGroupAdminOutboundAction } from "./outbound/handlers/group-admin-action.js";
 import { handleModerationOutboundAction } from "./outbound/handlers/moderation-action.js";
@@ -11,7 +12,13 @@ type OutboundHandler = (input: {
   responseActionId: string;
 }) => Promise<boolean>;
 
-const outboundHandlers: OutboundHandler[] = [handleBasicOutboundAction, handleStickerOutboundAction, handleGroupAdminOutboundAction, handleModerationOutboundAction];
+const outboundHandlers: OutboundHandler[] = [
+  handleBasicOutboundAction,
+  handleAudioOutboundAction,
+  handleStickerOutboundAction,
+  handleGroupAdminOutboundAction,
+  handleModerationOutboundAction
+];
 
 export const executeOutboundActions = async (input: ExecuteOutboundActionsInput): Promise<void> => {
   for (let actionIndex = 0; actionIndex < input.actions.length; actionIndex += 1) {

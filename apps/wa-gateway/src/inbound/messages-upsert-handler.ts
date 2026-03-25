@@ -71,6 +71,36 @@ interface MessagesUpsertHandlerDeps {
     metrics: any;
     auditTrail: any;
     stickerMaxVideoSeconds: number;
+    commandPrefix: string;
+    progressReactions: {
+      enabled: boolean;
+      processingEmoji: string;
+      successEmoji: string;
+      failureEmoji: string;
+    };
+    audioConfig: {
+      enabled: boolean;
+      sttModel: string;
+      sttTimeoutMs: number;
+      maxDurationSeconds: number;
+      maxBytes: number;
+      language?: string;
+      commandDispatchEnabled: boolean;
+      commandPrefix: string;
+      commandAllowlist: string[];
+      commandMinConfidence: number;
+      transcriptPreviewChars: number;
+    };
+    speechToText?: {
+      transcribe: (input: {
+        audio: Buffer;
+        mimeType?: string;
+        fileName?: string;
+        language?: string;
+        timeoutMs?: number;
+        model?: string;
+      }) => Promise<{ text: string; model?: string; language?: string; confidence?: number | null; elapsedMs?: number }>;
+    };
   };
 }
 
@@ -338,6 +368,103 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         "inbound message"
       );
 
+      const dispatchTranscribedText = async (input: {
+        text: string;
+        transcript: string;
+        commandText?: string;
+        action: "respond" | "dispatch_command";
+      }): Promise<{ hadResponses: boolean; dispatchExecutionId?: string }> => {
+        const dispatchText = input.text.trim();
+        if (!dispatchText) {
+          return { hadResponses: false };
+        }
+        const dispatchSuffix = createHash("sha1")
+          .update(`${input.action}|${dispatchText}|${event.waMessageId}`)
+          .digest("hex")
+          .slice(0, 10);
+        const syntheticWaMessageId = `${event.waMessageId}:stt:${dispatchSuffix}`;
+        const dispatchExecutionId = `${executionId}:stt:${Date.now().toString(36)}:${dispatchSuffix}`;
+        const syntheticEvent: InboundMessageEvent = {
+          ...event,
+          text: dispatchText,
+          waMessageId: syntheticWaMessageId,
+          executionId: dispatchExecutionId,
+          timestamp: new Date(),
+          hasMedia: false,
+          kind: "text",
+          rawMessageType: "sttTextMessage",
+          ingressSource: "audio_stt",
+          sttTranscript: input.transcript,
+          sttCommandText: input.commandText,
+          messageKey: {
+            id: syntheticWaMessageId,
+            remoteJid: event.remoteJid ?? remoteJid,
+            fromMe: false,
+            participant: event.messageKey?.participant
+          }
+        };
+
+        deps.logger.info(
+          deps.withCategory("WA-IN", {
+            status: "audio_stt_dispatch",
+            tenantId: syntheticEvent.tenantId,
+            waGroupId: syntheticEvent.waGroupId,
+            waUserId: syntheticEvent.waUserId,
+            waMessageId: syntheticEvent.waMessageId,
+            inboundWaMessageId: event.waMessageId,
+            executionId: syntheticEvent.executionId,
+            sttAction: input.action,
+            sttCommandText: input.commandText,
+            sttTranscriptPreview: input.transcript.slice(0, 120)
+          }),
+          "audio stt dispatch inbound"
+        );
+
+        const syntheticActions = await deps.orchestrator.handleInboundMessage(syntheticEvent);
+        const hasOutput = syntheticActions.some((action) => action.kind !== "noop");
+        if (!hasOutput) {
+          return { hadResponses: false, dispatchExecutionId };
+        }
+        await deps.executeOutboundActions({
+          actions: syntheticActions,
+          isGroup,
+          remoteJid,
+          waUserId,
+          event: syntheticEvent,
+          message,
+          context,
+          contextInfo,
+          quotedWaMessageId,
+          quotedWaUserId,
+          canonical,
+          normalizedPhone,
+          relationshipProfile,
+          permissionRole,
+          timezone: deps.env.BOT_TIMEZONE,
+          commandPrefix: deps.outboundRuntime.commandPrefix,
+          progressReactions: deps.outboundRuntime.progressReactions,
+          audioConfig: deps.outboundRuntime.audioConfig,
+          speechToText: deps.outboundRuntime.speechToText,
+          dispatchTranscribedText,
+          sendWithReplyFallback: deps.outboundRuntime.sendWithReplyFallback,
+          persistOutboundMessage: deps.outboundRuntime.persistOutboundMessage,
+          queueAdapter: deps.outboundRuntime.queueAdapter,
+          groupAccessRepository: deps.outboundRuntime.groupAccessRepository,
+          muteAdapter: deps.outboundRuntime.muteAdapter,
+          attemptGroupAdminAction: deps.outboundRuntime.attemptGroupAdminAction,
+          getSocket: deps.getSocket,
+          downloadMediaMessage: deps.outboundRuntime.downloadMediaMessage,
+          baileysLogger: deps.outboundRuntime.baileysLogger,
+          normalizeJid: deps.normalizeJid,
+          logger: deps.logger,
+          withCategory: deps.withCategory,
+          metrics: deps.outboundRuntime.metrics,
+          auditTrail: deps.outboundRuntime.auditTrail,
+          stickerMaxVideoSeconds: deps.outboundRuntime.stickerMaxVideoSeconds
+        });
+        return { hadResponses: true, dispatchExecutionId };
+      };
+
       const actions = await deps.orchestrator.handleInboundMessage(event);
       await deps.executeOutboundActions({
         actions,
@@ -355,6 +482,11 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         relationshipProfile,
         permissionRole,
         timezone: deps.env.BOT_TIMEZONE,
+        commandPrefix: deps.outboundRuntime.commandPrefix,
+        progressReactions: deps.outboundRuntime.progressReactions,
+        audioConfig: deps.outboundRuntime.audioConfig,
+        speechToText: deps.outboundRuntime.speechToText,
+        dispatchTranscribedText,
         sendWithReplyFallback: deps.outboundRuntime.sendWithReplyFallback,
         persistOutboundMessage: deps.outboundRuntime.persistOutboundMessage,
         queueAdapter: deps.outboundRuntime.queueAdapter,

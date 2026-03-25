@@ -59,6 +59,18 @@ export interface StickerTransformAction {
   packName?: string;
 }
 
+export type AudioTranscriptionSource = "inbound" | "quoted";
+export type AudioTranscriptionMode = "transcribe_only" | "transcribe_and_route";
+
+export interface AudioTranscriptionAction {
+  kind: "audio_transcription";
+  source: AudioTranscriptionSource;
+  mode: AudioTranscriptionMode;
+  allowCommandDispatch?: boolean;
+  commandPrefix?: string;
+  origin?: "command" | "auto";
+}
+
 export type GroupAdminOperation =
   | "set_subject"
   | "set_description"
@@ -91,6 +103,7 @@ export type ResponseAction =
   | ReplyTextAction
   | ReplyListAction
   | StickerTransformAction
+  | AudioTranscriptionAction
   | EnqueueJobAction
   | NoopAction
   | ErrorAction

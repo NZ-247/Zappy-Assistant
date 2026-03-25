@@ -18,6 +18,7 @@ export const mapPipelineToAiInput = (
   waUserId: ctx.event.waUserId,
   waGroupId: ctx.event.waGroupId,
   userText: ctx.event.text,
+  userDisplayName: ctx.addressingName,
   chatScope: ctx.event.isGroup ? "group" : "direct",
   userRole: normalizeUserRole(ctx.identity?.permissionRole ?? ctx.identity?.role),
   relationshipProfile: ctx.relationshipProfile,

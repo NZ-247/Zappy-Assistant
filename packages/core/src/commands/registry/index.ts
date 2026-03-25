@@ -38,6 +38,7 @@ const COMMAND_MATCHERS: Array<{ match: RegExp; name: string }> = [
   { name: "whoami", match: /^whoami\b/i },
   { name: "userinfo", match: /^userinfo\b/i },
   { name: "status", match: /^status\b/i },
+  { name: "transcribe", match: /^(transcribe|tr)\b/i },
   { name: "reminder", match: /^reminder\b/i }
 ];
 

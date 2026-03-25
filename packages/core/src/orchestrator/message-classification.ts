@@ -81,13 +81,15 @@ export const shouldSkipGenericGreeting = (
 
 export const classifyMessage = async (ctx: PipelineContext, deps: MessageClassificationDeps): Promise<MessageClassification> => {
   const { event } = ctx;
+  const rawMessageType = (event.rawMessageType ?? "").trim().toLowerCase();
+  const audioBypassMediaGate = ctx.audioCapabilityEnabled && rawMessageType === "audiomessage";
 
   if (event.isStatusBroadcast) return { kind: "ignored_event", reason: "status_broadcast" };
   if (event.isFromBot) return { kind: "ignored_event", reason: "from_bot" };
   if (event.messageKind === "system") return { kind: "system_event" };
   if (ctx.conversationState.state === "WAITING_CONSENT") return { kind: "consent_pending", reason: "consent_required" };
   if (!event.normalizedText && !event.hasMedia) return { kind: "ignored_event", reason: "empty_payload" };
-  if (event.hasMedia && !event.normalizedText && ctx.downloadsMode === "off") {
+  if (event.hasMedia && !event.normalizedText && ctx.downloadsMode === "off" && !audioBypassMediaGate) {
     return { kind: "ignored_event", reason: "media_not_allowed" };
   }
   if (await deps.isDuplicate(event)) return { kind: "ignored_event", reason: "duplicate" };

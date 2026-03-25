@@ -13,6 +13,8 @@ import { AssistantAiModule } from "./modules/assistant-ai/index.js";
 import { checkConsentGate } from "./modules/consent/application/use-cases/check-consent-gate.js";
 import { enforceConsent } from "./modules/consent/application/use-cases/enforce-consent.js";
 import { hasRootPrivileges, resolveRelationshipProfile } from "./modules/identity/domain/relationship-profile.js";
+import { resolveSafeDisplayName } from "./modules/identity/domain/safe-display-name.js";
+import { maybeBuildAutoAudioAction } from "./modules/tools/audio/application/use-cases/maybe-build-auto-audio-action.js";
 import { runCommandRouter as runCommandRouterStage } from "./orchestrator/command-router.js";
 import {
   classifyMessage as classifyMessageStage,
@@ -78,6 +80,9 @@ import type {
   ErrorAction,
   HandoffAction,
   AiToolSuggestionAction,
+  AudioTranscriptionSource,
+  AudioTranscriptionMode,
+  AudioTranscriptionAction,
   StickerTransformOperation,
   StickerTransformSource,
   StickerTransformAction,
@@ -162,6 +167,9 @@ export type {
   ErrorAction,
   HandoffAction,
   AiToolSuggestionAction,
+  AudioTranscriptionSource,
+  AudioTranscriptionMode,
+  AudioTranscriptionAction,
   StickerTransformOperation,
   StickerTransformSource,
   StickerTransformAction,
@@ -202,6 +210,7 @@ export type {
 } from "./pipeline/ports.js";
 export type { PipelineContext, NormalizedEvent } from "./pipeline/context.js";
 export { resolveRelationshipProfile } from "./modules/identity/domain/relationship-profile.js";
+export type { AudioModuleConfigPort, SpeechToTextPort } from "./modules/tools/audio/ports.js";
 
 export class Orchestrator {
   private readonly ports: CorePorts;
@@ -349,6 +358,12 @@ export class Orchestrator {
     const funModeFromFlags = (flags.fun_mode ?? this.ports.defaultFunMode ?? "off") as "off" | "on";
     let funMode = funModeFromFlags;
     const downloadsMode = (flags.downloads_mode ?? "off") as "off" | "allowlist" | "on";
+    const audioCapabilityEnabled =
+      String(flags.audio_capability_enabled ?? (this.ports.audioCapabilityEnabled ? "on" : "off")).toLowerCase() === "on";
+    const audioAutoTranscribeEnabled =
+      String(flags.audio_auto_transcribe_enabled ?? (this.ports.audioAutoTranscribeEnabled ? "on" : "off")).toLowerCase() === "on";
+    const audioCommandDispatchEnabled =
+      String(flags.audio_command_dispatch_enabled ?? (this.ports.audioCommandDispatchEnabled ? "on" : "off")).toLowerCase() === "on";
 
     const scope = this.getScope(event);
     const muteInfo = this.ports.mute
@@ -461,6 +476,11 @@ export class Orchestrator {
         ? await this.ports.adminAccess.isAdmin({ tenantId: event.tenantId, waUserId: event.waUserId })
         : false;
     const requesterIsGroupAdmin = Boolean(event.senderIsGroupAdmin);
+    const addressingName = resolveSafeDisplayName({
+      trustedProfileName: identity?.displayName ?? null,
+      friendlyName: identity?.canonicalIdentity?.displayName ?? null,
+      fallback: "você"
+    });
 
     const ctx: PipelineContext = {
       event,
@@ -475,6 +495,10 @@ export class Orchestrator {
       now,
       defaultReminderTime,
       memoryLimit,
+      addressingName,
+      audioCapabilityEnabled,
+      audioAutoTranscribeEnabled,
+      audioCommandDispatchEnabled,
       classification: { kind: "ignored_event" },
       muteInfo,
       userMuteInfo,
@@ -712,6 +736,18 @@ export class Orchestrator {
     return [];
   }
 
+  private runAudioIngressStage(ctx: PipelineContext): ResponseAction[] {
+    return maybeBuildAutoAudioAction({
+      ctx,
+      config: {
+        capabilityEnabled: ctx.audioCapabilityEnabled,
+        autoTranscribeInboundAudio: ctx.audioAutoTranscribeEnabled,
+        allowDynamicCommandDispatch: ctx.audioCommandDispatchEnabled,
+        commandPrefix: this.commandPrefix
+      }
+    });
+  }
+
   private async resolveContextAndClassification(normalized: NormalizedEvent): Promise<PipelineContext> {
     const ctx = await this.buildContext(normalized);
     ctx.classification = await this.classifyMessage(ctx);
@@ -841,6 +877,9 @@ export class Orchestrator {
       const unknownMessage = this.stylizeReply(ctx, `Comando desconhecido. Use ${formatCommand(this.commandPrefix, "help")}.`);
       return this.formatActionsForDelivery([{ kind: "reply_text", text: unknownMessage }]);
     }
+
+    const audioIngressActions = this.runAudioIngressStage(ctx);
+    if (audioIngressActions.length > 0) return this.formatActionsForDelivery(audioIngressActions);
 
     const aiActions = await this.runAiFallbackStages(ctx);
     if (aiActions.length > 0) return this.formatActionsForDelivery(aiActions);

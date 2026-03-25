@@ -12,12 +12,14 @@ import {
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import OpenAI from "openai";
+import { toFile } from "openai/uploads";
 import {
   LlmError,
   type ConversationMessage,
   type InboundMessageEvent,
   type LlmErrorReason,
   type LlmPort,
+  type SpeechToTextPort,
   type ConversationState,
   type MetricKey,
   type AuditEvent
@@ -613,6 +615,75 @@ export const createOpenAiAdapter = (apiKey: string | undefined, model: string): 
       } catch (error) {
         const { reason, status, code } = classifyOpenAiError(error);
         throw new LlmError(reason, "LLM request failed", { status, code, cause: error });
+      }
+    }
+  };
+};
+
+const extensionFromMime = (mimeType?: string): string => {
+  if (!mimeType) return "ogg";
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes("mpeg")) return "mp3";
+  if (normalized.includes("mp4")) return "m4a";
+  if (normalized.includes("wav")) return "wav";
+  if (normalized.includes("webm")) return "webm";
+  if (normalized.includes("ogg")) return "ogg";
+  return "ogg";
+};
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new LlmError("timeout", message)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+};
+
+export const createOpenAiSpeechToTextAdapter = (input: {
+  apiKey?: string;
+  model: string;
+  timeoutMs?: number;
+  language?: string;
+}): SpeechToTextPort | undefined => {
+  const client = input.apiKey ? new OpenAI({ apiKey: input.apiKey }) : null;
+  if (!client) return undefined;
+
+  return {
+    transcribe: async (request: Parameters<SpeechToTextPort["transcribe"]>[0]) => {
+      const mimeType = request.mimeType ?? "audio/ogg";
+      const fileName = request.fileName ?? `audio.${extensionFromMime(mimeType)}`;
+      const model = request.model ?? input.model;
+      const timeoutMs = request.timeoutMs ?? input.timeoutMs ?? 25_000;
+      const startedAt = Date.now();
+      try {
+        const file = await toFile(request.audio, fileName, { type: mimeType });
+        const response = await withTimeout(
+          (client as any).audio.transcriptions.create({
+            model,
+            file,
+            language: request.language ?? input.language
+          } as any),
+          timeoutMs,
+          "stt_request_timeout"
+        );
+        const text = typeof (response as any)?.text === "string" ? (response as any).text.trim() : "";
+        return {
+          text,
+          model,
+          language: request.language ?? input.language,
+          elapsedMs: Date.now() - startedAt
+        };
+      } catch (error) {
+        const { reason, status, code } = classifyOpenAiError(error);
+        throw new LlmError(reason, "STT request failed", { status, code, cause: error });
       }
     }
   };

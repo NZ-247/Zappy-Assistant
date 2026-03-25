@@ -158,10 +158,14 @@ Diretriz oficial para próxima fase (multimídia/utilitários):
 - dependências pesadas isoladas em adapters e carregadas sob demanda
 - ativação gradual por feature flag/política
 
-Primeira capability entregue neste padrão:
+Capabilities entregues neste padrão:
 - `packages/core/src/modules/tools/stickers` com comandos `/sticker` (`/s`, `/stk`, `/fig`), `/toimg` e `/rnfig`
 - execução concreta de conversão isolada no `apps/wa-gateway` (fora do core)
 - versão atual da capability: sticker por imagem/vídeo curto com limite configurável (`STICKER_MAX_VIDEO_SECONDS`), `contain + transparent padding`, conversão sticker->imagem e rename de metadados EXIF
+- `packages/core/src/modules/tools/audio` com foco STT-first (`/transcribe` + áudio inbound auto)
+- STT isolado por porta (`SpeechToTextPort`) e adapter concreto no pacote `adapters`
+- roteamento dinâmico de comando por transcrição com heurística controlada (prefixo explícito, `slash|barra`, allowlist + confiança mínima)
+- reações de progresso reutilizáveis em operações pesadas (stickers/áudio), best-effort e sem quebrar fluxo funcional
 
 Referência detalhada:
 - `docs/capability-modules-blueprint.md`
@@ -173,5 +177,9 @@ A partir deste marco:
 - evitar expansão de lógica em arquivos centrais
 - preservar o core como orquestrador e composition root
 - manter desenho resource-aware (baixo consumo, execução sob demanda, limites explícitos)
+
+Guardrail de UX aplicado nesta fase:
+- papéis internos (`ROOT`, `creator_root`, `bot_admin` e similares) permanecem no domínio de autorização/contexto
+- camada de resposta visível ao usuário usa resolução segura de nome de tratamento com fallback neutro (`você`)
 
 Este documento registra oficialmente a migração modular como encerrada na prática em **24/03/2026** e a base pronta para expansão de capabilities sem iniciar moderação nesta etapa.

@@ -5,6 +5,7 @@ import { handleModerationCommand } from "../modules/moderation/presentation/comm
 import { handleReminderCommand } from "../modules/reminders/presentation/commands/reminder-commands.js";
 import { handleTaskCommand } from "../modules/tasks/presentation/commands/task-commands.js";
 import { handleNoteCommand } from "../modules/notes/presentation/commands/note-commands.js";
+import { handleAudioCommand } from "../modules/tools/audio/presentation/commands/audio-commands.js";
 import { handleStickerCommand } from "../modules/tools/stickers/presentation/commands/sticker-commands.js";
 import { evaluateExpression } from "../common/math-expression.js";
 import { formatAgenda } from "../modules/reminders/infrastructure/agenda-formatter.js";
@@ -140,6 +141,22 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     deps: { notesRepository: deps.ports.notesRepository, formatUsage: (name) => usageFor(name) }
   });
   if (noteHandled) return noteHandled;
+
+  const audioHandled = handleAudioCommand({
+    commandKey,
+    ctx,
+    deps: {
+      config: {
+        capabilityEnabled: ctx.audioCapabilityEnabled,
+        autoTranscribeInboundAudio: ctx.audioAutoTranscribeEnabled,
+        allowDynamicCommandDispatch: ctx.audioCommandDispatchEnabled,
+        commandPrefix: deps.commandPrefix
+      },
+      formatUsage: () => usageFor("transcribe"),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+    }
+  });
+  if (audioHandled) return audioHandled;
 
   const stickerHandled = handleStickerCommand({
     commandKey,

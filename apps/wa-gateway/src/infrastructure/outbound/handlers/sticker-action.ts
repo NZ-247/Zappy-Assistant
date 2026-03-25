@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildActionLogContext, logOutbound, sendTextAndPersist } from "../context.js";
+import { createProgressReactionLifecycle } from "../reaction-progress.js";
 import type { ExecuteOutboundActionsInput, OutboundScope } from "../types.js";
 
 type StickerRuntimeAction = {
@@ -447,12 +448,12 @@ const friendlyStickerError = (action: StickerRuntimeAction): string => {
 const resolveActionRuntimeName = (action: StickerRuntimeAction): { actionName: string; persistText: string } => {
   const capabilityAction = resolveCapabilityAction(action);
   if (capabilityAction === "generate") {
-    return { actionName: "sticker_generate", persistText: "[sticker generated]" };
+    return { actionName: "sticker_generate", persistText: "[figurinha gerada]" };
   }
   if (capabilityAction === "rename_metadata") {
-    return { actionName: "sticker_rename_metadata", persistText: "[sticker metadata renamed]" };
+    return { actionName: "sticker_rename_metadata", persistText: "[metadados da figurinha atualizados]" };
   }
-  return { actionName: "sticker_to_image", persistText: "[sticker converted to image]" };
+  return { actionName: "sticker_to_image", persistText: "[figurinha convertida para imagem]" };
 };
 
 const buildTransformContent = async (input: {
@@ -540,9 +541,16 @@ export const handleStickerOutboundAction = async (input: {
     });
     return true;
   }
+  const progress = createProgressReactionLifecycle({
+    runtime,
+    responseActionId,
+    actionName: "sticker_transform"
+  });
+  await progress.start();
 
   const source = resolveMediaSource(runtime, typedAction);
   if (!source) {
+    await progress.failure();
     await sendTextAndPersist({
       runtime,
       to: target,
@@ -610,7 +618,9 @@ export const handleStickerOutboundAction = async (input: {
       }),
       "stickers capability"
     );
+    await progress.success();
   } catch (error) {
+    await progress.failure();
     const failure = normalizeFailure(error);
     runtime.logger.warn?.(
       runtime.withCategory("WA-OUT", {

@@ -76,6 +76,7 @@ export class AiService {
       settings: input.settings,
       chatScope: input.chatScope,
       userRole: input.userRole,
+      userDisplayName: input.userDisplayName,
       relationshipProfile: input.relationshipProfile,
       profileModifier: modifier,
       modulesEnabled: input.modulesEnabled,

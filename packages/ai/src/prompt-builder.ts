@@ -28,7 +28,7 @@ const convertMemoryToMessages = (input: PromptBuilderInput["recentMemory"]): Pro
 };
 
 const buildToneBlock = (input: PromptBuilderInput, languageHint?: string): string => {
-  const { persona, chatScope, userRole, relationshipProfile, profileModifier } = input;
+  const { persona, chatScope, userRole, relationshipProfile, profileModifier, userDisplayName } = input;
   const toneLines: string[] = [];
 
   toneLines.push(`Style: ${persona.traits.join(", ")}.`);
@@ -58,6 +58,9 @@ const buildToneBlock = (input: PromptBuilderInput, languageHint?: string): strin
   toneLines.push(
     `User role: ${userRole}. ${["ROOT", "DONO"].includes(userRole) ? "Can be more direct and operational." : "Keep professional clarity."}`
   );
+  toneLines.push(
+    `When directly addressing the user, prefer "${userDisplayName?.trim() || "você"}" and never use internal role labels as a name (ROOT, creator_root, bot_admin, group_admin, admin).`
+  );
   if (languageHint) toneLines.push(`Language preference: ${languageHint}.`);
   return toneLines.join(" ");
 };
@@ -79,7 +82,8 @@ const buildOperationalPolicies = (input: PromptBuilderInput): string[] => {
     "If information depends on tools or data you do not have, say so and suggest the relevant command or data needed.",
     "If a command/tool can solve the request, suggest or invoke it; otherwise provide a concise answer.",
     "Use current timezone and local date/time in replies when relevant.",
-    "If LLM cannot fulfill a request, redirect to available commands gracefully."
+    "If LLM cannot fulfill a request, redirect to available commands gracefully.",
+    "Do not use internal permission/profile labels as vocative names for the user."
   ];
 
   if (input.handoffActive) policies.push("Handoff is active; stay silent unless explicitly mentioned by name.");

@@ -265,6 +265,9 @@ export interface CorePorts {
   defaultReminderTime?: string;
   baseSystemPrompt?: string;
   llmMemoryMessages?: number;
+  audioCapabilityEnabled?: boolean;
+  audioAutoTranscribeEnabled?: boolean;
+  audioCommandDispatchEnabled?: boolean;
   consentTermsVersion?: string;
   consentLink?: string;
   consentSource?: string;

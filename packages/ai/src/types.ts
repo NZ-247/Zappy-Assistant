@@ -93,6 +93,7 @@ export interface PromptBuilderInput {
   settings?: EffectiveSettings;
   chatScope: ChatScope;
   userRole: UserRole;
+  userDisplayName?: string;
   relationshipProfile?: RelationshipProfile;
   profileModifier?: PersonaProfileModifier;
   modulesEnabled?: string[];

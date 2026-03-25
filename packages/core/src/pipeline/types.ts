@@ -185,6 +185,9 @@ export interface InboundMessageEvent {
   botAdminCheckFailed?: boolean;
   botAdminCheckError?: string;
   groupName?: string;
+  ingressSource?: "text" | "audio_stt";
+  sttTranscript?: string;
+  sttCommandText?: string;
 }
 
 export interface ConversationMessage {
@@ -241,6 +244,7 @@ export interface AiAssistantInput {
   waUserId: string;
   waGroupId?: string;
   userText: string;
+  userDisplayName?: string;
   chatScope: "direct" | "group";
   userRole: "ROOT" | "DONO" | "GROUP_ADMIN" | "ADMIN" | "MEMBER";
   relationshipProfile?: RelationshipProfile;

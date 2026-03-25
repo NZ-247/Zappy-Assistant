@@ -35,6 +35,10 @@ export type PipelineContext = {
   now: Date;
   defaultReminderTime: string;
   memoryLimit: number;
+  addressingName: string;
+  audioCapabilityEnabled: boolean;
+  audioAutoTranscribeEnabled: boolean;
+  audioCommandDispatchEnabled: boolean;
   classification: MessageClassification;
   muteInfo?: { until: Date } | null;
   userMuteInfo?: { until: Date } | null;

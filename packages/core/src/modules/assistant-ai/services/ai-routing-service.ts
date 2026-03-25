@@ -1,6 +1,17 @@
 import type { PipelineContext } from "../../../pipeline/context.js";
 import type { ResponseAction } from "../../../pipeline/actions.js";
 
+const INTERNAL_ROLE_LABELS = "(?:root|creator_root|bot_admin|group_admin|admin|owner|dono|privileged)";
+
+const stripInternalRoleAsName = (text: string, preferredName: string): string => {
+  const name = preferredName.trim() || "você";
+  let next = text;
+  next = next.replace(new RegExp(`^${INTERNAL_ROLE_LABELS}\\b[:,\\s-]*`, "i"), `${name}, `);
+  next = next.replace(new RegExp(`\\b(ol[áa]|oi|hello|hey)\\s*,?\\s*${INTERNAL_ROLE_LABELS}\\b[:,\\s-]*`, "gi"), `$1 ${name}`);
+  next = next.replace(new RegExp(`\\b(voc[eê]|tu)\\s*,?\\s*${INTERNAL_ROLE_LABELS}\\b[:,\\s-]*`, "gi"), "$1 ");
+  return next.replace(/\s{2,}/g, " ").trim();
+};
+
 export class AiRoutingService {
   constructor(private readonly deps: { hasRootPrivilege: (ctx: PipelineContext) => boolean }) {}
 
@@ -20,13 +31,13 @@ export class AiRoutingService {
       text = "Meu nome é Zappy, o assistente digital deste sistema.";
     }
     if (isRoot && downgradeRole.some((p) => p.test(text))) {
-      text = "Você é ROOT aqui e tem controle administrativo total. Sou Zappy, pronto para executar suas instruções.";
+      text = "Você tem controle administrativo total neste sistema. Sou Zappy, pronto para executar suas instruções.";
     }
     if (isRoot && /criad[oa]\s+por\s+(uma\s+)?(equipe|time)\s+de\s+ia/i.test(text)) {
       text = "Fui criada para este sistema por você (NZ_DEV) e atuo como sua assistente Zappy.";
     }
     if (isRoot && /created by an ai team/i.test(text)) {
-      text = "I was created here for you (NZ_DEV) and serve you as Zappy with full ROOT alignment.";
+      text = "I was created here for you (NZ_DEV) and serve you as Zappy with full administrative alignment.";
     }
 
     const askedName =
@@ -38,7 +49,7 @@ export class AiRoutingService {
     const askedWhoAmI = /quem sou eu(?: (?:para|pra) voc[eê])?|who am i to you/i.test(normalizedQuestion);
     if (askedWhoAmI) {
       if (isCreator) {
-        text = "Você é meu criador (NZ_DEV) e tem papel ROOT com controle total. Estou aqui para ajudar proativamente.";
+        text = "Você é meu criador (NZ_DEV) e tem controle administrativo total. Estou aqui para ajudar proativamente.";
       } else if (isMother) {
         text = "Você é minha mãe e contato privilegiado; respondo com carinho, respeito e prontidão para ajudar.";
       }
@@ -47,14 +58,14 @@ export class AiRoutingService {
     const askedPermissions =
       /(quais|minhas).{0,20}permiss(?:ões|oes)|what are my permissions|quais s[aã]o minhas permiss/i.test(normalizedQuestion);
     if (askedPermissions && isRoot) {
-      text = "Você é ROOT aqui e possui controle administrativo completo sobre o sistema.";
+      text = "Você possui controle administrativo completo sobre o sistema.";
     }
 
     if (!/zappy/i.test(text) && nameDenials.some((p) => p.test(text))) {
       text = `Sou Zappy, seu assistente digital. ${text}`;
     }
 
-    return text.trim();
+    return stripInternalRoleAsName(text.trim(), ctx.addressingName);
   }
 
   guardAiResponses(ctx: PipelineContext, actions: ResponseAction[]): ResponseAction[] {

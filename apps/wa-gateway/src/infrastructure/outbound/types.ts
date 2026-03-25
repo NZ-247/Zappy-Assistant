@@ -1,8 +1,43 @@
+import type { SpeechToTextPort } from "@zappy/core";
+
 export interface SendWithReplyFallbackInput {
   to: string;
   content: any;
   quotedMessage?: any;
   logContext: Record<string, unknown>;
+}
+
+export interface ProgressReactionsConfig {
+  enabled: boolean;
+  processingEmoji: string;
+  successEmoji: string;
+  failureEmoji: string;
+}
+
+export interface AudioRuntimeConfig {
+  enabled: boolean;
+  sttModel: string;
+  sttTimeoutMs: number;
+  maxDurationSeconds: number;
+  maxBytes: number;
+  language?: string;
+  commandDispatchEnabled: boolean;
+  commandPrefix: string;
+  commandAllowlist: string[];
+  commandMinConfidence: number;
+  transcriptPreviewChars: number;
+}
+
+export interface DispatchTranscribedTextInput {
+  text: string;
+  transcript: string;
+  commandText?: string;
+  action: "respond" | "dispatch_command";
+}
+
+export interface DispatchTranscribedTextResult {
+  hadResponses: boolean;
+  dispatchExecutionId?: string;
 }
 
 export interface ExecuteOutboundActionsInput {
@@ -23,6 +58,11 @@ export interface ExecuteOutboundActionsInput {
   relationshipProfile?: string | null;
   permissionRole?: string | null;
   timezone: string;
+  commandPrefix: string;
+  progressReactions: ProgressReactionsConfig;
+  audioConfig: AudioRuntimeConfig;
+  speechToText?: SpeechToTextPort;
+  dispatchTranscribedText: (input: DispatchTranscribedTextInput) => Promise<DispatchTranscribedTextResult>;
   sendWithReplyFallback: (input: SendWithReplyFallbackInput) => Promise<any>;
   persistOutboundMessage: (input: any) => Promise<unknown>;
   queueAdapter: {
@@ -47,6 +87,7 @@ export interface ExecuteOutboundActionsInput {
   baileysLogger: any;
   normalizeJid: (value: string) => string;
   logger: {
+    debug?: (payload: unknown, message?: string) => void;
     info?: (payload: unknown, message?: string) => void;
     warn?: (payload: unknown, message?: string) => void;
   };
