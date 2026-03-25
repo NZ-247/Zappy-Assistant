@@ -56,7 +56,7 @@ Consome apenas `assistant-api`, sem lógica de domínio embarcada.
 
 ## 4. Fluxo lógico de aplicação (alto nível)
 
-1. Normalização de entrada + stale guard (`INBOUND_MAX_MESSAGE_AGE_SECONDS`)
+1. Normalização de entrada + replay/backlog guard (startup watermark da instância + dedupe claim por `remoteJid/waMessageId` + stale age guard `INBOUND_MAX_MESSAGE_AGE_SECONDS`)
 2. Resolução de identidade e contexto
 3. Verificações de consentimento/acesso
 4. Classificação de intenção

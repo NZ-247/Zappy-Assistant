@@ -5,10 +5,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VALID_MODES = new Set(["dev", "prod"]);
+const VALID_MODES = new Set(["dev", "prod", "debug"]);
 const requestedMode = (process.argv[2] ?? "dev").toLowerCase();
 if (!VALID_MODES.has(requestedMode)) {
-  console.error(`[stop] invalid mode "${requestedMode}". Use: dev | prod`);
+  console.error(`[stop] invalid mode "${requestedMode}". Use: dev | prod | debug`);
   process.exit(1);
 }
 

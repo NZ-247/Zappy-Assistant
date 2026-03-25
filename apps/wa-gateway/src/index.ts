@@ -60,7 +60,12 @@ const redis = createRedisConnection(env.REDIS_URL);
 const metrics = createMetricsRecorder(redis);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const queueAdapter = createQueueAdapter(queue);
-const INBOUND_MESSAGE_CLAIM_TTL_SECONDS = 120;
+const INBOUND_MESSAGE_CLAIM_TTL_SECONDS = env.INBOUND_MESSAGE_CLAIM_TTL_SECONDS;
+const INBOUND_STARTUP_WATERMARK_MS = Date.now();
+const INBOUND_STARTUP_WATERMARK_ISO = new Date(INBOUND_STARTUP_WATERMARK_MS).toISOString();
+const INBOUND_STARTUP_SESSION_ID = `wa-gateway-${process.pid}-${INBOUND_STARTUP_WATERMARK_MS.toString(36)}`;
+const INBOUND_WATERMARK_REDIS_TTL_SECONDS = Math.max(3600, INBOUND_MESSAGE_CLAIM_TTL_SECONDS);
+const INBOUND_STARTUP_WATERMARK_KEY = `wa:inbound:startup-watermark:${INBOUND_STARTUP_SESSION_ID}`;
 const llmConfigured = Boolean(env.OPENAI_API_KEY);
 const llmModel = env.LLM_MODEL ?? env.OPENAI_MODEL;
 const baseSystemPrompt = buildBaseSystemPrompt({
@@ -110,9 +115,35 @@ printStartupBanner(logger, {
   llmStatus: env.LLM_ENABLED ? (llmConfigured ? "PENDING" : "FAIL") : undefined,
   workerStatus: "PENDING",
   extras: {
-    internalDispatchPort: env.WA_GATEWAY_INTERNAL_PORT
+    internalDispatchPort: env.WA_GATEWAY_INTERNAL_PORT,
+    inboundClaimTtlSeconds: INBOUND_MESSAGE_CLAIM_TTL_SECONDS,
+    inboundStartupSession: INBOUND_STARTUP_SESSION_ID
   }
 });
+
+void redis
+  .set(INBOUND_STARTUP_WATERMARK_KEY, String(INBOUND_STARTUP_WATERMARK_MS), "EX", INBOUND_WATERMARK_REDIS_TTL_SECONDS)
+  .then(() => {
+    logger.info(
+      withCategory("SYSTEM", {
+        status: "inbound_replay_guard_ready",
+        startupSessionId: INBOUND_STARTUP_SESSION_ID,
+        startupWatermark: INBOUND_STARTUP_WATERMARK_ISO,
+        claimTtlSeconds: INBOUND_MESSAGE_CLAIM_TTL_SECONDS
+      }),
+      "inbound replay guard ready"
+    );
+  })
+  .catch((error) => {
+    logger.warn(
+      withCategory("WARN", {
+        status: "inbound_replay_guard_watermark_persist_failed",
+        startupSessionId: INBOUND_STARTUP_SESSION_ID,
+        error
+      }),
+      "inbound replay guard watermark persist failed"
+    );
+  });
 
 const reportStartupStatus = async () => {
   const dbOk = await prisma
@@ -321,8 +352,13 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
     ONLY_GROUP_ID: env.ONLY_GROUP_ID,
     DEFAULT_TENANT_NAME: env.DEFAULT_TENANT_NAME,
     BOT_TIMEZONE: env.BOT_TIMEZONE,
-    INBOUND_MAX_MESSAGE_AGE_SECONDS: env.INBOUND_MAX_MESSAGE_AGE_SECONDS
+    INBOUND_MAX_MESSAGE_AGE_SECONDS: env.INBOUND_MAX_MESSAGE_AGE_SECONDS,
+    INBOUND_STARTUP_WATERMARK_TOLERANCE_SECONDS: env.INBOUND_STARTUP_WATERMARK_TOLERANCE_SECONDS,
+    INBOUND_MISSING_TIMESTAMP_STARTUP_GRACE_SECONDS: env.INBOUND_MISSING_TIMESTAMP_STARTUP_GRACE_SECONDS
   },
+  startupWatermarkMs: INBOUND_STARTUP_WATERMARK_MS,
+  startupWatermarkIso: INBOUND_STARTUP_WATERMARK_ISO,
+  startupSessionId: INBOUND_STARTUP_SESSION_ID,
   getSocket,
   normalizeJid,
   buildBotAliases,

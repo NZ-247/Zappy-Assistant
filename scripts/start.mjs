@@ -9,22 +9,66 @@ import { fileURLToPath } from "node:url";
 import cfonts from "cfonts";
 import dotenv from "dotenv";
 
-const VALID_MODES = new Set(["dev", "prod"]);
+const MODE_PROFILES = {
+  dev: {
+    serviceScript: "dev",
+    nodeEnv: "development",
+    logDefaults: {
+      LOG_FORMAT: "pretty",
+      LOG_LEVEL: "debug",
+      LOG_PRETTY_MODE: "dev",
+      LOG_COLORIZE: "true",
+      LOG_VERBOSE_FIELDS: "true"
+    }
+  },
+  prod: {
+    serviceScript: "start",
+    nodeEnv: "production",
+    logDefaults: {
+      LOG_FORMAT: "pretty",
+      LOG_LEVEL: "info",
+      LOG_PRETTY_MODE: "prod",
+      LOG_COLORIZE: "true",
+      LOG_VERBOSE_FIELDS: "false"
+    }
+  },
+  debug: {
+    serviceScript: "start",
+    nodeEnv: "production",
+    logDefaults: {
+      LOG_FORMAT: "json",
+      LOG_LEVEL: "debug",
+      LOG_VERBOSE_FIELDS: "true",
+      DEBUG: "trace"
+    }
+  }
+};
+
+const VALID_MODES = new Set(Object.keys(MODE_PROFILES));
 const requestedMode = (process.argv[2] ?? "dev").toLowerCase();
 if (!VALID_MODES.has(requestedMode)) {
-  console.error(`[start] invalid mode "${requestedMode}". Use: dev | prod`);
+  console.error(`[start] invalid mode "${requestedMode}". Use: dev | prod | debug`);
   process.exit(1);
 }
+const modeArgs = process.argv.slice(3);
+const validModeFlags = new Set(["--build"]);
+const unknownModeFlags = modeArgs.filter((arg) => arg.startsWith("--") && !validModeFlags.has(arg));
+if (unknownModeFlags.length > 0) {
+  console.error(`[start:${requestedMode}] unknown flag(s): ${unknownModeFlags.join(", ")}. Supported: --build`);
+  process.exit(1);
+}
+const prodBuildRequested = modeArgs.includes("--build");
 
+const modeProfile = MODE_PROFILES[requestedMode];
+const serviceScript = modeProfile.serviceScript;
 const isDev = requestedMode === "dev";
-const serviceScript = isDev ? "dev" : "start";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const composeFile = path.join(rootDir, "infra", "docker-compose.yml");
 const stateDir = path.join(rootDir, ".zappy-dev");
 const stateFile = path.join(stateDir, `${requestedMode}-stack.json`);
-const siblingStateFile = path.join(stateDir, `${isDev ? "prod" : "dev"}-stack.json`);
+const modeStateFiles = Object.fromEntries(Array.from(VALID_MODES).map((mode) => [mode, path.join(stateDir, `${mode}-stack.json`)]));
 
 dotenv.config({ path: path.join(rootDir, ".env") });
 
@@ -40,6 +84,48 @@ const services = [
   { name: "worker", workspace: "@zappy/worker" },
   { name: "admin-ui", workspace: "@zappy/admin-ui" }
 ];
+
+const ANSI = {
+  reset: "\u001B[0m",
+  colors: {
+    cyan: "\u001B[36m",
+    blue: "\u001B[34m",
+    green: "\u001B[32m",
+    yellow: "\u001B[33m",
+    magenta: "\u001B[35m"
+  }
+};
+
+const servicePrefixColor = (name) => {
+  switch (name) {
+    case "wa-gateway":
+      return ANSI.colors.green;
+    case "worker":
+      return ANSI.colors.yellow;
+    case "assistant-api":
+      return ANSI.colors.blue;
+    case "admin-ui":
+      return ANSI.colors.magenta;
+    default:
+      return ANSI.colors.cyan;
+  }
+};
+
+const parseColorEnv = (value) => {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  if (/^\d+$/.test(normalized)) return Number(normalized) > 0;
+  return undefined;
+};
+
+const noColorRaw = process.env.NO_COLOR;
+const noColor = parseColorEnv(noColorRaw);
+const logColorize = parseColorEnv(process.env.LOG_COLORIZE);
+const forceColor = parseColorEnv(process.env.FORCE_COLOR);
+const colorizedPrefixes =
+  (noColorRaw === undefined || noColor === false) && (logColorize ?? forceColor ?? process.stdout.isTTY);
 
 const log = (msg) => console.log(`[start:${requestedMode}] ${msg}`);
 const warn = (msg) => console.warn(`[start:${requestedMode}] ${msg}`);
@@ -72,8 +158,8 @@ const writeState = (data) => {
   fs.writeFileSync(stateFile, JSON.stringify(data, null, 2));
 };
 
-const clearState = () => {
-  if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
+const clearState = (targetFile = stateFile) => {
+  if (fs.existsSync(targetFile)) fs.unlinkSync(targetFile);
 };
 
 const detectComposeCmd = () => {
@@ -203,7 +289,8 @@ const printDevBanner = () => {
   console.log("");
 };
 
-const printProdBanner = () => {
+const printProdBanner = (runtimeEnv, options = {}) => {
+  const buildStatus = options.buildExecuted ? "executed" : "skipped";
   const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
   const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
   const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
@@ -213,9 +300,54 @@ const printProdBanner = () => {
   console.log("mode=prod environment=production");
   console.log(`timezone=${timezone} localTime=${toLocalTime(timezone)}`);
   console.log(`llm=${llmEnabled ? "enabled" : "disabled"} model=${llmModel}`);
+  console.log(
+    `logs format=${runtimeEnv.LOG_FORMAT ?? "pretty"} level=${runtimeEnv.LOG_LEVEL ?? "info"} prettyMode=${
+      runtimeEnv.LOG_PRETTY_MODE ?? "prod"
+    } colorize=${runtimeEnv.LOG_COLORIZE ?? "true"} verboseFields=${runtimeEnv.LOG_VERBOSE_FIELDS ?? "false"}`
+  );
+  console.log(`build=${buildStatus}`);
   console.log(`waSessionPath=${path.resolve(rootDir, waSessionPath)}`);
   console.log("==============================================");
 };
+
+const printDebugBanner = (runtimeEnv) => {
+  const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
+  const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
+  const waSessionPath = process.env.WA_SESSION_PATH || ".wa_auth";
+  console.log("==============================================");
+  console.log("Zappy Assistant Runtime");
+  console.log("mode=debug environment=production");
+  console.log(`timezone=${timezone} localTime=${toLocalTime(timezone)}`);
+  console.log(`llm=${llmEnabled ? "enabled" : "disabled"} model=${llmModel}`);
+  console.log(
+    `logs format=${runtimeEnv.LOG_FORMAT ?? "json"} level=${runtimeEnv.LOG_LEVEL ?? "debug"} verboseFields=${
+      runtimeEnv.LOG_VERBOSE_FIELDS ?? "true"
+    } debug=${runtimeEnv.DEBUG ?? "trace"}`
+  );
+  console.log(`waSessionPath=${path.resolve(rootDir, waSessionPath)}`);
+  console.log("==============================================");
+};
+
+const applyDefaultEnv = (env, key, value) => {
+  if (env[key] === undefined || env[key] === "") env[key] = value;
+};
+
+const buildRuntimeEnv = () => {
+  const env = {
+    ...process.env,
+    ZAPPY_RUNTIME_MODE: requestedMode,
+    NODE_ENV: modeProfile.nodeEnv,
+    ZAPPY_SKIP_SERVICE_BANNER: "1"
+  };
+  for (const [key, value] of Object.entries(modeProfile.logDefaults)) {
+    applyDefaultEnv(env, key, value);
+  }
+  return env;
+};
+
+const isStateAlive = (state) =>
+  Boolean(state) && (pidAlive(state.supervisorPid) || (state.services || []).some((svc) => svc.pid && pidAlive(svc.pid)));
 
 const ensurePorts = async () => {
   log("Waiting for infra ports...");
@@ -225,7 +357,8 @@ const ensurePorts = async () => {
 
 const prefixWriter = (name, stream, isErr) => {
   const width = Math.max(...services.map((s) => s.name.length));
-  const prefix = `[${name.padEnd(width)}]`;
+  const rawPrefix = `[${name.padEnd(width)}]`;
+  const prefix = colorizedPrefixes ? `${servicePrefixColor(name)}${rawPrefix}${ANSI.reset}` : rawPrefix;
   const rl = createInterface({ input: stream });
   rl.on("line", (line) => {
     const output = `${prefix} ${line}`;
@@ -277,32 +410,23 @@ const cleanup = async (reason = "shutdown", exitCode = 0) => {
 };
 
 const assertNoRunningStack = () => {
-  const current = readState(stateFile);
-  if (current) {
-    const alive = pidAlive(current.supervisorPid) || (current.services || []).some((svc) => svc.pid && pidAlive(svc.pid));
-    if (alive) {
-      fail(`${requestedMode} stack already running (see ${path.relative(rootDir, stateFile)}). Run npm run stop:${requestedMode} first.`);
-    } else {
-      clearState();
+  for (const mode of Object.keys(modeStateFiles)) {
+    const targetFile = modeStateFiles[mode];
+    const state = readState(targetFile);
+    if (!state) continue;
+    const alive = isStateAlive(state);
+    if (!alive) {
+      clearState(targetFile);
+      continue;
     }
-  }
-
-  const sibling = readState(siblingStateFile);
-  if (!sibling) return;
-  const siblingAlive = pidAlive(sibling.supervisorPid) || (sibling.services || []).some((svc) => svc.pid && pidAlive(svc.pid));
-  if (siblingAlive) {
-    fail(`another stack mode is running (${path.basename(siblingStateFile)}). Stop it before starting mode=${requestedMode}.`);
+    if (mode === requestedMode) {
+      fail(`${requestedMode} stack already running (see ${path.relative(rootDir, targetFile)}). Run npm run stop:${requestedMode} first.`);
+    }
+    fail(`another stack mode is running (${path.basename(targetFile)}). Stop it before starting mode=${requestedMode}.`);
   }
 };
 
-const startServices = () => {
-  const env = { ...process.env, ZAPPY_RUNTIME_MODE: requestedMode };
-  if (isDev) {
-    env.ZAPPY_SKIP_SERVICE_BANNER = "1";
-  } else {
-    env.NODE_ENV = "production";
-  }
-
+const startServices = (env) => {
   services.forEach((svc) => {
     const child = spawn("npm", ["run", serviceScript, "-w", svc.workspace], {
       cwd: rootDir,
@@ -335,19 +459,28 @@ const startServices = () => {
 };
 
 const main = async () => {
+  const runtimeEnv = buildRuntimeEnv();
   assertNoRunningStack();
   ensureInfra();
   await ensurePorts().catch((err) => fail(err.message));
 
   if (isDev) {
     printDevBanner();
+  } else if (requestedMode === "prod") {
+    if (prodBuildRequested) {
+      log("Preparing production build (--build enabled)...");
+      runNpm(["run", "build"], { env: runtimeEnv });
+    } else {
+      log("Skipping build (use --build to force compile before startup).");
+    }
+    printProdBanner(runtimeEnv, { buildExecuted: prodBuildRequested });
   } else {
-    log("Preparing production build...");
-    runNpm(["run", "build"], { env: { ...process.env, NODE_ENV: "production" } });
-    printProdBanner();
+    log("Preparing debug build...");
+    runNpm(["run", "build"], { env: runtimeEnv });
+    printDebugBanner(runtimeEnv);
   }
 
-  startServices();
+  startServices(runtimeEnv);
 };
 
 process.on("SIGINT", () => cleanup("SIGINT"));

@@ -13,7 +13,8 @@ npm run prisma:generate
 - `LLM_ENABLED=false` skips the LLM fallback and keeps commands/triggers active.
 - `BOT_TIMEZONE` (default `America/Cuiaba`) controls all reminder parsing/formatting.
 - `BOT_PREFIX` (default `/`) is the global command prefix; parsing/help text respect this value.
-- `INBOUND_MAX_MESSAGE_AGE_SECONDS` (default `30`) discards stale backlog messages on reconnect/new instance before command/AI processing. If timestamp is unavailable, message is accepted (safe fallback) and logged at debug level.
+- Logging env overrides: `LOG_FORMAT`, `LOG_LEVEL`, `LOG_PRETTY_MODE`, `LOG_COLORIZE`, `LOG_VERBOSE_FIELDS` (runtime mode still applies sane defaults).
+- Replay/backlog guard is multi-layered: startup watermark + dedupe claim (`remoteJid + waMessageId`) + stale age guard. Main knobs: `INBOUND_MAX_MESSAGE_AGE_SECONDS` (default `30`), `INBOUND_STARTUP_WATERMARK_TOLERANCE_SECONDS` (default `5`), `INBOUND_MISSING_TIMESTAMP_STARTUP_GRACE_SECONDS` (default `15`), `INBOUND_MESSAGE_CLAIM_TTL_SECONDS` (default `172800`).
 - `STICKER_MAX_VIDEO_SECONDS` (default `10`) limits short-video sticker generation; videos above this threshold are rejected with friendly feedback.
 - Operational reactions are configurable via `WA_REACTIONS_ENABLED`, `WA_REACTION_PROGRESS`, `WA_REACTION_SUCCESS`, `WA_REACTION_FAILURE` (defaults: `⏱️`, `✅`, `❌`).
 - Audio STT-first capability is controlled by `AUDIO_CAPABILITY_ENABLED`, `AUDIO_AUTO_TRANSCRIBE_ENABLED`, `AUDIO_STT_MODEL`, `AUDIO_STT_TIMEOUT_MS`, `AUDIO_MAX_DURATION_SECONDS`, `AUDIO_MAX_BYTES`, `AUDIO_STT_LANGUAGE`.
@@ -23,17 +24,17 @@ npm run prisma:generate
 
 ## Run
 
-Preferred flow (handles infra + banner + prefixed logs):
+Preferred flow for local development:
 
 ```bash
 npm run start:dev
 ```
 
-What it does:
+What `start:dev` does:
 - checks Docker/Compose availability
 - ensures `postgres` and `redis` from `infra/docker-compose.yml` are running (starts them if needed)
 - waits for connectivity on 5432/6379
-- prints a compact cfonts banner (creator/company/version/env/timezone/LLM model/WA session path)
+- prints a compact cfonts banner (mode/environment/timezone/LLM model/WA session path)
 - starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
 - writes state to `.zappy-dev/dev-stack.json` so the stop script can cleanly shut things down
 
@@ -43,11 +44,33 @@ Production flow (no watch mode, stable bootstrap):
 npm run start:prod
 ```
 
+Build-on-demand before startup:
+
+```bash
+npm run start:prod -- --build
+```
+
 What it does in `prod`:
 - checks/starts infra (`postgres`, `redis`) and waits for ports
-- runs `npm run build` before bootstrapping services
+- skips build by default (faster boot)
+- runs `npm run build` only when `--build` is passed
 - starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` with `npm run start -w ...`
 - writes state to `.zappy-dev/prod-stack.json`
+- prints runtime header with `build=executed|skipped`
+- forces runtime log defaults: `LOG_FORMAT=pretty`, `LOG_PRETTY_MODE=prod`, `LOG_COLORIZE=true`, `LOG_LEVEL=info`, `LOG_VERBOSE_FIELDS=false` (can still be overridden via env)
+
+Debug flow (technical troubleshooting):
+
+```bash
+npm run start:debug
+```
+
+What it does in `debug`:
+- checks/starts infra (`postgres`, `redis`) and waits for ports
+- runs `npm run build` before bootstrapping services
+- starts all apps with non-watch runtime (`npm run start -w ...`)
+- forces runtime log defaults: `LOG_FORMAT=json`, `LOG_LEVEL=debug`, `LOG_VERBOSE_FIELDS=true`, `DEBUG=trace` (can still be overridden via env)
+- writes state to `.zappy-dev/debug-stack.json`
 
 Stop services while keeping infra up:
 
@@ -59,6 +82,10 @@ npm run stop:dev
 npm run stop:prod
 ```
 
+```bash
+npm run stop:debug
+```
+
 Stop services **and** infra (postgres/redis):
 
 ```bash
@@ -67,6 +94,10 @@ npm run stop:dev -- --with-infra
 
 ```bash
 npm run stop:prod -- --with-infra
+```
+
+```bash
+npm run stop:debug -- --with-infra
 ```
 
 If you still prefer the old behavior, `npm run dev` remains available (it will print each service banner).
@@ -130,16 +161,26 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Admin/root command to bind aliases when WhatsApp hides the phone number: `/alias link <phoneNumber> <lidJid>` (example: `/alias link 556699064658 70029643092123@lid`). The link is stored, relationshipProfile/permissionRole are recalculated immediately, and duplicate users are merged.
 
 ## Logging
-- Prod: structured JSON (pino) for ingestion. Dev: pretty, colorized, compact lines grouped by category (`SYSTEM`, `AUTH`, `WA-IN`, `WA-OUT`, `AI`, `HTTP`, `QUEUE`, `DB`, `WARN`, `ERROR`). Set `PRETTY_LOGS=false` to force JSON in dev.
-- Local timestamps respect `BOT_TIMEZONE`. `DEBUG=trace` disables noise filtering; `DEBUG=stack` shows stack traces inside WARN/ERROR blocks.
-- WA-IN/WA-OUT dev lines: `[HH:MM:SS] [WA-IN] [DIRECT|GROUP] <role> <profile> <phone> -> "preview"` with `action=` for outbound. Structured fields (`waMessageId`, `tenantId`, etc.) stay in the JSON payload.
-- Warnings/errors are rendered in a block with source module and a short hint; full stack only when `DEBUG=stack`.
-- Baileys low-level sync chatter is silenced in dev unless `DEBUG=trace` is set.
-- Replayed old inbound messages are skipped with short log `stale inbound skipped` when age exceeds `INBOUND_MAX_MESSAGE_AGE_SECONDS`.
+- Runtime defaults by mode:
+  - `dev`: pretty + detailed (`LOG_FORMAT=pretty`, `LOG_PRETTY_MODE=dev`, `LOG_COLORIZE=true`, `LOG_LEVEL=debug`, `LOG_VERBOSE_FIELDS=true`)
+  - `prod`: pretty + operational one-line output (`LOG_FORMAT=pretty`, `LOG_PRETTY_MODE=prod`, `LOG_COLORIZE=true`, `LOG_LEVEL=info`, `LOG_VERBOSE_FIELDS=false`)
+  - `debug`: raw/json + max technical detail (`LOG_FORMAT=json`, `LOG_LEVEL=debug`, `LOG_VERBOSE_FIELDS=true`, `DEBUG=trace`)
+- Configurable env knobs:
+  - `LOG_FORMAT=pretty|json`
+  - `LOG_LEVEL=fatal|error|warn|info|debug|trace|silent`
+  - `LOG_PRETTY_MODE=dev|prod`
+  - `LOG_COLORIZE=true|false` (default follows mode/supervisor; `NO_COLOR` disables)
+  - `LOG_VERBOSE_FIELDS=true|false`
+- Backward compatibility: `PRETTY_LOGS=false` still forces JSON when `LOG_FORMAT` is not explicitly set.
+- Local timestamps respect `BOT_TIMEZONE`. `DEBUG=trace` disables Baileys noise filtering; `DEBUG=stack` shows stack traces in pretty WARN/ERROR blocks.
+- Pretty output keeps category-first lines (`SYSTEM`, `AUTH`, `WA-IN`, `WA-OUT`, `AI`, `HTTP`, `QUEUE`, `DB`, `WARN`, `ERROR`, `COMMAND_TRACE`), includes source tag (`[wa-gateway]`, `[worker]`, etc.), and preserves key traceability fields (`msg`, `in`, `exec`, `resp`) when present.
+- In `prod` pretty profile, each event is rendered as a clean single line.
+- Replay drops are explicit and auditable: `stale inbound skipped`, `replay/backlog inbound skipped` (startup watermark), and `duplicate inbound message skipped` (dedupe claim hit).
 
 ## Startup banner (dev)
-- `npm run start:dev` prints a single cfonts banner (`Zappy Assistant ©`) with metadata: Creator (NZ_Dev©), Company (Services.NET), Version (beta 1.0), Environment, Timezone, LLM/model, WA session path. It sets `ZAPPY_SKIP_SERVICE_BANNER=1` so individual services don't repeat the banner.
-- `npm run start:prod` prints a compact runtime header (`mode=prod`) and starts services without watch mode.
+- `npm run start:dev` prints a single cfonts banner (`Zappy Assistant ©`) with runtime metadata and runs all services in watch mode.
+- `npm run start:prod` prints a compact runtime header (`mode=prod`, `build=...`) and starts services without watch mode (clean operational output, no dev branding per service).
+- `npm run start:debug` prints a compact runtime header (`mode=debug`) and starts services without watch mode using raw/json logging for deep troubleshooting.
 - Running a service directly (`npm run dev -w ...`) still shows the per-service startup banner with status hints (Redis/DB/Worker/LLM) and Admin URLs. Status transitions remain logged clearly: WhatsApp CONNECTING/QR READY/CONNECTED/DISCONNECTED, Redis/DB OK|FAIL, Worker OK|FAIL.
 
 ## Admin

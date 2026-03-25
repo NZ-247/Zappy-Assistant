@@ -20,7 +20,12 @@ interface MessagesUpsertHandlerDeps {
     DEFAULT_TENANT_NAME: string;
     BOT_TIMEZONE: string;
     INBOUND_MAX_MESSAGE_AGE_SECONDS: number;
+    INBOUND_STARTUP_WATERMARK_TOLERANCE_SECONDS: number;
+    INBOUND_MISSING_TIMESTAMP_STARTUP_GRACE_SECONDS: number;
   };
+  startupWatermarkMs: number;
+  startupWatermarkIso: string;
+  startupSessionId: string;
   getSocket: () => any | null;
   normalizeJid: (value: string) => string;
   buildBotAliases: (input: { pnJid?: string | null; lidJid?: string | null }) => string[];
@@ -142,6 +147,14 @@ const resolveMessageTimestampMs = (rawTimestamp: InboundUpsertMessage["messageTi
 };
 
 export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => {
+  const startupWatermarkMs = deps.startupWatermarkMs;
+  const startupWatermarkIso = deps.startupWatermarkIso;
+  const startupSessionId = deps.startupSessionId;
+  const startupToleranceMs = Math.max(0, deps.env.INBOUND_STARTUP_WATERMARK_TOLERANCE_SECONDS) * 1000;
+  const startupCutoffMs = startupWatermarkMs - startupToleranceMs;
+  const missingTimestampStartupGraceMs = Math.max(0, deps.env.INBOUND_MISSING_TIMESTAMP_STARTUP_GRACE_SECONDS) * 1000;
+  const maxMessageAgeSeconds = Math.max(0, deps.env.INBOUND_MAX_MESSAGE_AGE_SECONDS);
+
   return async ({ messages, type }: InboundUpsertPayload) => {
     const socket = deps.getSocket();
     if (type !== "notify" || !socket) return;
@@ -161,37 +174,98 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const inboundMessageId = buildInboundMessageId({ message, remoteJid, waUserId, text, mediaPresent });
       const executionId = buildExecutionId(inboundMessageId);
       const messageTimestampMs = resolveMessageTimestampMs(message.messageTimestamp);
-      const maxMessageAgeSeconds = Math.max(0, deps.env.INBOUND_MAX_MESSAGE_AGE_SECONDS);
+      const claimed = await deps.claimInboundMessage({ remoteJid, waMessageId: inboundMessageId });
+      if (!claimed) {
+        deps.logger.info(
+          deps.withCategory("WA-IN", {
+            status: "duplicate_inbound_skipped",
+            skipReason: "duplicate_claim",
+            waMessageId: inboundMessageId,
+            remoteJid,
+            waUserId,
+            executionId,
+            claimTtlSeconds: deps.inboundMessageClaimTtlSeconds
+          }),
+          "duplicate inbound message skipped"
+        );
+        continue;
+      }
 
-      if (maxMessageAgeSeconds > 0 && messageTimestampMs !== null) {
-        const ageMs = Date.now() - messageTimestampMs;
-        if (ageMs > maxMessageAgeSeconds * 1000) {
+      if (messageTimestampMs !== null) {
+        if (messageTimestampMs < startupCutoffMs) {
           deps.logger.info(
             deps.withCategory("WA-IN", {
-              status: "stale_inbound_skipped",
+              status: "startup_watermark_inbound_skipped",
+              skipReason: "startup_watermark",
               remoteJid,
               waUserId,
               waMessageId: inboundMessageId,
               executionId,
               messageTimestamp: new Date(messageTimestampMs).toISOString(),
-              messageAgeSeconds: Math.max(0, Math.floor(ageMs / 1000)),
-              maxAgeSeconds: maxMessageAgeSeconds
+              startupWatermark: startupWatermarkIso,
+              startupSessionId,
+              startupToleranceSeconds: Math.floor(startupToleranceMs / 1000),
+              backlogSeconds: Math.max(0, Math.floor((startupWatermarkMs - messageTimestampMs) / 1000))
             }),
-            "stale inbound skipped"
+            "replay/backlog inbound skipped"
           );
           continue;
         }
-      } else if (maxMessageAgeSeconds > 0 && messageTimestampMs === null) {
-        deps.logger.debug(
-          deps.withCategory("WA-IN", {
-            status: "stale_guard_timestamp_missing",
-            remoteJid,
-            waUserId,
-            waMessageId: inboundMessageId,
-            executionId
-          }),
-          "stale guard timestamp missing; inbound accepted"
-        );
+
+        if (maxMessageAgeSeconds > 0) {
+          const ageMs = Date.now() - messageTimestampMs;
+          if (ageMs > maxMessageAgeSeconds * 1000) {
+            deps.logger.info(
+              deps.withCategory("WA-IN", {
+                status: "stale_inbound_skipped",
+                skipReason: "stale_age",
+                remoteJid,
+                waUserId,
+                waMessageId: inboundMessageId,
+                executionId,
+                messageTimestamp: new Date(messageTimestampMs).toISOString(),
+                messageAgeSeconds: Math.max(0, Math.floor(ageMs / 1000)),
+                maxAgeSeconds: maxMessageAgeSeconds
+              }),
+              "stale inbound skipped"
+            );
+            continue;
+          }
+        }
+      } else {
+        const uptimeMs = Date.now() - startupWatermarkMs;
+        if (uptimeMs <= missingTimestampStartupGraceMs) {
+          deps.logger.info(
+            deps.withCategory("WA-IN", {
+              status: "startup_watermark_timestamp_missing_skipped",
+              skipReason: "startup_watermark_timestamp_missing",
+              remoteJid,
+              waUserId,
+              waMessageId: inboundMessageId,
+              executionId,
+              startupWatermark: startupWatermarkIso,
+              startupSessionId,
+              missingTimestampGraceSeconds: Math.floor(missingTimestampStartupGraceMs / 1000),
+              uptimeSeconds: Math.max(0, Math.floor(uptimeMs / 1000))
+            }),
+            "replay/backlog inbound skipped"
+          );
+          continue;
+        }
+
+        if (maxMessageAgeSeconds > 0) {
+          deps.logger.debug(
+            deps.withCategory("WA-IN", {
+              status: "replay_guard_timestamp_missing_accepted",
+              remoteJid,
+              waUserId,
+              waMessageId: inboundMessageId,
+              executionId,
+              startupSessionId
+            }),
+            "replay guard timestamp missing; inbound accepted"
+          );
+        }
       }
 
       const botJid = socket.user?.id ? deps.normalizeJid(socket.user.id) : undefined;
@@ -315,24 +389,6 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         messageKey,
         executionId
       };
-
-      const claimed = await deps.claimInboundMessage({ remoteJid, waMessageId: inboundMessageId });
-      if (!claimed) {
-        deps.logger.info(
-          deps.withCategory("WA-IN", {
-            status: "duplicate_inbound_skipped",
-            tenantId: event.tenantId,
-            waGroupId: event.waGroupId,
-            waMessageId: inboundMessageId,
-            remoteJid,
-            waUserId,
-            executionId,
-            claimTtlSeconds: deps.inboundMessageClaimTtlSeconds
-          }),
-          "duplicate inbound message skipped"
-        );
-        continue;
-      }
 
       const persisted = await deps.persistInboundMessage({
         ...event,

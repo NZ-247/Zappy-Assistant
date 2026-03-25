@@ -11,12 +11,30 @@ export type LogCategory =
   | "QUEUE"
   | "DB"
   | "WARN"
-  | "ERROR";
+  | "ERROR"
+  | "COMMAND_TRACE";
 
 type PrettyContext = {
   timezone?: string;
-  silenceNoise?: boolean;
-  verboseStacks?: boolean;
+  profile: "dev" | "prod";
+  silenceNoise: boolean;
+  verboseStacks: boolean;
+  verboseFields: boolean;
+  colorize: boolean;
+};
+
+type RuntimeMode = "dev" | "prod" | "debug";
+type LogFormat = "pretty" | "json";
+type LogLevel = NonNullable<LoggerOptions["level"]>;
+
+type ResolvedLogConfig = {
+  runtimeMode: RuntimeMode;
+  format: LogFormat;
+  level: LogLevel;
+  prettyMode: "dev" | "prod";
+  verboseFields: boolean;
+  silenceNoise: boolean;
+  verboseStacks: boolean;
 };
 
 const ANSI = {
@@ -26,40 +44,192 @@ const ANSI = {
   colors: {
     gray: "\u001B[90m",
     cyan: "\u001B[36m",
+    brightCyan: "\u001B[96m",
     blue: "\u001B[34m",
+    brightBlue: "\u001B[94m",
     green: "\u001B[32m",
+    brightGreen: "\u001B[92m",
     yellow: "\u001B[33m",
+    brightYellow: "\u001B[93m",
     magenta: "\u001B[35m",
+    brightMagenta: "\u001B[95m",
     red: "\u001B[31m",
     white: "\u001B[37m"
   }
 };
 
+const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
+const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
+const LOG_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
+const CORE_DETAIL_FIELDS = [
+  "status",
+  "route",
+  "method",
+  "code",
+  "jobId",
+  "queue",
+  "model",
+  "phase",
+  "commandName",
+  "resultSummary",
+  "action",
+  "waMessageId",
+  "inboundWaMessageId",
+  "executionId",
+  "commandExecutionId",
+  "responseActionId"
+] as const;
+const VERBOSE_DETAIL_FIELDS = [
+  "tenantId",
+  "waGroupId",
+  "waUserId",
+  "phoneNumber",
+  "scope",
+  "permissionRole",
+  "relationshipProfile",
+  "target",
+  "module",
+  "name",
+  "signal",
+  "statusCode",
+  "retryCount",
+  "latencyMs",
+  "durationMs"
+] as const;
+
 const categoryColor = (category?: string): string => {
   switch (category) {
     case "SYSTEM":
-      return ANSI.colors.cyan;
+      return ANSI.colors.brightCyan;
     case "AUTH":
       return ANSI.colors.magenta;
     case "WA-IN":
-      return ANSI.colors.green;
+      return ANSI.colors.brightGreen;
     case "WA-OUT":
-      return ANSI.colors.blue;
+      return ANSI.colors.brightBlue;
     case "AI":
       return ANSI.colors.magenta;
     case "HTTP":
       return ANSI.colors.cyan;
     case "QUEUE":
-      return ANSI.colors.yellow;
+      return ANSI.colors.brightYellow;
     case "DB":
-      return ANSI.colors.white;
+      return ANSI.colors.blue;
     case "WARN":
       return ANSI.colors.yellow;
     case "ERROR":
       return ANSI.colors.red;
+    case "COMMAND_TRACE":
+      return ANSI.colors.brightMagenta;
     default:
       return ANSI.colors.gray;
   }
+};
+
+const parseColorEnv = (value: string | undefined): boolean | undefined => {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  const bool = parseBooleanEnv(normalized);
+  if (bool !== undefined) return bool;
+  if (/^\d+$/.test(normalized)) return Number(normalized) > 0;
+  return undefined;
+};
+
+const resolveColorize = (): boolean => {
+  const noColorRaw = process.env.NO_COLOR;
+  if (noColorRaw !== undefined) {
+    const noColor = parseColorEnv(noColorRaw);
+    if (noColor !== false) return false;
+  }
+  const explicit = parseBooleanEnv(process.env.LOG_COLORIZE);
+  if (explicit !== undefined) return explicit;
+  const forced = parseColorEnv(process.env.FORCE_COLOR);
+  if (forced !== undefined) return forced;
+  return process.stdout.isTTY;
+};
+
+const parseBooleanEnv = (value: string | undefined): boolean | undefined => {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (TRUE_VALUES.has(normalized)) return true;
+  if (FALSE_VALUES.has(normalized)) return false;
+  return undefined;
+};
+
+const parseRuntimeMode = (value: string | undefined): RuntimeMode | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "dev" || normalized === "prod" || normalized === "debug") return normalized;
+  return undefined;
+};
+
+const parseLogFormat = (value: string | undefined): LogFormat | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "pretty" || normalized === "json") return normalized;
+  return undefined;
+};
+
+const parsePrettyMode = (value: string | undefined): "dev" | "prod" | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "dev" || normalized === "prod") return normalized;
+  return undefined;
+};
+
+const parseLogLevel = (value: string | undefined): LogLevel | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!LOG_LEVELS.has(normalized)) return undefined;
+  return normalized as LogLevel;
+};
+
+const resolveLogConfig = (): ResolvedLogConfig => {
+  const runtimeMode = parseRuntimeMode(process.env.ZAPPY_RUNTIME_MODE) ?? (process.env.NODE_ENV === "production" ? "prod" : "dev");
+  const debugRaw = (process.env.DEBUG ?? "").toLowerCase();
+  const debugTrace = debugRaw.includes("trace");
+  const debugStack = debugRaw.includes("stack");
+
+  const runtimeDefaults =
+    runtimeMode === "debug"
+      ? ({
+          format: "json",
+          level: "debug",
+          prettyMode: "dev",
+          verboseFields: true,
+          silenceNoise: false,
+          verboseStacks: true
+        } satisfies Omit<ResolvedLogConfig, "runtimeMode">)
+      : runtimeMode === "prod"
+        ? ({
+            format: "pretty",
+            level: "info",
+            prettyMode: "prod",
+            verboseFields: false,
+            silenceNoise: true,
+            verboseStacks: false
+          } satisfies Omit<ResolvedLogConfig, "runtimeMode">)
+        : ({
+            format: "pretty",
+            level: "debug",
+            prettyMode: "dev",
+            verboseFields: true,
+            silenceNoise: true,
+            verboseStacks: false
+          } satisfies Omit<ResolvedLogConfig, "runtimeMode">);
+
+  const legacyPretty = process.env.LOG_FORMAT ? undefined : parseBooleanEnv(process.env.PRETTY_LOGS);
+  const format = parseLogFormat(process.env.LOG_FORMAT) ?? (legacyPretty === undefined ? runtimeDefaults.format : legacyPretty ? "pretty" : "json");
+
+  return {
+    runtimeMode,
+    format,
+    level: parseLogLevel(process.env.LOG_LEVEL) ?? runtimeDefaults.level,
+    prettyMode: parsePrettyMode(process.env.LOG_PRETTY_MODE) ?? runtimeDefaults.prettyMode,
+    verboseFields: parseBooleanEnv(process.env.LOG_VERBOSE_FIELDS) ?? runtimeDefaults.verboseFields,
+    silenceNoise: debugTrace ? false : runtimeDefaults.silenceNoise,
+    verboseStacks: debugStack || runtimeDefaults.verboseStacks
+  };
 };
 
 const formatLocalTime = (input: string | number | undefined, timezone?: string): string => {
@@ -139,6 +309,35 @@ const sanitizeBaileysLog = (obj: any) => {
   return copy;
 };
 
+const toDisplayValue = (value: unknown, maxLen = 64): string | null => {
+  if (value === undefined) return null;
+  if (value === null) return "null";
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  if (typeof value !== "string") return null;
+  const compact = truncate(value.replace(/\s+/g, " ").trim(), maxLen);
+  if (!compact) return null;
+  return /\s/.test(compact) ? `"${compact}"` : compact;
+};
+
+const pickDetailParts = (obj: any, verboseFields: boolean): string[] => {
+  const keys = [...CORE_DETAIL_FIELDS, ...(verboseFields ? VERBOSE_DETAIL_FIELDS : [])];
+  const uniqueKeys = new Set<string>(keys);
+  const details: string[] = [];
+  for (const key of uniqueKeys) {
+    const displayValue = toDisplayValue(obj[key], verboseFields ? 96 : 64);
+    if (displayValue === null) continue;
+    details.push(`${key}=${displayValue}`);
+  }
+  return details;
+};
+
+const resolveSourceLabel = (obj: any): string => {
+  const source = obj?.name ?? obj?.service ?? obj?.app ?? obj?.module ?? "app";
+  if (typeof source !== "string") return "app";
+  const normalized = source.trim();
+  return normalized || "app";
+};
+
 const dedupe = () => {
   const seen = new Map<string, number>();
   const limit = 500;
@@ -154,12 +353,15 @@ const dedupe = () => {
   };
 };
 
-const formatWaLine = (obj: any, tz?: string): string => {
-  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
+const formatWaLine = (obj: any, ctx: PrettyContext): string => {
+  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), ctx.timezone);
+  const category = obj.category ?? "WA-IN";
+  const source = resolveSourceLabel(obj);
   const scope = obj.scope === "group" ? "GROUP" : "DIRECT";
   const role = obj.permissionRole ?? obj.role ?? "";
   const profile = obj.relationshipProfile ?? "";
   const number = normalizeNumber(obj.phoneNumber ?? obj.waUserId) ?? "-";
+  const identity = [role, profile, number].filter(Boolean).join(" ");
   const traceParts = [
     obj.waMessageId ? `msg=${obj.waMessageId}` : null,
     obj.inboundWaMessageId ? `in=${obj.inboundWaMessageId}` : null,
@@ -171,11 +373,12 @@ const formatWaLine = (obj: any, tz?: string): string => {
   const trace = traceParts ? ` ${traceParts}` : "";
   const action = obj.action ? ` action=${obj.action}` : "";
   const previewSource = obj.textPreview ?? obj.text ?? obj.msg ?? "";
-  const preview = previewSource ? ` -> "${truncate(String(previewSource).replace(/\s+/g, " ").trim(), 80)}"` : "";
-  return `[${time}] [${obj.category}] [${scope}] ${role || ""} ${profile || ""} ${number}${trace}${action}${preview}`.replace(/\s+/g, " ").trim();
+  const previewLimit = ctx.profile === "prod" ? 56 : 80;
+  const preview = previewSource ? ` -> "${truncate(String(previewSource).replace(/\s+/g, " ").trim(), previewLimit)}"` : "";
+  return `[${time}] [${category}] [${source}] [${scope}] ${identity}${trace}${action}${preview}`.replace(/\s+/g, " ").trim();
 };
 
-const formatErrorBlock = (obj: any, tz?: string, levelLabel?: string, verboseStacks?: boolean): string => {
+const formatErrorBlock = (obj: any, tz?: string, levelLabel?: string, verboseStacks?: boolean, colorize?: boolean): string => {
   const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
   const cat = obj.category ?? (obj.level >= 50 ? "ERROR" : "WARN");
   const src = obj.name ?? obj.module ?? "app";
@@ -189,8 +392,9 @@ const formatErrorBlock = (obj: any, tz?: string, levelLabel?: string, verboseSta
         : obj.category === "DB"
           ? "Hint: verify DATABASE_URL and DB availability."
           : undefined;
+  const title = `[${time}] [${cat}] ${levelLabel ?? ""}`.trim();
   const lines = [
-    `${categoryColor(cat)}${ANSI.bold}[${time}] [${cat}] ${levelLabel ?? ""}${ANSI.reset}`,
+    colorize ? `${ANSI.bold}${title}${ANSI.reset}` : title,
     `source: ${src}`,
     msg ? `message: ${msg}` : null,
     hint ? `hint: ${hint}` : null,
@@ -200,71 +404,84 @@ const formatErrorBlock = (obj: any, tz?: string, levelLabel?: string, verboseSta
     .join("\n");
   const stack =
     verboseStacks && err?.stack
-      ? `\nstack:\n${ANSI.dim}${String(err.stack)
-          .split("\n")
-          .slice(0, 12)
-          .join("\n")}${ANSI.reset}`
+      ? (() => {
+          const stackText = String(err.stack)
+            .split("\n")
+            .slice(0, 12)
+            .join("\n");
+          return `\nstack:\n${colorize ? `${ANSI.dim}${stackText}${ANSI.reset}` : stackText}`;
+        })()
       : "";
   return `-----\n${lines}${stack}\n-----`;
 };
 
-const formatGenericLine = (obj: any, tz?: string): string => {
-  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), tz);
-  const cat = obj.category ?? "SYSTEM";
-  const msg = obj.msg ?? obj.message ?? "";
-  const detailFields = [
-    "status",
-    "route",
-    "method",
-    "code",
-    "jobId",
-    "queue",
-    "model",
-    "phase",
-    "commandName",
-    "resultSummary",
-    "waMessageId",
-    "inboundWaMessageId",
-    "executionId",
-    "commandExecutionId",
-    "responseActionId"
+const formatErrorSingleLine = (obj: any, category: string, ctx: PrettyContext): string => {
+  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), ctx.timezone);
+  const source = resolveSourceLabel(obj);
+  const msg = String(obj.msg ?? obj.message ?? "").trim();
+  const err = obj.err ?? obj.error;
+  const errMsg = toDisplayValue(err?.message ?? err, 80);
+  const hint =
+    obj.category === "QUEUE"
+      ? "hint=check_queue_redis_payload"
+      : obj.category === "AI"
+        ? "hint=check_llm_key_or_network"
+        : obj.category === "DB"
+          ? "hint=check_database_url_or_db"
+          : null;
+  const details = [
+    errMsg ? `error=${errMsg}` : null,
+    hint,
+    ...pickDetailParts(obj, ctx.verboseFields)
   ]
-    .map((key) => (obj[key] !== undefined ? `${key}=${obj[key]}` : null))
-    .filter(Boolean);
-  const details = detailFields.length ? ` ${detailFields.join(" ")}` : "";
-  return `[${time}] [${cat}] ${msg}${details}`.trim();
+    .filter(Boolean)
+    .join(" ");
+  const headline = msg || String(err?.message ?? `${category.toLowerCase()} event`);
+  return `[${time}] [${category}] [${source}] ${headline}${details ? ` ${details}` : ""}`;
+};
+
+const formatGenericLine = (obj: any, category: string, ctx: PrettyContext): string => {
+  const time = formatLocalTime(obj.time ?? obj.timestamp ?? Date.now(), ctx.timezone);
+  const source = resolveSourceLabel(obj);
+  const msg = String(obj.msg ?? obj.message ?? "").trim();
+  const details = pickDetailParts(obj, ctx.verboseFields);
+  return `[${time}] [${category}] [${source}] ${msg}${details.length ? ` ${details.join(" ")}` : ""}`.trim();
 };
 
 const createPrettyStream = (ctx: PrettyContext) => {
   const dedupSeen = dedupe();
-  const silenceNoise = ctx.silenceNoise ?? true;
-  const verboseStacks = ctx.verboseStacks ?? false;
   return new Writable({
     write(chunk, _enc, cb) {
       try {
         const parsed = JSON.parse(chunk.toString());
         const obj = sanitizeBaileysLog(parsed);
-        if (silenceNoise && isBaileysNoise(obj) && process.env.DEBUG !== "trace") return cb();
+        if (ctx.silenceNoise && isBaileysNoise(obj) && process.env.DEBUG !== "trace") return cb();
+        const level = Number(obj.level ?? 30);
+        const category = obj.category ?? (level >= 50 ? "ERROR" : level === 40 ? "WARN" : "SYSTEM");
         const key =
-          obj.category?.startsWith("WA-") && obj.waMessageId
-            ? `${obj.category}:${obj.waMessageId}:${obj.action ?? obj.status ?? obj.responseActionId ?? obj.phase ?? ""}`
+          String(category).startsWith("WA-") && (obj.waMessageId || obj.inboundWaMessageId)
+            ? `${category}:${obj.waMessageId ?? obj.inboundWaMessageId}:${obj.action ?? obj.status ?? obj.responseActionId ?? obj.phase ?? ""}`
             : null;
         if (dedupSeen(key)) return cb();
 
-        const level = Number(obj.level ?? 30);
-        const cat = obj.category ?? (level >= 50 ? "ERROR" : level === 40 ? "WARN" : undefined);
-        const color = categoryColor(cat);
+        const color = categoryColor(category);
         let line: string;
-        if (cat === "WA-IN" || cat === "WA-OUT") {
-          line = formatWaLine(obj, ctx.timezone);
-        } else if (cat === "ERROR" || level >= 50) {
-          line = formatErrorBlock(obj, ctx.timezone, "ERROR", verboseStacks);
-        } else if (cat === "WARN" || level === 40) {
-          line = formatErrorBlock(obj, ctx.timezone, "WARN", verboseStacks);
+        if (category === "WA-IN" || category === "WA-OUT") {
+          line = formatWaLine(obj, ctx);
+        } else if ((category === "ERROR" || level >= 50) && ctx.profile === "dev") {
+          line = formatErrorBlock(obj, ctx.timezone, "ERROR", ctx.verboseStacks, ctx.colorize);
+        } else if ((category === "WARN" || level === 40) && ctx.profile === "dev") {
+          line = formatErrorBlock(obj, ctx.timezone, "WARN", ctx.verboseStacks, ctx.colorize);
+        } else if (category === "ERROR" || category === "WARN" || level >= 40) {
+          line = formatErrorSingleLine(obj, category, ctx);
         } else {
-          line = formatGenericLine(obj, ctx.timezone);
+          line = formatGenericLine(obj, category, ctx);
         }
-        process.stdout.write(`${color}${line}${ANSI.reset}\n`);
+        if (ctx.colorize) {
+          process.stdout.write(`${color}${line}${ANSI.reset}\n`);
+        } else {
+          process.stdout.write(`${line}\n`);
+        }
       } catch {
         process.stdout.write(chunk);
       }
@@ -274,19 +491,22 @@ const createPrettyStream = (ctx: PrettyContext) => {
 };
 
 export const createLogger = (name: string, options?: LoggerOptions) => {
+  const resolved = resolveLogConfig();
   const baseOptions: LoggerOptions = {
     name,
-    level: process.env.LOG_LEVEL ?? (process.env.NODE_ENV === "production" ? "info" : "debug"),
+    level: resolved.level,
     timestamp: pino.stdTimeFunctions.isoTime,
     ...options
   };
-  const prettyEnabled = process.env.NODE_ENV !== "production" && process.env.PRETTY_LOGS !== "false";
-  if (!prettyEnabled) return pino(baseOptions);
+  if (resolved.format !== "pretty") return pino(baseOptions);
 
   const pretty = createPrettyStream({
     timezone: process.env.BOT_TIMEZONE,
-    silenceNoise: process.env.DEBUG !== "trace",
-    verboseStacks: process.env.DEBUG?.includes("stack") ?? false
+    profile: resolved.prettyMode,
+    silenceNoise: resolved.silenceNoise,
+    verboseStacks: resolved.verboseStacks,
+    verboseFields: resolved.verboseFields,
+    colorize: resolveColorize()
   });
   return pino(baseOptions, pretty);
 };
