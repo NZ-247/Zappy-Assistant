@@ -1,5 +1,6 @@
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
+import type { LoggerPort } from "../../../../pipeline/ports.js";
 import { parseWebSearchCommand } from "../../infrastructure/web-search-command-parser.js";
 import { executeWebSearch, type WebSearchUseCaseConfig } from "../../application/use-cases/search-web.js";
 import type { WebSearchPort } from "../../ports.js";
@@ -9,6 +10,7 @@ export interface WebSearchCommandDeps {
   config: WebSearchUseCaseConfig;
   formatUsage?: (command: "search" | "google") => string | null;
   stylizeReply?: (text: string) => string;
+  logger?: LoggerPort;
 }
 
 const handledCommands = new Set(["search", "google"]);
@@ -34,6 +36,7 @@ export const handleWebSearchCommand = async (input: {
     query: parsed.query,
     search: deps.search,
     config: deps.config,
-    stylizeReply: deps.stylizeReply
+    stylizeReply: deps.stylizeReply,
+    logger: deps.logger
   });
 };

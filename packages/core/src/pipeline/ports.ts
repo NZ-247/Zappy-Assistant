@@ -187,6 +187,21 @@ export interface TextToSpeechPort {
   }>;
 }
 
+export interface TextTranslationPort {
+  translate(input: {
+    text: string;
+    sourceLanguage?: string;
+    targetLanguage: string;
+    timeoutMs?: number;
+  }): Promise<{
+    translatedText: string;
+    provider?: string;
+    model?: string;
+    sourceLanguage?: string;
+    targetLanguage?: string;
+  }>;
+}
+
 export interface WebSearchResultItem {
   title: string;
   snippet?: string;
@@ -218,6 +233,24 @@ export interface ImageSearchPort {
   }): Promise<{
     provider: string;
     results: ImageSearchResultItem[];
+  }>;
+}
+
+export interface SearchAiSourceItem {
+  title: string;
+  url: string;
+}
+
+export interface SearchAiPort {
+  search(input: {
+    query: string;
+    locale?: string;
+    maxSources?: number;
+  }): Promise<{
+    provider: string;
+    model?: string;
+    summary: string;
+    sources: SearchAiSourceItem[];
   }>;
 }
 
@@ -317,7 +350,9 @@ export interface CorePorts {
   queue: QueuePort;
   llm: LlmPort;
   textToSpeech?: TextToSpeechPort;
+  textTranslation?: TextTranslationPort;
   webSearch?: WebSearchPort;
+  searchAi?: SearchAiPort;
   imageSearch?: ImageSearchPort;
   mediaDownload?: MediaDownloadPort;
   llmModel?: string;
@@ -341,9 +376,13 @@ export interface CorePorts {
   llmMemoryMessages?: number;
   ttsEnabled?: boolean;
   ttsDefaultLanguage?: string;
+  ttsDefaultSourceLanguage?: string;
   ttsDefaultVoice?: string;
   ttsMaxTextChars?: number;
+  ttsSendAsPtt?: boolean;
   searchResultsLimit?: number;
+  searchAiEnabled?: boolean;
+  searchAiMaxSources?: number;
   imageSearchResultsLimit?: number;
   audioCapabilityEnabled?: boolean;
   audioAutoTranscribeEnabled?: boolean;

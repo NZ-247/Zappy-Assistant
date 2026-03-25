@@ -43,6 +43,8 @@ const COMMAND_MATCHERS: Array<{ match: RegExp; name: string }> = [
   { name: "tts", match: /^tts\b/i },
   { name: "search", match: /^search\b/i },
   { name: "search", match: /^google\b/i },
+  { name: "search-ai", match: /^search-ai\b/i },
+  { name: "search-ai", match: /^sai\b/i },
   { name: "img", match: /^img\b/i },
   { name: "img", match: /^gimage\b/i },
   { name: "dl", match: /^dl\b/i }

@@ -1,5 +1,6 @@
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
+import type { LoggerPort } from "../../../../pipeline/ports.js";
 import { parseImageSearchCommand } from "../../infrastructure/image-search-command-parser.js";
 import { executeImageSearch, type ImageSearchUseCaseConfig } from "../../application/use-cases/search-images.js";
 import type { ImageSearchPort } from "../../ports.js";
@@ -9,6 +10,7 @@ export interface ImageSearchCommandDeps {
   config: ImageSearchUseCaseConfig;
   formatUsage?: (command: "img" | "gimage") => string | null;
   stylizeReply?: (text: string) => string;
+  logger?: LoggerPort;
 }
 
 const handledCommands = new Set(["img", "gimage"]);
@@ -34,6 +36,7 @@ export const handleImageSearchCommand = async (input: {
     query: parsed.query,
     imageSearch: deps.imageSearch,
     config: deps.config,
-    stylizeReply: deps.stylizeReply
+    stylizeReply: deps.stylizeReply,
+    logger: deps.logger
   });
 };

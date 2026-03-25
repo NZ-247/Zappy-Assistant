@@ -19,8 +19,9 @@ npm run prisma:generate
 - Operational reactions are configurable via `WA_REACTIONS_ENABLED`, `WA_REACTION_PROGRESS`, `WA_REACTION_SUCCESS`, `WA_REACTION_FAILURE` (defaults: `⏱️`, `✅`, `❌`).
 - Audio STT-first capability is controlled by `AUDIO_CAPABILITY_ENABLED`, `AUDIO_AUTO_TRANSCRIBE_ENABLED`, `AUDIO_STT_MODEL`, `AUDIO_STT_TIMEOUT_MS`, `AUDIO_MAX_DURATION_SECONDS`, `AUDIO_MAX_BYTES`, `AUDIO_STT_LANGUAGE`.
 - Audio dynamic command dispatch is controlled by `AUDIO_COMMAND_DISPATCH_ENABLED`, `AUDIO_COMMAND_ALLOWLIST`, `AUDIO_COMMAND_MIN_CONFIDENCE`, `AUDIO_TRANSCRIPT_PREVIEW_CHARS`.
-- TTS is controlled by `TTS_ENABLED`, `TTS_MODEL`, `TTS_TIMEOUT_MS`, `TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`, `TTS_MALE_VOICE`, `TTS_FEMALE_VOICE`, `TTS_MAX_TEXT_CHARS`.
+- TTS is controlled by `TTS_ENABLED`, `TTS_MODEL`, `TTS_TIMEOUT_MS`, `TTS_AUDIO_FORMAT`, `TTS_TRANSLATION_MODEL`, `TTS_TRANSLATION_TIMEOUT_MS`, `TTS_DEFAULT_SOURCE_LANGUAGE`, `TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`, `TTS_MALE_VOICE`, `TTS_FEMALE_VOICE`, `TTS_MAX_TEXT_CHARS`, `TTS_SEND_AS_PTT`.
 - Web search is controlled by `SEARCH_ENABLED`, `SEARCH_PROVIDER`, `SEARCH_MAX_RESULTS`, `SEARCH_TIMEOUT_MS`, `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_CX`.
+- AI-assisted web search is controlled by `SEARCH_AI_ENABLED`, `SEARCH_AI_MODEL`, `SEARCH_AI_TIMEOUT_MS`, `SEARCH_AI_MAX_SOURCES`.
 - Image search is controlled by `IMAGE_SEARCH_ENABLED`, `IMAGE_SEARCH_PROVIDER`, `IMAGE_SEARCH_MAX_RESULTS` (`google` fallback to `wikimedia` when needed).
 - Downloads module is controlled by `DOWNLOADS_MODULE_ENABLED`, `DOWNLOADS_DIRECT_TIMEOUT_MS`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
@@ -139,7 +140,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
-- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`, `/tts`, `/search` (`/google`), `/img` (`/gimage`), `/dl`.
+- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`, `/tts`, `/search` (`/google`), `/search-ai` (`/sai`), `/img` (`/gimage`), `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
   - `/toimg` funciona apenas respondendo uma figurinha válida.
@@ -152,17 +153,27 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Dispatch dinâmico por voz usa estratégia controlada: prefixo explícito (`/`), comando falado `slash|barra <comando>`, ou primeiro token da allowlist (`AUDIO_COMMAND_ALLOWLIST`) com confiança mínima (`AUDIO_COMMAND_MIN_CONFIDENCE`).
   - Em baixa confiança, o bot não executa comando dinâmico e responde com fallback amigável/transcrição curta.
 - TTS module:
-  - `/tts <texto>` usa idioma/voz padrão (`TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`).
-  - Formato opcional completo: `/tts <texto> |<idioma>|<voz>` (ex: `/tts Bom dia |en|female`).
-  - Valida formato, idioma e limite máximo de texto (`TTS_MAX_TEXT_CHARS`) antes de sintetizar.
+  - `/tts <texto>` usa origem/destino/voz padrão (`TTS_DEFAULT_SOURCE_LANGUAGE`, `TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`).
+  - Formato compatível: `/tts <texto> |<destino>|<voz>` (ex: `/tts Bom dia |en|female`).
+  - Formato explícito origem->destino: `/tts <texto> |<origem>|<destino>|<voz>` (ex: `/tts Bom dia |pt-BR|en|female`).
+  - Quando origem e destino diferem, o texto é traduzido antes da síntese; se a tradução falhar, o áudio não é gerado.
+  - Saída padrão como voice note/PTT (`TTS_SEND_AS_PTT=true`) e formato recomendado `opus` (`TTS_AUDIO_FORMAT=opus`).
+  - Limitações: qualidade de tradução depende do provider/model configurado; textos muito longos respeitam `TTS_MAX_TEXT_CHARS`.
 - Web search module:
-  - `/search <termo>` e `/google <termo>` retornam título, resumo curto e link.
+  - `/search <termo>` e `/google <termo>` retornam busca textual tradicional (título + snippet + link), com ranking e deduplicação.
   - Quantidade de resultados controlada por `SEARCH_MAX_RESULTS`.
   - Provider configurável (`SEARCH_PROVIDER`) com fallback para DuckDuckGo.
+  - Limitações: sem síntese semântica de múltiplas fontes (para isso, use `/search-ai`).
+- AI-assisted web search module:
+  - `/search-ai <termo>` e `/sai <termo>` executam busca assistida por IA com acesso à internet.
+  - Retorna resposta resumida + principais fontes/links.
+  - Limitações: depende de modelo com suporte a web tool; falhas de quota/permissão do provider podem indisponibilizar o recurso.
 - Image search module:
-  - `/img <termo>` e `/gimage <termo>` retornam links de imagem e página de origem.
+  - `/img <termo>` e `/gimage <termo>` priorizam resultado visual relevante e enviam imagem diretamente quando possível.
+  - Legenda curta inclui fonte e até sugestões extras de links relacionados.
   - Quantidade de resultados controlada por `IMAGE_SEARCH_MAX_RESULTS`.
   - Provider configurável (`IMAGE_SEARCH_PROVIDER`) com fallback para Wikimedia.
+  - Limitações: quando não há URL de imagem válida, o fallback volta para resposta textual com links.
 - Downloads module (provider router):
   - `/dl direct <link>` valida link direto (http/https), tipo de mídia e metadados básicos.
   - `/dl yt|ig|fb <link>` usa providers separados com resposta explícita quando bloqueado por compliance/permissão.

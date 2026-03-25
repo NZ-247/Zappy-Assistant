@@ -5,7 +5,7 @@ export interface OpenAiTextToSpeechAdapterInput {
   apiKey?: string;
   model: string;
   timeoutMs?: number;
-  format?: "mp3" | "wav";
+  format?: "mp3" | "wav" | "opus";
   voices?: {
     male?: string;
     female?: string;
@@ -55,7 +55,11 @@ const toBuffer = async (value: unknown): Promise<Buffer> => {
   throw new Error("tts_empty_audio_payload");
 };
 
-const mimeByFormat = (format: "mp3" | "wav"): string => (format === "wav" ? "audio/wav" : "audio/mpeg");
+const mimeByFormat = (format: "mp3" | "wav" | "opus"): string => {
+  if (format === "wav") return "audio/wav";
+  if (format === "opus") return "audio/ogg; codecs=opus";
+  return "audio/mpeg";
+};
 
 export const createOpenAiTextToSpeechAdapter = (input: OpenAiTextToSpeechAdapterInput): TextToSpeechPort | undefined => {
   const client = input.apiKey ? new OpenAI({ apiKey: input.apiKey }) : null;

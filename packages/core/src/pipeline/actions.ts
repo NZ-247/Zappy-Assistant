@@ -12,6 +12,13 @@ export interface ReplyAudioAction {
   fileName?: string;
   caption?: string;
   ptt?: boolean;
+  capability?: string;
+}
+
+export interface ReplyImageAction {
+  kind: "reply_image";
+  imageUrl: string;
+  caption?: string;
 }
 
 export interface ReplyListItem {
@@ -111,6 +118,7 @@ export interface ModerationAction {
 export type ResponseAction =
   | ReplyTextAction
   | ReplyAudioAction
+  | ReplyImageAction
   | ReplyListAction
   | StickerTransformAction
   | AudioTranscriptionAction

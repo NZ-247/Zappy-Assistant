@@ -690,7 +690,9 @@ export const createOpenAiSpeechToTextAdapter = (input: {
 };
 
 export { createOpenAiTextToSpeechAdapter } from "./tts/openai-tts-adapter.js";
+export { createOpenAiTranslationAdapter } from "./translation/openai-translation-adapter.js";
 export { createWebSearchAdapter } from "./search/web-search-adapter.js";
+export { createOpenAiSearchAiAdapter } from "./search/openai-search-ai-adapter.js";
 export { createImageSearchAdapter } from "./search/image-search-adapter.js";
 export { createMediaDownloadRouter } from "./downloads/router.js";
 

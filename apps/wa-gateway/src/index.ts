@@ -28,7 +28,9 @@ import {
   createOpenAiAdapter,
   createOpenAiSpeechToTextAdapter,
   createOpenAiTextToSpeechAdapter,
+  createOpenAiTranslationAdapter,
   createWebSearchAdapter,
+  createOpenAiSearchAiAdapter,
   createImageSearchAdapter,
   createMediaDownloadRouter,
   createConversationStateAdapter,
@@ -89,11 +91,19 @@ const textToSpeechAdapter = env.TTS_ENABLED
       apiKey: env.OPENAI_API_KEY,
       model: env.TTS_MODEL,
       timeoutMs: env.TTS_TIMEOUT_MS,
+      format: env.TTS_AUDIO_FORMAT,
       voices: {
         male: env.TTS_MALE_VOICE,
         female: env.TTS_FEMALE_VOICE,
         default: env.TTS_DEFAULT_VOICE
       }
+    })
+  : undefined;
+const textTranslationAdapter = env.TTS_ENABLED
+  ? createOpenAiTranslationAdapter({
+      apiKey: env.OPENAI_API_KEY,
+      model: env.TTS_TRANSLATION_MODEL,
+      timeoutMs: env.TTS_TRANSLATION_TIMEOUT_MS
     })
   : undefined;
 const webSearchAdapter = env.SEARCH_ENABLED
@@ -102,6 +112,14 @@ const webSearchAdapter = env.SEARCH_ENABLED
       googleCx: env.GOOGLE_SEARCH_CX,
       timeoutMs: env.SEARCH_TIMEOUT_MS,
       preferredProvider: env.SEARCH_PROVIDER
+    })
+  : undefined;
+const searchAiAdapter = env.SEARCH_AI_ENABLED
+  ? createOpenAiSearchAiAdapter({
+      apiKey: env.OPENAI_API_KEY,
+      model: env.SEARCH_AI_MODEL,
+      timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
+      maxSources: env.SEARCH_AI_MAX_SOURCES
     })
   : undefined;
 const imageSearchAdapter = env.IMAGE_SEARCH_ENABLED
@@ -326,7 +344,9 @@ const orchestrator = new Orchestrator({
   queue: queueAdapter,
   llm: llmAdapter,
   textToSpeech: textToSpeechAdapter,
+  textTranslation: textTranslationAdapter,
   webSearch: webSearchAdapter,
+  searchAi: searchAiAdapter,
   imageSearch: imageSearchAdapter,
   mediaDownload: mediaDownloadAdapter,
   llmModel,
@@ -347,10 +367,14 @@ const orchestrator = new Orchestrator({
   baseSystemPrompt,
   llmMemoryMessages: env.LLM_MEMORY_MESSAGES,
   ttsEnabled: env.TTS_ENABLED,
+  ttsDefaultSourceLanguage: env.TTS_DEFAULT_SOURCE_LANGUAGE,
   ttsDefaultLanguage: env.TTS_DEFAULT_LANGUAGE,
   ttsDefaultVoice: env.TTS_DEFAULT_VOICE,
   ttsMaxTextChars: env.TTS_MAX_TEXT_CHARS,
+  ttsSendAsPtt: env.TTS_SEND_AS_PTT,
   searchResultsLimit: env.SEARCH_MAX_RESULTS,
+  searchAiEnabled: env.SEARCH_AI_ENABLED,
+  searchAiMaxSources: env.SEARCH_AI_MAX_SOURCES,
   imageSearchResultsLimit: env.IMAGE_SEARCH_MAX_RESULTS,
   audioCapabilityEnabled: env.AUDIO_CAPABILITY_ENABLED,
   audioAutoTranscribeEnabled: env.AUDIO_AUTO_TRANSCRIBE_ENABLED,

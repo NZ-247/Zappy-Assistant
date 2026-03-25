@@ -265,9 +265,13 @@ export const ttsCommands: CommandDefinition[] = [
     category: "tools",
     name: "tts",
     scope: "both",
-    description: "Converte texto em áudio (TTS).",
-    usage: "tts <texto> |<idioma>|<voz>",
-    examples: ["tts Bom dia a todos", "tts Bom dia a todos |en|female", "tts Bom dia a todos |pt-BR|male"]
+    description: "Converte texto em voz (PTT), com tradução opcional antes da síntese.",
+    usage: "tts <texto> |<destino>|<voz>  ou  tts <texto> |<origem>|<destino>|<voz>",
+    examples: [
+      "tts Bom dia a todos",
+      "tts Bom dia a todos |en|female",
+      "tts Bom dia a todos |pt-BR|en|female"
+    ]
   }
 ];
 
@@ -280,6 +284,15 @@ export const webSearchCommands: CommandDefinition[] = [
     description: "Busca textual na web e retorna resultados organizados.",
     usage: "search <termo da busca>",
     examples: ["search arquitetura hexagonal", "google status docker compose"]
+  },
+  {
+    category: "tools",
+    name: "search-ai",
+    aliases: ["sai"],
+    scope: "both",
+    description: "Busca assistida por IA com internet e síntese com fontes.",
+    usage: "search-ai <termo da busca>",
+    examples: ["search-ai últimas notícias sobre IA no Brasil", "sai diferença entre webhooks e polling"]
   }
 ];
 

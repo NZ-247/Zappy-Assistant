@@ -9,6 +9,7 @@ import { handleAudioCommand } from "../modules/tools/audio/presentation/commands
 import { handleStickerCommand } from "../modules/tools/stickers/presentation/commands/sticker-commands.js";
 import { handleTtsCommand } from "../modules/tts/presentation/commands/tts-commands.js";
 import { handleWebSearchCommand } from "../modules/web-search/presentation/commands/web-search-commands.js";
+import { handleSearchAiCommand } from "../modules/search-ai/presentation/commands/search-ai-commands.js";
 import { handleImageSearchCommand } from "../modules/image-search/presentation/commands/image-search-commands.js";
 import { handleDownloadCommand } from "../modules/downloads/presentation/commands/download-commands.js";
 import { evaluateExpression } from "../common/math-expression.js";
@@ -152,18 +153,22 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     ctx,
     deps: {
       textToSpeech: deps.ports.textToSpeech,
+      textTranslation: deps.ports.textTranslation,
       config: {
         enabled: deps.ports.ttsEnabled ?? true,
+        defaultSourceLanguage: deps.ports.ttsDefaultSourceLanguage ?? deps.ports.ttsDefaultLanguage ?? "pt-BR",
         defaultLanguage: deps.ports.ttsDefaultLanguage ?? "pt-BR",
         defaultVoice: deps.ports.ttsDefaultVoice ?? "female",
         maxTextChars: deps.ports.ttsMaxTextChars ?? 700,
+        sendAsPtt: deps.ports.ttsSendAsPtt ?? true,
         voiceAliases: {
           male: "male",
           female: "female"
         }
       },
       formatUsage: () => usageFor("tts"),
-      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+      stylizeReply: (text) => deps.stylizeReply(ctx, text),
+      logger: deps.ports.logger
     }
   });
   if (ttsHandled) return ttsHandled;
@@ -179,10 +184,28 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
         maxResults: deps.ports.searchResultsLimit ?? 3
       },
       formatUsage: (name) => usageFor(name),
-      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+      stylizeReply: (text) => deps.stylizeReply(ctx, text),
+      logger: deps.ports.logger
     }
   });
   if (webSearchHandled) return webSearchHandled;
+
+  const searchAiHandled = await handleSearchAiCommand({
+    commandKey,
+    cmd,
+    ctx,
+    deps: {
+      searchAi: deps.ports.searchAi,
+      config: {
+        enabled: deps.ports.searchAiEnabled ?? true,
+        maxSources: deps.ports.searchAiMaxSources ?? 4
+      },
+      formatUsage: () => usageFor("search-ai"),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text),
+      logger: deps.ports.logger
+    }
+  });
+  if (searchAiHandled) return searchAiHandled;
 
   const imageSearchHandled = await handleImageSearchCommand({
     commandKey,
@@ -195,7 +218,8 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
         maxResults: deps.ports.imageSearchResultsLimit ?? 3
       },
       formatUsage: (name) => usageFor(name),
-      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+      stylizeReply: (text) => deps.stylizeReply(ctx, text),
+      logger: deps.ports.logger
     }
   });
   if (imageSearchHandled) return imageSearchHandled;

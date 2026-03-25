@@ -1,5 +1,7 @@
 export interface TtsCommandInput {
   text: string;
+  sourceLanguage?: string;
+  targetLanguage?: string;
   language?: string;
   voice?: string;
 }
@@ -18,6 +20,11 @@ export const normalizeLanguageTag = (value: string): string => {
   if (!region) return base.toLowerCase();
   return `${base.toLowerCase()}-${region.toUpperCase()}`;
 };
+
+const languageBase = (value: string): string => normalizeLanguageTag(value).split("-")[0] ?? "";
+
+export const areLanguagesEquivalent = (left: string, right: string): boolean =>
+  normalizeLanguageTag(left) === normalizeLanguageTag(right) || languageBase(left) === languageBase(right);
 
 export const normalizeVoiceToken = (value: string): string => value.trim();
 

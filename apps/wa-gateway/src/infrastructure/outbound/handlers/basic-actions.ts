@@ -57,6 +57,23 @@ export const handleBasicOutboundAction = async (input: {
     try {
       audioBuffer = Buffer.from(action.audioBase64, "base64");
     } catch {
+      if (action.ptt) {
+        runtime.logger.info?.(
+          runtime.withCategory("WA-OUT", {
+            capability: action.capability ?? "tts",
+            action: "send_ptt",
+            status: "failure",
+            reason: "invalid_base64",
+            responseActionId,
+            tenantId: runtime.event.tenantId,
+            waGroupId: runtime.event.waGroupId,
+            waUserId: runtime.waUserId,
+            inboundWaMessageId: runtime.event.waMessageId,
+            executionId: runtime.event.executionId
+          }),
+          "voice message failed"
+        );
+      }
       await sendTextAndPersist({
         runtime,
         to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
@@ -69,6 +86,23 @@ export const handleBasicOutboundAction = async (input: {
     }
 
     if (!audioBuffer.length) {
+      if (action.ptt) {
+        runtime.logger.info?.(
+          runtime.withCategory("WA-OUT", {
+            capability: action.capability ?? "tts",
+            action: "send_ptt",
+            status: "failure",
+            reason: "empty_audio_payload",
+            responseActionId,
+            tenantId: runtime.event.tenantId,
+            waGroupId: runtime.event.waGroupId,
+            waUserId: runtime.waUserId,
+            inboundWaMessageId: runtime.event.waMessageId,
+            executionId: runtime.event.executionId
+          }),
+          "voice message failed"
+        );
+      }
       await sendTextAndPersist({
         runtime,
         to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
@@ -92,6 +126,54 @@ export const handleBasicOutboundAction = async (input: {
         mimetype: action.mimeType,
         ptt: Boolean(action.ptt),
         fileName: action.fileName
+      }
+    });
+
+    if (action.ptt) {
+      runtime.logger.info?.(
+        runtime.withCategory("WA-OUT", {
+          capability: action.capability ?? "tts",
+          action: "send_ptt",
+          status: "success",
+          mimeType: action.mimeType,
+          responseActionId,
+          tenantId: runtime.event.tenantId,
+          waGroupId: runtime.event.waGroupId,
+          waUserId: runtime.waUserId,
+          inboundWaMessageId: runtime.event.waMessageId,
+          executionId: runtime.event.executionId
+        }),
+        "voice message sent"
+      );
+    }
+
+    return true;
+  }
+
+  if (action.kind === "reply_image") {
+    const imageUrl = typeof action.imageUrl === "string" ? action.imageUrl.trim() : "";
+    if (!imageUrl) {
+      await sendTextAndPersist({
+        runtime,
+        to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
+        text: "Falha ao preparar imagem para envio.",
+        actionName: "reply_image_error",
+        scope: runtime.isGroup ? "group" : "direct",
+        responseActionId
+      });
+      return true;
+    }
+
+    await sendTextAndPersist({
+      runtime,
+      to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
+      text: action.caption ?? imageUrl,
+      actionName: "reply_image",
+      scope: runtime.isGroup ? "group" : "direct",
+      responseActionId,
+      content: {
+        image: { url: imageUrl },
+        caption: action.caption
       }
     });
     return true;
