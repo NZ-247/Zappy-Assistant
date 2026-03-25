@@ -219,9 +219,14 @@ export interface WebSearchPort {
     query: string;
     limit: number;
     locale?: string;
+    mode?: "generic" | "google_strict";
   }): Promise<{
     provider: string;
     results: WebSearchResultItem[];
+    requestedProvider?: string;
+    fallbackUsed?: boolean;
+    fallbackReason?: string;
+    correctedQuery?: string;
   }>;
 }
 
@@ -233,6 +238,10 @@ export interface ImageSearchPort {
   }): Promise<{
     provider: string;
     results: ImageSearchResultItem[];
+    requestedProvider?: string;
+    fallbackUsed?: boolean;
+    fallbackReason?: string;
+    correctedQuery?: string;
   }>;
 }
 

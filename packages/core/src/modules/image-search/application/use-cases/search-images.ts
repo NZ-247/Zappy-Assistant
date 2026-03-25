@@ -24,6 +24,23 @@ const sanitizeErrorMessage = (error: unknown): string => {
   return message.length <= 140 ? message : `${message.slice(0, 137)}...`;
 };
 
+const isDirectImageCandidate = (value?: string): boolean => {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    if (!/^https?:$/i.test(url.protocol)) return false;
+    const path = url.pathname.toLowerCase();
+    if (!path || path.endsWith("/")) return false;
+    if (/\.(jpg|jpeg|png|webp|gif|avif|bmp|heic)$/i.test(path)) return true;
+    if (/\.(html|htm|php|asp|aspx|jsp)$/i.test(path)) return false;
+    const formatHint = `${url.search}${url.hash}`.toLowerCase();
+    if (/(format|fm|ext|type)=(jpg|jpeg|png|webp|gif|avif|bmp|heic)/i.test(formatHint)) return true;
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const formatResult = (item: { title: string; link: string; imageUrl?: string }, index: number): string => {
   const lines = [`${index + 1}. ${shorten(item.title, 110)}`];
   if (item.imageUrl) lines.push(`   imagem: ${item.imageUrl}`);
@@ -38,8 +55,13 @@ const logImageSearch = (
     status: "success" | "failure";
     query: string;
     provider?: string;
+    requestedProvider?: string;
+    fallbackUsed?: boolean;
+    fallbackReason?: string;
+    correctedQuery?: string;
     resultsCount?: number;
     returnedImage?: boolean;
+    directImageUrl?: string;
     reason?: string;
   }
 ) => {
@@ -50,8 +72,13 @@ const logImageSearch = (
       status: payload.status,
       queryPreview: shorten(payload.query, 120),
       provider: payload.provider,
+      requestedProvider: payload.requestedProvider,
+      fallbackUsed: payload.fallbackUsed,
+      fallbackReason: payload.fallbackReason,
+      correctedQuery: payload.correctedQuery,
       resultsCount: payload.resultsCount,
       returnedImage: payload.returnedImage,
+      directImageUrl: payload.directImageUrl,
       reason: payload.reason
     },
     "image-search capability"
@@ -94,14 +121,22 @@ export const executeImageSearch = async (input: {
         status: "success",
         query: normalizedQuery,
         provider: result.provider,
+        requestedProvider: result.requestedProvider,
+        fallbackUsed: Boolean(result.fallbackUsed),
+        fallbackReason: result.fallbackReason,
+        correctedQuery: result.correctedQuery,
         resultsCount: 0,
         returnedImage: false
       });
-      return replyText(`Nenhuma imagem encontrada para: ${normalizedQuery}`);
+      const maybeCorrected =
+        result.correctedQuery && result.correctedQuery.toLowerCase() !== normalizedQuery.toLowerCase()
+          ? ` (consulta ajustada: ${result.correctedQuery})`
+          : "";
+      return replyText(`Nenhuma imagem encontrada para: ${normalizedQuery}${maybeCorrected}`);
     }
 
     const selected = result.results.slice(0, limit);
-    const primary = selected.find((item) => Boolean(item.imageUrl));
+    const primary = selected.find((item) => isDirectImageCandidate(item.imageUrl));
 
     if (primary?.imageUrl) {
       const secondary = selected.filter((item) => item !== primary).slice(0, 2);
@@ -121,8 +156,13 @@ export const executeImageSearch = async (input: {
         status: "success",
         query: normalizedQuery,
         provider: result.provider,
+        requestedProvider: result.requestedProvider,
+        fallbackUsed: Boolean(result.fallbackUsed),
+        fallbackReason: result.fallbackReason,
+        correctedQuery: result.correctedQuery,
         resultsCount: selected.length,
-        returnedImage: true
+        returnedImage: true,
+        directImageUrl: shorten(primary.imageUrl, 180)
       });
 
       return [
@@ -134,9 +174,9 @@ export const executeImageSearch = async (input: {
       ];
     }
 
-    const lines = [
-      `Resultados de imagem (${result.provider}) para: ${normalizedQuery}`,
-      ...selected.map((item, index) => formatResult(item, index))
+    const textualFallback = [
+      `Encontrei resultados para "${normalizedQuery}", mas sem uma imagem direta confiável para envio agora.`,
+      ...selected.slice(0, 3).map((item, index) => formatResult(item, index))
     ];
 
     logImageSearch(input.logger, {
@@ -144,11 +184,15 @@ export const executeImageSearch = async (input: {
       status: "success",
       query: normalizedQuery,
       provider: result.provider,
+      requestedProvider: result.requestedProvider,
+      fallbackUsed: Boolean(result.fallbackUsed),
+      fallbackReason: result.fallbackReason,
+      correctedQuery: result.correctedQuery,
       resultsCount: selected.length,
       returnedImage: false
     });
 
-    return [{ kind: "reply_text", text: lines.join("\n") }];
+    return [{ kind: "reply_text", text: textualFallback.join("\n") }];
   } catch (error) {
     const message = sanitizeErrorMessage(error);
     logImageSearch(input.logger, {

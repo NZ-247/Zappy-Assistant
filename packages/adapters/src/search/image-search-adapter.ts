@@ -2,12 +2,21 @@ import type { ImageSearchPort, ImageSearchResultItem } from "@zappy/core";
 
 export interface ImageSearchAdapterInput {
   googleApiKey?: string;
+  googleSearchEngineId?: string;
   googleCx?: string;
   timeoutMs?: number;
   preferredProvider?: "google" | "wikimedia";
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+const normalizeOptional = (value?: string): string | undefined => {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+};
+
+const resolveGoogleEngineId = (input: ImageSearchAdapterInput): string | undefined =>
+  normalizeOptional(input.googleSearchEngineId) ?? normalizeOptional(input.googleCx);
 
 const STOPWORDS = new Set([
   "a",
@@ -147,29 +156,43 @@ const googleImageSearch = async (input: {
   query: string;
   limit: number;
   timeoutMs: number;
-}): Promise<ImageSearchResultItem[]> => {
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("key", input.apiKey);
-  url.searchParams.set("cx", input.cx);
-  url.searchParams.set("q", input.query);
-  url.searchParams.set("searchType", "image");
-  url.searchParams.set("safe", "active");
-  url.searchParams.set("num", String(Math.min(10, Math.max(1, input.limit))));
+}): Promise<{ results: ImageSearchResultItem[]; correctedQuery?: string }> => {
+  const runGoogleQuery = async (query: string) => {
+    const url = new URL("https://www.googleapis.com/customsearch/v1");
+    url.searchParams.set("key", input.apiKey);
+    url.searchParams.set("cx", input.cx);
+    url.searchParams.set("q", query);
+    url.searchParams.set("searchType", "image");
+    url.searchParams.set("safe", "active");
+    url.searchParams.set("num", String(Math.min(10, Math.max(1, input.limit))));
 
-  const payload = await fetchJson<{
-    items?: Array<{ title?: string; link?: string; image?: { contextLink?: string } }>;
-  }>(url.toString(), input.timeoutMs);
+    const payload = await fetchJson<{
+      items?: Array<{ title?: string; link?: string; image?: { contextLink?: string } }>;
+      spelling?: { correctedQuery?: string };
+    }>(url.toString(), input.timeoutMs);
 
-  const items = payload.items ?? [];
-  const mapped = items
-    .filter((item) => item && item.title && item.link)
-    .map((item) => ({
-      title: String(item.title),
-      imageUrl: String(item.link),
-      link: item.image?.contextLink ? String(item.image.contextLink) : String(item.link)
-    }));
+    const mapped = (payload.items ?? [])
+      .filter((item) => item && item.title && item.link)
+      .map((item) => ({
+        title: String(item.title),
+        imageUrl: String(item.link),
+        link: item.image?.contextLink ? String(item.image.contextLink) : String(item.link)
+      }));
 
-  return rankAndFilterImageResults({ query: input.query, items: mapped, limit: input.limit });
+    return {
+      correctedQuery: normalizeOptional(payload.spelling?.correctedQuery),
+      results: rankAndFilterImageResults({ query, items: mapped, limit: input.limit })
+    };
+  };
+
+  const first = await runGoogleQuery(input.query);
+  const suggested = first.correctedQuery;
+  if (first.results.length > 0 || !suggested || suggested.toLowerCase() === input.query.toLowerCase()) {
+    return { results: first.results };
+  }
+
+  const retried = await runGoogleQuery(suggested);
+  return { results: retried.results, correctedQuery: suggested };
 };
 
 const wikimediaImageSearch = async (input: {
@@ -212,45 +235,114 @@ const wikimediaImageSearch = async (input: {
 
 export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageSearchPort => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const googleApiKey = normalizeOptional(input.googleApiKey);
+  const googleEngineId = resolveGoogleEngineId(input);
+  const hasGoogleConfig = Boolean(googleApiKey && googleEngineId);
 
   return {
     search: async ({ query, limit }) => {
       const preferred = input.preferredProvider ?? "google";
-      const hasGoogleConfig = Boolean(input.googleApiKey && input.googleCx);
 
       const runGoogle = async () => {
-        if (!hasGoogleConfig) return [];
+        if (!hasGoogleConfig) return { results: [], correctedQuery: undefined as string | undefined };
         return googleImageSearch({
-          apiKey: input.googleApiKey!,
-          cx: input.googleCx!,
+          apiKey: googleApiKey!,
+          cx: googleEngineId!,
           query,
           limit,
           timeoutMs
         });
       };
 
+      let fallbackUsed = false;
+      let fallbackReason: string | undefined;
+      let correctedQuery: string | undefined;
+
       if (preferred === "google") {
-        try {
-          const googleResults = await runGoogle();
-          if (googleResults.length > 0) return { provider: "google_cse", results: googleResults.slice(0, limit) };
-        } catch {
-          // fallback abaixo
+        if (!hasGoogleConfig) {
+          fallbackUsed = true;
+          fallbackReason = "google_not_configured";
+        } else {
+          try {
+            const googleResults = await runGoogle();
+            correctedQuery = googleResults.correctedQuery;
+            if (googleResults.results.length > 0) {
+              return {
+                provider: "google_cse",
+                requestedProvider: "google",
+                fallbackUsed: false,
+                correctedQuery,
+                results: googleResults.results.slice(0, limit)
+              };
+            }
+            fallbackUsed = true;
+            fallbackReason = "google_no_results";
+          } catch {
+            fallbackUsed = true;
+            fallbackReason = "google_error";
+          }
         }
+        const wikiResults = await wikimediaImageSearch({ query, limit, timeoutMs });
+        if (wikiResults.length > 0) {
+          return {
+            provider: "wikimedia",
+            requestedProvider: "google",
+            fallbackUsed,
+            fallbackReason,
+            correctedQuery,
+            results: wikiResults
+          };
+        }
+        return {
+          provider: hasGoogleConfig ? "google_cse+wikimedia" : "wikimedia",
+          requestedProvider: "google",
+          fallbackUsed,
+          fallbackReason,
+          correctedQuery,
+          results: []
+        };
       }
 
       const wikiResults = await wikimediaImageSearch({ query, limit, timeoutMs });
-      if (wikiResults.length > 0) return { provider: "wikimedia", results: wikiResults };
+      if (wikiResults.length > 0) {
+        return {
+          provider: "wikimedia",
+          requestedProvider: "wikimedia",
+          fallbackUsed: false,
+          results: wikiResults
+        };
+      }
 
-      if (preferred !== "google") {
+      fallbackUsed = true;
+      fallbackReason = "wikimedia_no_results";
+
+      if (hasGoogleConfig) {
         try {
           const googleResults = await runGoogle();
-          if (googleResults.length > 0) return { provider: "google_cse", results: googleResults.slice(0, limit) };
+          correctedQuery = googleResults.correctedQuery;
+          if (googleResults.results.length > 0) {
+            return {
+              provider: "google_cse",
+              requestedProvider: "wikimedia",
+              fallbackUsed,
+              fallbackReason,
+              correctedQuery,
+              results: googleResults.results.slice(0, limit)
+            };
+          }
         } catch {
-          // sem resultados
+          fallbackReason = "wikimedia_no_results+google_error";
         }
       }
 
-      return { provider: hasGoogleConfig ? "google_cse+wikimedia" : "wikimedia", results: [] };
+      return {
+        provider: hasGoogleConfig ? "wikimedia+google_cse" : "wikimedia",
+        requestedProvider: "wikimedia",
+        fallbackUsed,
+        fallbackReason,
+        correctedQuery,
+        results: []
+      };
     }
   };
 };

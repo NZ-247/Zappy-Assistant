@@ -2,6 +2,7 @@ import type { WebSearchPort, WebSearchResultItem } from "@zappy/core";
 
 export interface WebSearchAdapterInput {
   googleApiKey?: string;
+  googleSearchEngineId?: string;
   googleCx?: string;
   timeoutMs?: number;
   preferredProvider?: "google" | "duckduckgo";
@@ -34,6 +35,14 @@ const STOPWORDS = new Set([
 ]);
 
 const TRACKING_PARAMS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"];
+
+const normalizeOptional = (value?: string): string | undefined => {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+};
+
+const resolveGoogleEngineId = (input: WebSearchAdapterInput): string | undefined =>
+  normalizeOptional(input.googleSearchEngineId) ?? normalizeOptional(input.googleCx);
 
 const fetchJson = async <T>(url: string, timeoutMs: number): Promise<T> => {
   const controller = new AbortController();
@@ -248,25 +257,41 @@ const googleSearch = async (input: {
   query: string;
   limit: number;
   timeoutMs: number;
-}): Promise<WebSearchResultItem[]> => {
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("key", input.apiKey);
-  url.searchParams.set("cx", input.cx);
-  url.searchParams.set("q", input.query);
-  url.searchParams.set("num", String(Math.min(10, Math.max(1, input.limit))));
+}): Promise<{ results: WebSearchResultItem[]; correctedQuery?: string }> => {
+  const runGoogleQuery = async (query: string) => {
+    const url = new URL("https://www.googleapis.com/customsearch/v1");
+    url.searchParams.set("key", input.apiKey);
+    url.searchParams.set("cx", input.cx);
+    url.searchParams.set("q", query);
+    url.searchParams.set("num", String(Math.min(10, Math.max(1, input.limit))));
 
-  const payload = await fetchJson<{ items?: Array<{ title?: string; snippet?: string; link?: string }> }>(url.toString(), input.timeoutMs);
-  const items = payload.items ?? [];
+    const payload = await fetchJson<{
+      items?: Array<{ title?: string; snippet?: string; link?: string }>;
+      spelling?: { correctedQuery?: string };
+    }>(url.toString(), input.timeoutMs);
 
-  const mapped = items
-    .filter((item) => item && item.title && item.link)
-    .map((item) => ({
-      title: String(item.title),
-      snippet: typeof item.snippet === "string" ? item.snippet : undefined,
-      link: normalizeSearchLink(String(item.link))
-    }));
+    const mapped = (payload.items ?? [])
+      .filter((item) => item && item.title && item.link)
+      .map((item) => ({
+        title: String(item.title),
+        snippet: typeof item.snippet === "string" ? item.snippet : undefined,
+        link: normalizeSearchLink(String(item.link))
+      }));
 
-  return rankAndFilterWebResults({ query: input.query, items: mapped, limit: input.limit });
+    return {
+      correctedQuery: normalizeOptional(payload.spelling?.correctedQuery),
+      results: rankAndFilterWebResults({ query, items: mapped, limit: input.limit })
+    };
+  };
+
+  const first = await runGoogleQuery(input.query);
+  const suggested = first.correctedQuery;
+  if (first.results.length > 0 || !suggested || suggested.toLowerCase() === input.query.toLowerCase()) {
+    return { results: first.results };
+  }
+
+  const retried = await runGoogleQuery(suggested);
+  return { results: retried.results, correctedQuery: suggested };
 };
 
 const duckDuckGoSearch = async (input: {
@@ -317,51 +342,138 @@ const duckDuckGoSearch = async (input: {
 
 export const createWebSearchAdapter = (input: WebSearchAdapterInput): WebSearchPort => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const googleApiKey = normalizeOptional(input.googleApiKey);
+  const googleEngineId = resolveGoogleEngineId(input);
+  const hasGoogleConfig = Boolean(googleApiKey && googleEngineId);
 
   return {
-    search: async ({ query, limit }) => {
+    search: async ({ query, limit, mode }) => {
       const preferred = input.preferredProvider ?? "google";
-      const hasGoogleConfig = Boolean(input.googleApiKey && input.googleCx);
+      const searchMode = mode ?? "generic";
 
       const runGoogle = async () => {
-        if (!hasGoogleConfig) return [];
+        if (!hasGoogleConfig) return { results: [], correctedQuery: undefined as string | undefined };
         return googleSearch({
-          apiKey: input.googleApiKey!,
-          cx: input.googleCx!,
+          apiKey: googleApiKey!,
+          cx: googleEngineId!,
           query,
           limit,
           timeoutMs
         });
       };
 
-      if (preferred === "google") {
-        try {
-          const googleResults = await runGoogle();
-          if (googleResults.length > 0) {
-            return { provider: "google_cse", results: googleResults.slice(0, limit) };
-          }
-        } catch {
-          // Fallback para DDG abaixo.
+      if (searchMode === "google_strict") {
+        if (!hasGoogleConfig) {
+          return {
+            provider: "google_cse",
+            requestedProvider: "google",
+            fallbackUsed: true,
+            fallbackReason: "google_not_configured",
+            results: [] as WebSearchResultItem[]
+          };
         }
+
+        const googleResults = await runGoogle();
+        return {
+          provider: "google_cse",
+          requestedProvider: "google",
+          fallbackUsed: false,
+          correctedQuery: googleResults.correctedQuery,
+          results: googleResults.results.slice(0, limit)
+        };
+      }
+
+      let fallbackUsed = false;
+      let fallbackReason: string | undefined;
+      let correctedQuery: string | undefined;
+
+      if (preferred === "google") {
+        if (!hasGoogleConfig) {
+          fallbackUsed = true;
+          fallbackReason = "google_not_configured";
+        } else {
+          try {
+            const googleResults = await runGoogle();
+            correctedQuery = googleResults.correctedQuery;
+            if (googleResults.results.length > 0) {
+              return {
+                provider: "google_cse",
+                requestedProvider: "google",
+                fallbackUsed: false,
+                correctedQuery,
+                results: googleResults.results.slice(0, limit)
+              };
+            }
+            fallbackUsed = true;
+            fallbackReason = "google_no_results";
+          } catch {
+            fallbackUsed = true;
+            fallbackReason = "google_error";
+          }
+        }
+
+        const ddgResults = await duckDuckGoSearch({ query, limit, timeoutMs });
+        if (ddgResults.length > 0) {
+          return {
+            provider: "duckduckgo",
+            requestedProvider: "google",
+            fallbackUsed,
+            fallbackReason,
+            correctedQuery,
+            results: ddgResults
+          };
+        }
+
+        return {
+          provider: hasGoogleConfig ? "google_cse+duckduckgo" : "duckduckgo",
+          requestedProvider: "google",
+          fallbackUsed,
+          fallbackReason,
+          correctedQuery,
+          results: []
+        };
       }
 
       const ddgResults = await duckDuckGoSearch({ query, limit, timeoutMs });
       if (ddgResults.length > 0) {
-        return { provider: "duckduckgo", results: ddgResults };
+        return {
+          provider: "duckduckgo",
+          requestedProvider: "duckduckgo",
+          fallbackUsed: false,
+          results: ddgResults
+        };
       }
 
-      if (preferred !== "google") {
+      fallbackUsed = true;
+      fallbackReason = "duckduckgo_no_results";
+
+      if (hasGoogleConfig) {
         try {
           const googleResults = await runGoogle();
-          if (googleResults.length > 0) {
-            return { provider: "google_cse", results: googleResults.slice(0, limit) };
+          correctedQuery = googleResults.correctedQuery;
+          if (googleResults.results.length > 0) {
+            return {
+              provider: "google_cse",
+              requestedProvider: "duckduckgo",
+              fallbackUsed,
+              fallbackReason,
+              correctedQuery,
+              results: googleResults.results.slice(0, limit)
+            };
           }
         } catch {
-          // Mantém sem resultados.
+          fallbackReason = "duckduckgo_no_results+google_error";
         }
       }
 
-      return { provider: hasGoogleConfig ? "google_cse+duckduckgo" : "duckduckgo", results: [] };
+      return {
+        provider: hasGoogleConfig ? "duckduckgo+google_cse" : "duckduckgo",
+        requestedProvider: "duckduckgo",
+        fallbackUsed,
+        fallbackReason,
+        correctedQuery,
+        results: []
+      };
     }
   };
 };

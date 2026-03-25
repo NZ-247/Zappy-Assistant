@@ -63,10 +63,24 @@ export const executeSearchAi = async (input: {
   const replyText = (text: string): ResponseAction[] => [{ kind: "reply_text", text: input.stylizeReply ? input.stylizeReply(text) : text }];
 
   if (!input.config.enabled) {
+    logSearchAi(input.logger, {
+      action: "search",
+      status: "failure",
+      query: input.query,
+      reason: "search_ai_disabled",
+      responseMode: "summarized"
+    });
     return replyText("Busca assistida por IA está desativada neste ambiente.");
   }
 
   if (!input.searchAi) {
+    logSearchAi(input.logger, {
+      action: "search",
+      status: "failure",
+      query: input.query,
+      reason: "search_ai_provider_missing",
+      responseMode: "summarized"
+    });
     return replyText("Busca assistida por IA não está configurada no runtime atual.");
   }
 

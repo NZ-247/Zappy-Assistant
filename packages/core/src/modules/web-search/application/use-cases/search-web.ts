@@ -41,10 +41,15 @@ const formatResult = (item: { title: string; snippet?: string; link: string }, i
 const logWebSearch = (
   logger: LoggerPort | undefined,
   payload: {
+    command: "search" | "google";
     action: "search";
     status: "success" | "failure";
     query: string;
     provider?: string;
+    requestedProvider?: string;
+    fallbackUsed?: boolean;
+    fallbackReason?: string;
+    correctedQuery?: string;
     resultsCount?: number;
     reason?: string;
   }
@@ -52,10 +57,15 @@ const logWebSearch = (
   logger?.info?.(
     {
       capability: "web-search",
+      command: payload.command,
       action: payload.action,
       status: payload.status,
       queryPreview: shorten(payload.query, 120),
       provider: payload.provider,
+      requestedProvider: payload.requestedProvider,
+      fallbackUsed: payload.fallbackUsed,
+      fallbackReason: payload.fallbackReason,
+      correctedQuery: payload.correctedQuery,
       resultsCount: payload.resultsCount,
       reason: payload.reason
     },
@@ -64,6 +74,7 @@ const logWebSearch = (
 };
 
 export const executeWebSearch = async (input: {
+  command: "search" | "google";
   query: string;
   search?: WebSearchPort;
   config: WebSearchUseCaseConfig;
@@ -86,35 +97,79 @@ export const executeWebSearch = async (input: {
   }
 
   const limit = clampResults(input.config.maxResults);
+  const isGoogleCommand = input.command === "google";
+  const mode = isGoogleCommand ? "google_strict" : "generic";
 
   try {
     const result = await input.search.search({
       query: normalizedQuery,
-      limit
+      limit,
+      mode
     });
 
-    if (!result.results.length) {
+    if (isGoogleCommand && result.fallbackReason === "google_not_configured") {
       logWebSearch(input.logger, {
+        command: input.command,
         action: "search",
         status: "success",
         query: normalizedQuery,
         provider: result.provider,
+        requestedProvider: result.requestedProvider,
+        fallbackUsed: Boolean(result.fallbackUsed),
+        fallbackReason: result.fallbackReason,
+        correctedQuery: result.correctedQuery,
         resultsCount: 0
       });
-      return replyText(`Nenhum resultado encontrado para: ${normalizedQuery}`);
+      return replyText(
+        "Busca Google não está configurada neste ambiente. Defina GOOGLE_SEARCH_API_KEY e GOOGLE_SEARCH_ENGINE_ID (ou GOOGLE_SEARCH_CX)."
+      );
+    }
+
+    if (!result.results.length) {
+      logWebSearch(input.logger, {
+        command: input.command,
+        action: "search",
+        status: "success",
+        query: normalizedQuery,
+        provider: result.provider,
+        requestedProvider: result.requestedProvider,
+        fallbackUsed: Boolean(result.fallbackUsed),
+        fallbackReason: result.fallbackReason,
+        correctedQuery: result.correctedQuery,
+        resultsCount: 0
+      });
+      const maybeCorrected =
+        result.correctedQuery && result.correctedQuery.toLowerCase() !== normalizedQuery.toLowerCase()
+          ? ` (consulta ajustada: ${result.correctedQuery})`
+          : "";
+      return replyText(`Nenhum resultado encontrado para: ${normalizedQuery}${maybeCorrected}`);
     }
 
     const selected = result.results.slice(0, limit);
+    const correctedLine =
+      result.correctedQuery && result.correctedQuery.toLowerCase() !== normalizedQuery.toLowerCase()
+        ? [`Consulta ajustada: ${result.correctedQuery}`]
+        : [];
+    const fallbackLine = result.fallbackUsed
+      ? [`Fallback aplicado: ${result.fallbackReason ?? "provider_alternativo"} (${result.provider})`]
+      : [];
     const lines = [
-      `Resultados web (${result.provider}) para: ${normalizedQuery}`,
+      isGoogleCommand ? `Resultados Google (${result.provider}) para: ${normalizedQuery}` : `Resultados web (${result.provider}) para: ${normalizedQuery}`,
+      ...correctedLine,
+      ...fallbackLine,
       ...selected.map((item, index) => formatResult(item, index))
     ];
 
     logWebSearch(input.logger, {
+      command: input.command,
       action: "search",
       status: "success",
       query: normalizedQuery,
       provider: result.provider,
+      requestedProvider: result.requestedProvider,
+      fallbackUsed: Boolean(result.fallbackUsed),
+      fallbackReason: result.fallbackReason,
+      correctedQuery: result.correctedQuery,
       resultsCount: selected.length
     });
 
@@ -122,11 +177,12 @@ export const executeWebSearch = async (input: {
   } catch (error) {
     const message = sanitizeErrorMessage(error);
     logWebSearch(input.logger, {
+      command: input.command,
       action: "search",
       status: "failure",
       query: normalizedQuery,
       reason: message
     });
-    return replyText(`Falha na busca web: ${message}.`);
+    return replyText(`Falha na busca ${isGoogleCommand ? "Google" : "web"}: ${message}.`);
   }
 };

@@ -279,11 +279,18 @@ export const webSearchCommands: CommandDefinition[] = [
   {
     category: "tools",
     name: "search",
-    aliases: ["google"],
     scope: "both",
-    description: "Busca textual na web e retorna resultados organizados.",
+    description: "Busca textual genérica na web (com fallback de provider).",
     usage: "search <termo da busca>",
-    examples: ["search arquitetura hexagonal", "google status docker compose"]
+    examples: ["search arquitetura hexagonal", "search status docker compose"]
+  },
+  {
+    category: "tools",
+    name: "google",
+    scope: "both",
+    description: "Busca textual usando Google real (Programmable Search API).",
+    usage: "google <termo da busca>",
+    examples: ["google status docker compose", "google release notes typescript"]
   },
   {
     category: "tools",

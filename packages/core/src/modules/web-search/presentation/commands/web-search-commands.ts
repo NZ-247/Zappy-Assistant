@@ -23,16 +23,18 @@ export const handleWebSearchCommand = async (input: {
 }): Promise<ResponseAction[] | null> => {
   const { commandKey, cmd, deps } = input;
   if (!handledCommands.has(commandKey)) return null;
+  const commandKind = commandKey as "search" | "google";
 
   const parsed = parseWebSearchCommand(cmd);
 
   if (!parsed.ok) {
-    const usage = deps.formatUsage?.(commandKey as "search" | "google") ?? "Uso correto: search <termo da busca>";
+    const usage = deps.formatUsage?.(commandKind) ?? `Uso correto: ${commandKind} <termo da busca>`;
     const text = deps.stylizeReply ? deps.stylizeReply(usage) : usage;
     return [{ kind: "reply_text", text }];
   }
 
   return executeWebSearch({
+    command: commandKind,
     query: parsed.query,
     search: deps.search,
     config: deps.config,

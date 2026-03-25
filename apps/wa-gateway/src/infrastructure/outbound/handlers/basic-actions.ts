@@ -1,5 +1,50 @@
 import { sendTextAndPersist } from "../context.js";
 import type { ExecuteOutboundActionsInput } from "../types.js";
+import { AudioTranscodingError, inspectAudioPayload, transcodeToWhatsAppPtt } from "./wa-audio-transcoding.js";
+
+const IMAGE_FETCH_TIMEOUT_MS = 12_000;
+const IMAGE_FETCH_MAX_BYTES = 8 * 1024 * 1024;
+
+const normalizeText = (value: string): string => value.replace(/\s+/g, " ").trim();
+
+const normalizeErrorReason = (error: unknown, fallback = "unknown_error"): string => {
+  if (error instanceof AudioTranscodingError) return error.reason;
+  if (error instanceof Error) {
+    const message = normalizeText(error.message);
+    return message || fallback;
+  }
+  return fallback;
+};
+
+const fetchImageBuffer = async (imageUrl: string): Promise<{ buffer: Buffer; mimeType: string } | null> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(imageUrl, {
+      method: "GET",
+      headers: {
+        Accept: "image/*,*/*;q=0.8",
+        "User-Agent": "zappy-assistant/1.5 (+wa-gateway-image-send)"
+      },
+      signal: controller.signal
+    });
+    if (!response.ok) return null;
+
+    const mimeType = normalizeText(response.headers.get("content-type") || "").toLowerCase();
+    if (!mimeType.startsWith("image/")) return null;
+
+    const contentLength = Number(response.headers.get("content-length") || "0");
+    if (Number.isFinite(contentLength) && contentLength > IMAGE_FETCH_MAX_BYTES) return null;
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > IMAGE_FETCH_MAX_BYTES) return null;
+    return { buffer: bytes, mimeType };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 export const handleBasicOutboundAction = async (input: {
   runtime: ExecuteOutboundActionsInput;
@@ -54,22 +99,26 @@ export const handleBasicOutboundAction = async (input: {
 
   if (action.kind === "reply_audio") {
     let audioBuffer: Buffer;
+    const audioLogBase = {
+      capability: action.capability ?? "tts",
+      responseActionId,
+      tenantId: runtime.event.tenantId,
+      waGroupId: runtime.event.waGroupId,
+      waUserId: runtime.waUserId,
+      inboundWaMessageId: runtime.event.waMessageId,
+      executionId: runtime.event.executionId
+    };
+
     try {
       audioBuffer = Buffer.from(action.audioBase64, "base64");
     } catch {
       if (action.ptt) {
         runtime.logger.info?.(
           runtime.withCategory("WA-OUT", {
-            capability: action.capability ?? "tts",
             action: "send_ptt",
             status: "failure",
             reason: "invalid_base64",
-            responseActionId,
-            tenantId: runtime.event.tenantId,
-            waGroupId: runtime.event.waGroupId,
-            waUserId: runtime.waUserId,
-            inboundWaMessageId: runtime.event.waMessageId,
-            executionId: runtime.event.executionId
+            ...audioLogBase
           }),
           "voice message failed"
         );
@@ -89,16 +138,10 @@ export const handleBasicOutboundAction = async (input: {
       if (action.ptt) {
         runtime.logger.info?.(
           runtime.withCategory("WA-OUT", {
-            capability: action.capability ?? "tts",
             action: "send_ptt",
             status: "failure",
             reason: "empty_audio_payload",
-            responseActionId,
-            tenantId: runtime.event.tenantId,
-            waGroupId: runtime.event.waGroupId,
-            waUserId: runtime.waUserId,
-            inboundWaMessageId: runtime.event.waMessageId,
-            executionId: runtime.event.executionId
+            ...audioLogBase
           }),
           "voice message failed"
         );
@@ -114,6 +157,49 @@ export const handleBasicOutboundAction = async (input: {
       return true;
     }
 
+    const requestedMimeType = typeof action.mimeType === "string" && action.mimeType.trim() ? action.mimeType.trim() : "application/octet-stream";
+    let outboundAudioBuffer = audioBuffer;
+    let outboundMimeType = requestedMimeType;
+    let outboundPtt = Boolean(action.ptt);
+    let inputProbe = inspectAudioPayload({ audioBuffer, mimeType: requestedMimeType });
+    let outputProbe = inputProbe;
+    let transcodeReason: string | undefined;
+    let transcodedToPtt = false;
+
+    if (action.ptt) {
+      try {
+        const pttAudio = await transcodeToWhatsAppPtt({
+          audioBuffer,
+          mimeType: requestedMimeType
+        });
+        outboundAudioBuffer = pttAudio.audioBuffer;
+        outboundMimeType = pttAudio.mimeType;
+        outboundPtt = true;
+        transcodedToPtt = pttAudio.transcoded;
+        inputProbe = pttAudio.inputProbe;
+        outputProbe = inspectAudioPayload({ audioBuffer: outboundAudioBuffer, mimeType: outboundMimeType });
+      } catch (error) {
+        outboundPtt = false;
+        transcodeReason = normalizeErrorReason(error, "ptt_transcode_failed");
+        outputProbe = inspectAudioPayload({ audioBuffer: outboundAudioBuffer, mimeType: outboundMimeType });
+        runtime.logger.warn?.(
+          runtime.withCategory("WA-OUT", {
+            action: "send_ptt",
+            status: "fallback_audio",
+            reason: transcodeReason,
+            requestedMimeType,
+            requestedPtt: true,
+            finalPtt: false,
+            inputContainer: inputProbe.container,
+            inputCodecGuess: inputProbe.codecGuess,
+            inputBytes: inputProbe.byteLength,
+            ...audioLogBase
+          }),
+          "voice message transcoding failed; sending standard audio instead"
+        );
+      }
+    }
+
     await sendTextAndPersist({
       runtime,
       to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
@@ -122,28 +208,35 @@ export const handleBasicOutboundAction = async (input: {
       scope: runtime.isGroup ? "group" : "direct",
       responseActionId,
       content: {
-        audio: audioBuffer,
-        mimetype: action.mimeType,
-        ptt: Boolean(action.ptt),
+        audio: outboundAudioBuffer,
+        mimetype: outboundMimeType,
+        ptt: outboundPtt,
         fileName: action.fileName
       }
     });
 
     if (action.ptt) {
+      const actionName = outboundPtt ? "send_ptt" : "send_audio_fallback";
+      const status = outboundPtt ? "success" : "fallback";
+      const logMessage = outboundPtt ? "voice message sent" : "voice note sent as regular audio fallback";
       runtime.logger.info?.(
         runtime.withCategory("WA-OUT", {
-          capability: action.capability ?? "tts",
-          action: "send_ptt",
-          status: "success",
-          mimeType: action.mimeType,
-          responseActionId,
-          tenantId: runtime.event.tenantId,
-          waGroupId: runtime.event.waGroupId,
-          waUserId: runtime.waUserId,
-          inboundWaMessageId: runtime.event.waMessageId,
-          executionId: runtime.event.executionId
+          action: actionName,
+          status,
+          requestedPtt: true,
+          finalPtt: outboundPtt,
+          requestedMimeType,
+          finalMimeType: outboundMimeType,
+          inputContainer: inputProbe.container,
+          inputCodecGuess: inputProbe.codecGuess,
+          outputContainer: outputProbe.container,
+          outputCodecGuess: outputProbe.codecGuess,
+          outputBytes: outputProbe.byteLength,
+          transcodedToPtt,
+          transcodeReason,
+          ...audioLogBase
         }),
-        "voice message sent"
+        logMessage
       );
     }
 
@@ -164,13 +257,34 @@ export const handleBasicOutboundAction = async (input: {
       return true;
     }
 
-    await sendTextAndPersist({
+    const bufferedImage = await fetchImageBuffer(imageUrl);
+    const baseSendInput = {
       runtime,
       to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
       text: action.caption ?? imageUrl,
       actionName: "reply_image",
-      scope: runtime.isGroup ? "group" : "direct",
-      responseActionId,
+      scope: runtime.isGroup ? "group" as const : "direct" as const,
+      responseActionId
+    };
+
+    if (bufferedImage) {
+      try {
+        await sendTextAndPersist({
+          ...baseSendInput,
+          content: {
+            image: bufferedImage.buffer,
+            mimetype: bufferedImage.mimeType,
+            caption: action.caption
+          }
+        });
+        return true;
+      } catch {
+        // fallback para URL abaixo
+      }
+    }
+
+    await sendTextAndPersist({
+      ...baseSendInput,
       content: {
         image: { url: imageUrl },
         caption: action.caption

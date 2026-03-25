@@ -31,6 +31,7 @@ import {
   createOpenAiTranslationAdapter,
   createWebSearchAdapter,
   createOpenAiSearchAiAdapter,
+  createGeminiSearchAiAdapter,
   createImageSearchAdapter,
   createMediaDownloadRouter,
   createConversationStateAdapter,
@@ -106,25 +107,36 @@ const textTranslationAdapter = env.TTS_ENABLED
       timeoutMs: env.TTS_TRANSLATION_TIMEOUT_MS
     })
   : undefined;
+const googleSearchEngineId = env.GOOGLE_SEARCH_ENGINE_ID ?? env.GOOGLE_SEARCH_CX;
 const webSearchAdapter = env.SEARCH_ENABLED
   ? createWebSearchAdapter({
       googleApiKey: env.GOOGLE_SEARCH_API_KEY,
+      googleSearchEngineId,
       googleCx: env.GOOGLE_SEARCH_CX,
       timeoutMs: env.SEARCH_TIMEOUT_MS,
       preferredProvider: env.SEARCH_PROVIDER
     })
   : undefined;
 const searchAiAdapter = env.SEARCH_AI_ENABLED
-  ? createOpenAiSearchAiAdapter({
-      apiKey: env.OPENAI_API_KEY,
-      model: env.SEARCH_AI_MODEL,
-      timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
-      maxSources: env.SEARCH_AI_MAX_SOURCES
-    })
+  ? env.SEARCH_AI_PROVIDER === "gemini"
+    ? createGeminiSearchAiAdapter({
+        apiKey: env.GEMINI_API_KEY,
+        model: env.GEMINI_SEARCH_AI_MODEL,
+        timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
+        maxSources: env.SEARCH_AI_MAX_SOURCES,
+        useGoogleSearchGrounding: env.GEMINI_SEARCH_GROUNDING_ENABLED
+      })
+    : createOpenAiSearchAiAdapter({
+        apiKey: env.OPENAI_API_KEY,
+        model: env.SEARCH_AI_MODEL,
+        timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
+        maxSources: env.SEARCH_AI_MAX_SOURCES
+      })
   : undefined;
 const imageSearchAdapter = env.IMAGE_SEARCH_ENABLED
   ? createImageSearchAdapter({
       googleApiKey: env.GOOGLE_SEARCH_API_KEY,
+      googleSearchEngineId,
       googleCx: env.GOOGLE_SEARCH_CX,
       timeoutMs: env.SEARCH_TIMEOUT_MS,
       preferredProvider: env.IMAGE_SEARCH_PROVIDER
