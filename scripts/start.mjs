@@ -77,7 +77,25 @@ if (!fs.existsSync(composeFile)) {
   process.exit(1);
 }
 
-const requiredInfra = ["postgres", "redis"];
+const infraDependencies = [
+  {
+    service: "postgres",
+    label: "PostgreSQL",
+    host: "127.0.0.1",
+    port: 5432,
+    requireHealthyStatus: true
+  },
+  {
+    service: "redis",
+    label: "Redis",
+    host: "127.0.0.1",
+    port: 6379,
+    requireHealthyStatus: true
+  }
+];
+const requiredInfra = infraDependencies.map((item) => item.service);
+const dependencyValidationTimeoutMs = 45_000;
+const dependencyValidationIntervalMs = 1_250;
 const services = [
   { name: "assistant-api", workspace: "@zappy/assistant-api" },
   { name: "wa-gateway", workspace: "@zappy/wa-gateway" },
@@ -176,16 +194,22 @@ if (!composeCmd) {
   fail("Docker Compose is required. Install Docker Desktop/Engine with Compose v2.");
 }
 
-const runCompose = (args) => {
+const runCompose = (args, options = {}) => {
+  const allowFailure = options.allowFailure === true;
   const result = spawnSync(composeCmd[0], composeCmd.slice(1).concat(args), {
     cwd: rootDir,
-    encoding: "utf8"
+    encoding: "utf8",
+    stdio: options.stdio ?? "pipe"
   });
-  if (result.status !== 0) {
-    const stderr = result.stderr?.trim() || "unknown error";
+  if (!allowFailure && result.status !== 0) {
+    const stderr = result.stderr?.trim() || result.stdout?.trim() || "unknown error";
     fail(`Docker Compose failed (${args.join(" ")}): ${stderr}`);
   }
-  return result.stdout.trim();
+  return {
+    status: result.status ?? 1,
+    stdout: (result.stdout ?? "").trim(),
+    stderr: (result.stderr ?? "").trim()
+  };
 };
 
 const runNpm = (args, options = {}) => {
@@ -199,33 +223,20 @@ const runNpm = (args, options = {}) => {
   }
 };
 
-const listRunningServices = () => {
-  const output = runCompose(["-f", composeFile, "ps", "--services"]);
-  return output
-    .split(/\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-};
+const probePort = (port, label, host = "127.0.0.1", timeoutMs = 1200) =>
+  new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    const done = (ok) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => done(true));
+    socket.on("timeout", () => done(false));
+    socket.on("error", () => done(false));
+  });
 
-const ensureInfra = () => {
-  log("Checking Docker daemon...");
-  const info = spawnSync("docker", ["info"], { stdio: "ignore" });
-  if (info.status !== 0) fail("Docker daemon not reachable. Start Docker and retry.");
-
-  log("Ensuring infra containers are up (postgres, redis)...");
-  const running = new Set(listRunningServices());
-  const missing = requiredInfra.filter((name) => !running.has(name));
-
-  if (missing.length === 0) {
-    log("Infra already running.");
-    return;
-  }
-
-  log(`Starting missing services: ${missing.join(", ")}`);
-  runCompose(["-f", composeFile, "up", "-d", ...missing]);
-};
-
-const waitForPort = (port, label, host = "127.0.0.1", timeoutMs = 12000) =>
+const waitForPort = (port, label, host = "127.0.0.1", timeoutMs = 12_000) =>
   new Promise((resolve, reject) => {
     const start = Date.now();
     const attempt = () => {
@@ -244,6 +255,189 @@ const waitForPort = (port, label, host = "127.0.0.1", timeoutMs = 12000) =>
     };
     attempt();
   });
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const dependencyLog = (phase, fields = {}) => {
+  const suffix = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  log(`[deps] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+};
+
+const inspectContainerState = (containerId) => {
+  const result = spawnSync("docker", ["inspect", containerId, "--format", "{{json .State}}"], {
+    cwd: rootDir,
+    encoding: "utf8"
+  });
+  if (result.status !== 0) {
+    return {
+      status: "inspect_error",
+      health: "unknown",
+      hasHealthcheck: false,
+      inspectError: result.stderr?.trim() || "inspect_failed"
+    };
+  }
+
+  const raw = result.stdout?.trim();
+  if (!raw) {
+    return {
+      status: "inspect_error",
+      health: "unknown",
+      hasHealthcheck: false,
+      inspectError: "empty_inspect_payload"
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const status = typeof parsed?.Status === "string" ? parsed.Status : "unknown";
+    const health = typeof parsed?.Health?.Status === "string" ? parsed.Health.Status : "none";
+    const hasHealthcheck = parsed?.Health && typeof parsed.Health === "object";
+    return { status, health, hasHealthcheck, inspectError: undefined };
+  } catch (error) {
+    return {
+      status: "inspect_error",
+      health: "unknown",
+      hasHealthcheck: false,
+      inspectError: error instanceof Error ? error.message : "inspect_parse_failed"
+    };
+  }
+};
+
+const getDependencySnapshot = async () => {
+  const snapshots = [];
+
+  for (const dependency of infraDependencies) {
+    const psResult = runCompose(["-f", composeFile, "ps", "-q", dependency.service], { allowFailure: true });
+    if (psResult.status !== 0) {
+      snapshots.push({
+        ...dependency,
+        containerId: null,
+        containerStatus: "missing",
+        healthStatus: "unknown",
+        hasHealthcheck: false,
+        portReachable: false,
+        ready: false,
+        failedCheck: "compose_ps_failed",
+        diagnostic: psResult.stderr || psResult.stdout || "compose_ps_failed"
+      });
+      continue;
+    }
+
+    const containerId = psResult.stdout.split(/\s+/).map((item) => item.trim()).filter(Boolean)[0] ?? null;
+    if (!containerId) {
+      snapshots.push({
+        ...dependency,
+        containerId: null,
+        containerStatus: "missing",
+        healthStatus: "missing",
+        hasHealthcheck: false,
+        portReachable: false,
+        ready: false,
+        failedCheck: "container_missing",
+        diagnostic: "container not created"
+      });
+      continue;
+    }
+
+    const inspected = inspectContainerState(containerId);
+    const running = inspected.status === "running";
+    const portReachable = running ? await probePort(dependency.port, dependency.label, dependency.host) : false;
+    const healthRequired = dependency.requireHealthyStatus && inspected.hasHealthcheck;
+    const healthReady = !healthRequired || inspected.health === "healthy";
+    const ready = running && healthReady && portReachable;
+
+    let failedCheck = "none";
+    if (!running) failedCheck = "container_not_running";
+    else if (!healthReady) failedCheck = "health_not_healthy";
+    else if (!portReachable) failedCheck = "port_unreachable";
+
+    const diagnosticParts = [
+      `container=${containerId.slice(0, 12)}`,
+      `status=${inspected.status}`,
+      `health=${inspected.health}`,
+      `port=${dependency.host}:${dependency.port}`,
+      `portReachable=${portReachable}`
+    ];
+    if (inspected.inspectError) diagnosticParts.push(`inspectError=${inspected.inspectError}`);
+
+    snapshots.push({
+      ...dependency,
+      containerId,
+      containerStatus: inspected.status,
+      healthStatus: inspected.health,
+      hasHealthcheck: inspected.hasHealthcheck,
+      portReachable,
+      ready,
+      failedCheck,
+      diagnostic: diagnosticParts.join(", ")
+    });
+  }
+
+  return snapshots;
+};
+
+const logDependencySnapshot = (phase, snapshots) => {
+  for (const item of snapshots) {
+    dependencyLog(phase, {
+      service: item.service,
+      ready: item.ready ? "yes" : "no",
+      containerStatus: item.containerStatus,
+      health: item.healthStatus,
+      port: `${item.host}:${item.port}`,
+      failedCheck: item.failedCheck
+    });
+  }
+};
+
+const ensureInfra = async () => {
+  dependencyLog("docker-check", { status: "start" });
+  const info = spawnSync("docker", ["info"], { stdio: "ignore" });
+  if (info.status !== 0) fail("Docker daemon not reachable. Start Docker and retry.");
+  dependencyLog("docker-check", { status: "ok" });
+
+  dependencyLog("pre-validate", { services: requiredInfra.join(",") });
+  let snapshots = await getDependencySnapshot();
+  logDependencySnapshot("pre-validate", snapshots);
+  let pending = snapshots.filter((item) => !item.ready);
+
+  if (pending.length === 0) {
+    dependencyLog("pre-validate", { status: "all_ready" });
+    return;
+  }
+
+  const targetServices = pending.map((item) => item.service);
+  dependencyLog("auto-start", { action: "compose_up", services: targetServices.join(",") });
+  const upResult = runCompose(["-f", composeFile, "up", "-d", ...targetServices], { allowFailure: true });
+  if (upResult.status !== 0) {
+    for (const item of pending) {
+      warn(
+        `[start:${requestedMode}][deps] service=${item.service} action=compose_up status=failed reason=${item.failedCheck} diagnostic="${item.diagnostic}"`
+      );
+    }
+    fail(`Dependency auto-start failed: ${upResult.stderr || upResult.stdout || "unknown compose error"}`);
+  }
+
+  const deadline = Date.now() + dependencyValidationTimeoutMs;
+  while (Date.now() <= deadline) {
+    await delay(dependencyValidationIntervalMs);
+    snapshots = await getDependencySnapshot();
+    pending = snapshots.filter((item) => !item.ready);
+    if (pending.length === 0) {
+      dependencyLog("post-validate", { status: "all_ready", waitedMs: dependencyValidationTimeoutMs - (deadline - Date.now()) });
+      return;
+    }
+  }
+
+  logDependencySnapshot("post-validate", snapshots);
+  for (const item of pending) {
+    warn(
+      `[start:${requestedMode}][deps] service=${item.service} action=compose_up status=failed finalCheck=${item.failedCheck} diagnostic="${item.diagnostic}"`
+    );
+  }
+  fail(`Dependency validation failed after ${dependencyValidationTimeoutMs}ms.`);
+};
 
 const toLocalTime = (timezone) => {
   try {
@@ -350,9 +544,9 @@ const isStateAlive = (state) =>
   Boolean(state) && (pidAlive(state.supervisorPid) || (state.services || []).some((svc) => svc.pid && pidAlive(svc.pid)));
 
 const ensurePorts = async () => {
-  log("Waiting for infra ports...");
-  await Promise.all([waitForPort(5432, "Postgres"), waitForPort(6379, "Redis")]);
-  log("Infra connectivity OK (Postgres, Redis).");
+  dependencyLog("port-check", { status: "start" });
+  await Promise.all(infraDependencies.map((dependency) => waitForPort(dependency.port, dependency.label, dependency.host)));
+  dependencyLog("port-check", { status: "ok" });
 };
 
 const prefixWriter = (name, stream, isErr) => {
@@ -461,7 +655,7 @@ const startServices = (env) => {
 const main = async () => {
   const runtimeEnv = buildRuntimeEnv();
   assertNoRunningStack();
-  ensureInfra();
+  await ensureInfra();
   await ensurePorts().catch((err) => fail(err.message));
 
   if (isDev) {

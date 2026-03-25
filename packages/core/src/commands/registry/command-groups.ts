@@ -260,6 +260,52 @@ export const audioCommands: CommandDefinition[] = [
   }
 ];
 
+export const ttsCommands: CommandDefinition[] = [
+  {
+    category: "tools",
+    name: "tts",
+    scope: "both",
+    description: "Converte texto em áudio (TTS).",
+    usage: "tts <texto> |<idioma>|<voz>",
+    examples: ["tts Bom dia a todos", "tts Bom dia a todos |en|female", "tts Bom dia a todos |pt-BR|male"]
+  }
+];
+
+export const webSearchCommands: CommandDefinition[] = [
+  {
+    category: "tools",
+    name: "search",
+    aliases: ["google"],
+    scope: "both",
+    description: "Busca textual na web e retorna resultados organizados.",
+    usage: "search <termo da busca>",
+    examples: ["search arquitetura hexagonal", "google status docker compose"]
+  }
+];
+
+export const imageSearchCommands: CommandDefinition[] = [
+  {
+    category: "tools",
+    name: "img",
+    aliases: ["gimage"],
+    scope: "both",
+    description: "Busca imagens na web.",
+    usage: "img <termo da busca>",
+    examples: ["img gatos persas", "gimage infraestrutura de redes"]
+  }
+];
+
+export const downloadCommands: CommandDefinition[] = [
+  {
+    category: "tools",
+    name: "dl",
+    scope: "both",
+    description: "Processa links por provider (yt, ig, fb, direct) com política de compliance.",
+    usage: "dl <yt|ig|fb|direct> <link>",
+    examples: ["dl yt https://...", "dl ig https://...", "dl fb https://...", "dl direct https://..."]
+  }
+];
+
 export const identityCommands: CommandDefinition[] = [
   {
     category: "identity",
@@ -286,6 +332,10 @@ export const allCommands: CommandDefinition[] = [
   ...noteCommands,
   ...stickerCommands,
   ...audioCommands,
+  ...ttsCommands,
+  ...webSearchCommands,
+  ...imageSearchCommands,
+  ...downloadCommands,
   ...reminderCommands,
   ...identityCommands
 ];

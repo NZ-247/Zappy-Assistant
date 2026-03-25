@@ -1,6 +1,6 @@
 # Zappy Assistant — Architecture
 
-## 1. Status da migração modular (2026-03-24)
+## 1. Status da migração modular (2026-03-25)
 
 As etapas 2A.1, 2A.2 e 2A.3 foram concluídas com sucesso.
 
@@ -8,6 +8,8 @@ Status oficial desta data:
 - migração modular **praticamente concluída**
 - sem bloqueio para evolução funcional
 - pendências residuais pequenas, localizadas e já mapeadas
+- capabilities novas entregues em módulos dedicados: `tts`, `web-search`, `image-search`, `downloads`
+- bootstrap de runtime endurecido com validação determinística de dependências Docker (estado + health + conectividade)
 
 Encerramento prático da fase de migração:
 - concluído para fins de evolução do produto
@@ -166,6 +168,11 @@ Capabilities entregues neste padrão:
 - STT isolado por porta (`SpeechToTextPort`) e adapter concreto no pacote `adapters`
 - roteamento dinâmico de comando por transcrição com heurística controlada (prefixo explícito, `slash|barra`, allowlist + confiança mínima)
 - reações de progresso reutilizáveis em operações pesadas (stickers/áudio), best-effort e sem quebrar fluxo funcional
+- `packages/core/src/modules/tts` com parser `texto|idioma|voz`, defaults por configuração e saída normalizada em `reply_audio`
+- `packages/core/src/modules/web-search` com provider configurável e resposta legível (título/resumo/link)
+- `packages/core/src/modules/image-search` separado da busca textual, compartilhando contratos de busca por porta
+- `packages/core/src/modules/downloads` com camada comum de parsing/validação/roteamento e providers isolados por origem (`yt`, `ig`, `fb`, `direct`)
+- providers `yt/ig/fb` com bloqueio explícito por compliance, mantendo evolução segura sem acoplamento frágil
 
 Referência detalhada:
 - `docs/capability-modules-blueprint.md`

@@ -204,6 +204,19 @@ Benefits:
 - easier scaling
 - simpler upgrades
 
+Operational requirements for infra containers:
+
+- `postgres` and `redis` must have Docker `healthcheck`
+- `postgres` and `redis` should use restart policy (`restart: unless-stopped`)
+- app boot must be blocked until required dependencies are healthy
+
+Runtime bootstrap policy:
+
+- use `npm run start:dev|prod|debug` as the supervisor entrypoint
+- startup performs deterministic dependency verification (`container state` + `docker health` + `port connectivity`)
+- when a dependency is down/unhealthy, startup attempts `docker compose up -d <service>` and revalidates
+- on failure, logs must include dependency name, attempted action, and final error reason
+
 ---
 
 # 5. Environment configuration
@@ -429,6 +442,12 @@ Health checks should validate:
 - Redis connectivity
 - queue worker status
 - gateway connection status
+
+In addition to HTTP health endpoints, startup health must validate infrastructure dependencies before launching apps:
+
+- preflight check for required containers (`postgres`, `redis`)
+- automatic recovery attempt for missing/unhealthy dependencies
+- post-recovery revalidation with bounded timeout (no blind retry loops)
 
 ---
 

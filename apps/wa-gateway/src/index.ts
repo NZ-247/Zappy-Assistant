@@ -27,6 +27,10 @@ import {
   createMuteAdapter,
   createOpenAiAdapter,
   createOpenAiSpeechToTextAdapter,
+  createOpenAiTextToSpeechAdapter,
+  createWebSearchAdapter,
+  createImageSearchAdapter,
+  createMediaDownloadRouter,
   createConversationStateAdapter,
   conversationMemoryRepository,
   consentRepository,
@@ -80,6 +84,41 @@ const speechToTextAdapter = createOpenAiSpeechToTextAdapter({
   timeoutMs: env.AUDIO_STT_TIMEOUT_MS,
   language: env.AUDIO_STT_LANGUAGE
 });
+const textToSpeechAdapter = env.TTS_ENABLED
+  ? createOpenAiTextToSpeechAdapter({
+      apiKey: env.OPENAI_API_KEY,
+      model: env.TTS_MODEL,
+      timeoutMs: env.TTS_TIMEOUT_MS,
+      voices: {
+        male: env.TTS_MALE_VOICE,
+        female: env.TTS_FEMALE_VOICE,
+        default: env.TTS_DEFAULT_VOICE
+      }
+    })
+  : undefined;
+const webSearchAdapter = env.SEARCH_ENABLED
+  ? createWebSearchAdapter({
+      googleApiKey: env.GOOGLE_SEARCH_API_KEY,
+      googleCx: env.GOOGLE_SEARCH_CX,
+      timeoutMs: env.SEARCH_TIMEOUT_MS,
+      preferredProvider: env.SEARCH_PROVIDER
+    })
+  : undefined;
+const imageSearchAdapter = env.IMAGE_SEARCH_ENABLED
+  ? createImageSearchAdapter({
+      googleApiKey: env.GOOGLE_SEARCH_API_KEY,
+      googleCx: env.GOOGLE_SEARCH_CX,
+      timeoutMs: env.SEARCH_TIMEOUT_MS,
+      preferredProvider: env.IMAGE_SEARCH_PROVIDER
+    })
+  : undefined;
+const mediaDownloadAdapter = env.DOWNLOADS_MODULE_ENABLED
+  ? createMediaDownloadRouter({
+      direct: {
+        timeoutMs: env.DOWNLOADS_DIRECT_TIMEOUT_MS
+      }
+    })
+  : undefined;
 const audioCommandAllowlist = env.AUDIO_COMMAND_ALLOWLIST.split(",")
   .map((item) => item.trim())
   .filter(Boolean);
@@ -286,6 +325,10 @@ const orchestrator = new Orchestrator({
   rateLimit: createRateLimitAdapter(redis),
   queue: queueAdapter,
   llm: llmAdapter,
+  textToSpeech: textToSpeechAdapter,
+  webSearch: webSearchAdapter,
+  imageSearch: imageSearchAdapter,
+  mediaDownload: mediaDownloadAdapter,
   llmModel,
   mute: muteAdapter,
   identity: identityRepository,
@@ -303,6 +346,12 @@ const orchestrator = new Orchestrator({
   commandPrefix: env.BOT_PREFIX,
   baseSystemPrompt,
   llmMemoryMessages: env.LLM_MEMORY_MESSAGES,
+  ttsEnabled: env.TTS_ENABLED,
+  ttsDefaultLanguage: env.TTS_DEFAULT_LANGUAGE,
+  ttsDefaultVoice: env.TTS_DEFAULT_VOICE,
+  ttsMaxTextChars: env.TTS_MAX_TEXT_CHARS,
+  searchResultsLimit: env.SEARCH_MAX_RESULTS,
+  imageSearchResultsLimit: env.IMAGE_SEARCH_MAX_RESULTS,
   audioCapabilityEnabled: env.AUDIO_CAPABILITY_ENABLED,
   audioAutoTranscribeEnabled: env.AUDIO_AUTO_TRANSCRIBE_ENABLED,
   audioCommandDispatchEnabled: env.AUDIO_COMMAND_DISPATCH_ENABLED,

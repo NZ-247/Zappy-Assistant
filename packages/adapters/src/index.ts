@@ -689,6 +689,11 @@ export const createOpenAiSpeechToTextAdapter = (input: {
   };
 };
 
+export { createOpenAiTextToSpeechAdapter } from "./tts/openai-tts-adapter.js";
+export { createWebSearchAdapter } from "./search/web-search-adapter.js";
+export { createImageSearchAdapter } from "./search/image-search-adapter.js";
+export { createMediaDownloadRouter } from "./downloads/router.js";
+
 export { markGatewayHeartbeat, getGatewayHeartbeat, markWorkerHeartbeat, getWorkerHeartbeat };
 
 export const getRecentMessages = (limit: number) =>

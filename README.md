@@ -19,6 +19,10 @@ npm run prisma:generate
 - Operational reactions are configurable via `WA_REACTIONS_ENABLED`, `WA_REACTION_PROGRESS`, `WA_REACTION_SUCCESS`, `WA_REACTION_FAILURE` (defaults: `⏱️`, `✅`, `❌`).
 - Audio STT-first capability is controlled by `AUDIO_CAPABILITY_ENABLED`, `AUDIO_AUTO_TRANSCRIBE_ENABLED`, `AUDIO_STT_MODEL`, `AUDIO_STT_TIMEOUT_MS`, `AUDIO_MAX_DURATION_SECONDS`, `AUDIO_MAX_BYTES`, `AUDIO_STT_LANGUAGE`.
 - Audio dynamic command dispatch is controlled by `AUDIO_COMMAND_DISPATCH_ENABLED`, `AUDIO_COMMAND_ALLOWLIST`, `AUDIO_COMMAND_MIN_CONFIDENCE`, `AUDIO_TRANSCRIPT_PREVIEW_CHARS`.
+- TTS is controlled by `TTS_ENABLED`, `TTS_MODEL`, `TTS_TIMEOUT_MS`, `TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`, `TTS_MALE_VOICE`, `TTS_FEMALE_VOICE`, `TTS_MAX_TEXT_CHARS`.
+- Web search is controlled by `SEARCH_ENABLED`, `SEARCH_PROVIDER`, `SEARCH_MAX_RESULTS`, `SEARCH_TIMEOUT_MS`, `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_CX`.
+- Image search is controlled by `IMAGE_SEARCH_ENABLED`, `IMAGE_SEARCH_PROVIDER`, `IMAGE_SEARCH_MAX_RESULTS` (`google` fallback to `wikimedia` when needed).
+- Downloads module is controlled by `DOWNLOADS_MODULE_ENABLED`, `DOWNLOADS_DIRECT_TIMEOUT_MS`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
@@ -32,8 +36,9 @@ npm run start:dev
 
 What `start:dev` does:
 - checks Docker/Compose availability
-- ensures `postgres` and `redis` from `infra/docker-compose.yml` are running (starts them if needed)
-- waits for connectivity on 5432/6379
+- validates infra dependencies (`postgres`, `redis`) with deterministic checks: container state + Docker health + TCP port
+- if a required dependency is down/unhealthy, runs `docker compose up -d <service>` automatically and revalidates before boot
+- emits structured dependency logs (`[deps] phase=...`) including failing service, attempted action, and final diagnostic
 - prints a compact cfonts banner (mode/environment/timezone/LLM model/WA session path)
 - starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
 - writes state to `.zappy-dev/dev-stack.json` so the stop script can cleanly shut things down
@@ -51,7 +56,7 @@ npm run start:prod -- --build
 ```
 
 What it does in `prod`:
-- checks/starts infra (`postgres`, `redis`) and waits for ports
+- runs the same dependency validation/auto-recovery flow used in dev (state + health + port)
 - skips build by default (faster boot)
 - runs `npm run build` only when `--build` is passed
 - starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` with `npm run start -w ...`
@@ -66,7 +71,7 @@ npm run start:debug
 ```
 
 What it does in `debug`:
-- checks/starts infra (`postgres`, `redis`) and waits for ports
+- runs the same dependency validation/auto-recovery flow used in dev/prod
 - runs `npm run build` before bootstrapping services
 - starts all apps with non-watch runtime (`npm run start -w ...`)
 - forces runtime log defaults: `LOG_FORMAT=json`, `LOG_LEVEL=debug`, `LOG_VERBOSE_FIELDS=true`, `DEBUG=trace` (can still be overridden via env)
@@ -100,13 +105,27 @@ npm run stop:prod -- --with-infra
 npm run stop:debug -- --with-infra
 ```
 
+Restart flows:
+
+```bash
+npm run restart:dev
+```
+
+```bash
+npm run restart:prod -- --build
+```
+
+```bash
+npm run restart:debug
+```
+
 If you still prefer the old behavior, `npm run dev` remains available (it will print each service banner).
 
 Manual steps that remain:
 - keep `.env` up to date and run `npm run prisma:migrate` when schema changes
 - WhatsApp pairing (see below) still requires manual code entry
 
-Version note: dev tooling banner reports `beta 1.0`; expect minor changes while the flow stabilizes.
+Version note: current release line is `v1.5.0`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -120,7 +139,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
-- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`.
+- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`, `/tts`, `/search` (`/google`), `/img` (`/gimage`), `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
   - `/toimg` funciona apenas respondendo uma figurinha válida.
@@ -132,7 +151,22 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Áudio enviado diretamente ao bot pode ser transcrito e roteado para resposta no fluxo existente.
   - Dispatch dinâmico por voz usa estratégia controlada: prefixo explícito (`/`), comando falado `slash|barra <comando>`, ou primeiro token da allowlist (`AUDIO_COMMAND_ALLOWLIST`) com confiança mínima (`AUDIO_COMMAND_MIN_CONFIDENCE`).
   - Em baixa confiança, o bot não executa comando dinâmico e responde com fallback amigável/transcrição curta.
-  - Limitações atuais: STT apenas (sem TTS), suporte focado em áudio/PTT e limites rígidos de tamanho/duração para preservar recursos.
+- TTS module:
+  - `/tts <texto>` usa idioma/voz padrão (`TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`).
+  - Formato opcional completo: `/tts <texto> |<idioma>|<voz>` (ex: `/tts Bom dia |en|female`).
+  - Valida formato, idioma e limite máximo de texto (`TTS_MAX_TEXT_CHARS`) antes de sintetizar.
+- Web search module:
+  - `/search <termo>` e `/google <termo>` retornam título, resumo curto e link.
+  - Quantidade de resultados controlada por `SEARCH_MAX_RESULTS`.
+  - Provider configurável (`SEARCH_PROVIDER`) com fallback para DuckDuckGo.
+- Image search module:
+  - `/img <termo>` e `/gimage <termo>` retornam links de imagem e página de origem.
+  - Quantidade de resultados controlada por `IMAGE_SEARCH_MAX_RESULTS`.
+  - Provider configurável (`IMAGE_SEARCH_PROVIDER`) com fallback para Wikimedia.
+- Downloads module (provider router):
+  - `/dl direct <link>` valida link direto (http/https), tipo de mídia e metadados básicos.
+  - `/dl yt|ig|fb <link>` usa providers separados com resposta explícita quando bloqueado por compliance/permissão.
+  - Parsing, validação, roteamento e tratamento de erro padronizados em módulo dedicado.
 - Reminders:
   - `/reminder in <duration> <message>` where duration accepts `1`, `10m`, `1h40m30s`, `2d`.
   - `/reminder at <DD-MM[-YYYY]> [HH:MM] <message>` uses `BOT_TIMEZONE` and defaults time to `08:00`.

@@ -1,7 +1,7 @@
 {
   "name": "zappy-assistant",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.5.0",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -13,6 +13,9 @@
     "stop:prod": "node scripts/stop.mjs prod",
     "start:debug": "node scripts/start.mjs debug",
     "stop:debug": "node scripts/stop.mjs debug",
+    "restart:dev": "node scripts/restart.mjs dev",
+    "restart:prod": "node scripts/restart.mjs prod",
+    "restart:debug": "node scripts/restart.mjs debug",
     "dev": "concurrently -k -n assistant-api,wa-gateway,worker,admin-ui \"npm run dev -w @zappy/assistant-api\" \"npm run dev -w @zappy/wa-gateway\" \"npm run dev -w @zappy/worker\" \"npm run dev -w @zappy/admin-ui\"",
     "build": "npm run prisma:generate && npm run build -w @zappy/shared && npm run build -w @zappy/core && npm run build -w @zappy/ai && npm run build -w @zappy/adapters && npm run build -w @zappy/admin-ui && npm run build -w @zappy/assistant-api && npm run build -w @zappy/wa-gateway && npm run build -w @zappy/worker",
     "lint": "npm run typecheck --workspaces --if-present",

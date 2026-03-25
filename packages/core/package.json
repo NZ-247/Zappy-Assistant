@@ -1,6 +1,6 @@
 {
   "name": "@zappy/core",
-  "version": "0.1.0",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@zappy/shared": "0.1.0",
+    "@zappy/shared": "1.5.0",
     "luxon": "^3.7.2",
     "expr-eval": "^2.0.2"
   },

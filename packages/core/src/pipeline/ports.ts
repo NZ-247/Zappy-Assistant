@@ -171,6 +171,76 @@ export interface LlmPort {
   chat(input: { system: string; messages: ConversationMessage[] }): Promise<string>;
 }
 
+export interface TextToSpeechPort {
+  synthesize(input: {
+    text: string;
+    language: string;
+    voice: string;
+    timeoutMs?: number;
+  }): Promise<{
+    audioBase64: string;
+    mimeType: string;
+    provider?: string;
+    model?: string;
+    voice?: string;
+    language?: string;
+  }>;
+}
+
+export interface WebSearchResultItem {
+  title: string;
+  snippet?: string;
+  link: string;
+}
+
+export interface ImageSearchResultItem {
+  title: string;
+  link: string;
+  imageUrl?: string;
+}
+
+export interface WebSearchPort {
+  search(input: {
+    query: string;
+    limit: number;
+    locale?: string;
+  }): Promise<{
+    provider: string;
+    results: WebSearchResultItem[];
+  }>;
+}
+
+export interface ImageSearchPort {
+  search(input: {
+    query: string;
+    limit: number;
+    locale?: string;
+  }): Promise<{
+    provider: string;
+    results: ImageSearchResultItem[];
+  }>;
+}
+
+export type MediaDownloadProvider = "yt" | "ig" | "fb" | "direct";
+
+export interface MediaDownloadPort {
+  resolve(input: {
+    provider: MediaDownloadProvider;
+    url: string;
+    tenantId?: string;
+    waUserId?: string;
+    waGroupId?: string;
+  }): Promise<{
+    provider: MediaDownloadProvider;
+    status: "ready" | "unsupported" | "blocked" | "invalid" | "error";
+    reason?: string;
+    title?: string;
+    url?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+  }>;
+}
+
 export interface PromptPort {
   resolvePrompt(input: { tenantId: string; waGroupId?: string }): Promise<string | null>;
 }
@@ -246,6 +316,10 @@ export interface CorePorts {
   rateLimit: RateLimitPort;
   queue: QueuePort;
   llm: LlmPort;
+  textToSpeech?: TextToSpeechPort;
+  webSearch?: WebSearchPort;
+  imageSearch?: ImageSearchPort;
+  mediaDownload?: MediaDownloadPort;
   llmModel?: string;
   mute?: MutePort;
   identity?: IdentityPort;
@@ -265,6 +339,12 @@ export interface CorePorts {
   defaultReminderTime?: string;
   baseSystemPrompt?: string;
   llmMemoryMessages?: number;
+  ttsEnabled?: boolean;
+  ttsDefaultLanguage?: string;
+  ttsDefaultVoice?: string;
+  ttsMaxTextChars?: number;
+  searchResultsLimit?: number;
+  imageSearchResultsLimit?: number;
   audioCapabilityEnabled?: boolean;
   audioAutoTranscribeEnabled?: boolean;
   audioCommandDispatchEnabled?: boolean;

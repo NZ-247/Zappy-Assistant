@@ -7,6 +7,10 @@ import { handleTaskCommand } from "../modules/tasks/presentation/commands/task-c
 import { handleNoteCommand } from "../modules/notes/presentation/commands/note-commands.js";
 import { handleAudioCommand } from "../modules/tools/audio/presentation/commands/audio-commands.js";
 import { handleStickerCommand } from "../modules/tools/stickers/presentation/commands/sticker-commands.js";
+import { handleTtsCommand } from "../modules/tts/presentation/commands/tts-commands.js";
+import { handleWebSearchCommand } from "../modules/web-search/presentation/commands/web-search-commands.js";
+import { handleImageSearchCommand } from "../modules/image-search/presentation/commands/image-search-commands.js";
+import { handleDownloadCommand } from "../modules/downloads/presentation/commands/download-commands.js";
 import { evaluateExpression } from "../common/math-expression.js";
 import { formatAgenda } from "../modules/reminders/infrastructure/agenda-formatter.js";
 import type { ResponseAction } from "../pipeline/actions.js";
@@ -141,6 +145,75 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     deps: { notesRepository: deps.ports.notesRepository, formatUsage: (name) => usageFor(name) }
   });
   if (noteHandled) return noteHandled;
+
+  const ttsHandled = await handleTtsCommand({
+    commandKey,
+    cmd,
+    ctx,
+    deps: {
+      textToSpeech: deps.ports.textToSpeech,
+      config: {
+        enabled: deps.ports.ttsEnabled ?? true,
+        defaultLanguage: deps.ports.ttsDefaultLanguage ?? "pt-BR",
+        defaultVoice: deps.ports.ttsDefaultVoice ?? "female",
+        maxTextChars: deps.ports.ttsMaxTextChars ?? 700,
+        voiceAliases: {
+          male: "male",
+          female: "female"
+        }
+      },
+      formatUsage: () => usageFor("tts"),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+    }
+  });
+  if (ttsHandled) return ttsHandled;
+
+  const webSearchHandled = await handleWebSearchCommand({
+    commandKey,
+    cmd,
+    ctx,
+    deps: {
+      search: deps.ports.webSearch,
+      config: {
+        enabled: true,
+        maxResults: deps.ports.searchResultsLimit ?? 3
+      },
+      formatUsage: (name) => usageFor(name),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+    }
+  });
+  if (webSearchHandled) return webSearchHandled;
+
+  const imageSearchHandled = await handleImageSearchCommand({
+    commandKey,
+    cmd,
+    ctx,
+    deps: {
+      imageSearch: deps.ports.imageSearch,
+      config: {
+        enabled: true,
+        maxResults: deps.ports.imageSearchResultsLimit ?? 3
+      },
+      formatUsage: (name) => usageFor(name),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+    }
+  });
+  if (imageSearchHandled) return imageSearchHandled;
+
+  const downloadHandled = await handleDownloadCommand({
+    commandKey,
+    cmd,
+    ctx,
+    deps: {
+      mediaDownload: deps.ports.mediaDownload,
+      config: {
+        enabled: true
+      },
+      formatUsage: () => usageFor("dl"),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+    }
+  });
+  if (downloadHandled) return downloadHandled;
 
   const audioHandled = handleAudioCommand({
     commandKey,

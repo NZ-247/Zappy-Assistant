@@ -39,7 +39,13 @@ const COMMAND_MATCHERS: Array<{ match: RegExp; name: string }> = [
   { name: "userinfo", match: /^userinfo\b/i },
   { name: "status", match: /^status\b/i },
   { name: "transcribe", match: /^(transcribe|tr)\b/i },
-  { name: "reminder", match: /^reminder\b/i }
+  { name: "reminder", match: /^reminder\b/i },
+  { name: "tts", match: /^tts\b/i },
+  { name: "search", match: /^search\b/i },
+  { name: "search", match: /^google\b/i },
+  { name: "img", match: /^img\b/i },
+  { name: "img", match: /^gimage\b/i },
+  { name: "dl", match: /^dl\b/i }
 ];
 
 export const createCommandRegistry = (prefix?: string): CommandRegistry => {

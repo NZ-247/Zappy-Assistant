@@ -52,6 +52,51 @@ export const handleBasicOutboundAction = async (input: {
     return true;
   }
 
+  if (action.kind === "reply_audio") {
+    let audioBuffer: Buffer;
+    try {
+      audioBuffer = Buffer.from(action.audioBase64, "base64");
+    } catch {
+      await sendTextAndPersist({
+        runtime,
+        to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
+        text: "Falha ao preparar áudio para envio.",
+        actionName: "reply_audio_error",
+        scope: runtime.isGroup ? "group" : "direct",
+        responseActionId
+      });
+      return true;
+    }
+
+    if (!audioBuffer.length) {
+      await sendTextAndPersist({
+        runtime,
+        to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
+        text: "Áudio TTS vazio. Tente novamente em instantes.",
+        actionName: "reply_audio_error",
+        scope: runtime.isGroup ? "group" : "direct",
+        responseActionId
+      });
+      return true;
+    }
+
+    await sendTextAndPersist({
+      runtime,
+      to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
+      text: action.caption ?? "[audio]",
+      actionName: "reply_audio",
+      scope: runtime.isGroup ? "group" : "direct",
+      responseActionId,
+      content: {
+        audio: audioBuffer,
+        mimetype: action.mimeType,
+        ptt: Boolean(action.ptt),
+        fileName: action.fileName
+      }
+    });
+    return true;
+  }
+
   if (action.kind === "reply_text" || action.kind === "reply_list") {
     const textToSend =
       action.kind === "reply_text"

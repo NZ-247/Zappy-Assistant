@@ -5,6 +5,15 @@ export interface ReplyTextAction {
   text: string;
 }
 
+export interface ReplyAudioAction {
+  kind: "reply_audio";
+  audioBase64: string;
+  mimeType: string;
+  fileName?: string;
+  caption?: string;
+  ptt?: boolean;
+}
+
 export interface ReplyListItem {
   title: string;
   description?: string;
@@ -101,6 +110,7 @@ export interface ModerationAction {
 
 export type ResponseAction =
   | ReplyTextAction
+  | ReplyAudioAction
   | ReplyListAction
   | StickerTransformAction
   | AudioTranscriptionAction
