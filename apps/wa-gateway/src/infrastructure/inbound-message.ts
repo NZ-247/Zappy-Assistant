@@ -1,5 +1,5 @@
 export const getInboundText = (message: any): string => {
-  return message?.conversation ?? message?.extendedTextMessage?.text ?? message?.imageMessage?.caption ?? "";
+  return message?.conversation ?? message?.extendedTextMessage?.text ?? message?.imageMessage?.caption ?? message?.videoMessage?.caption ?? "";
 };
 
 export const hasInboundMedia = (message: any): boolean =>

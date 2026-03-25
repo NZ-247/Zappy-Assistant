@@ -8,6 +8,7 @@ export type CommandCategory =
   | "moderation"
   | "tasks"
   | "notes"
+  | "tools"
   | "reminders"
   | "admin"
   | "identity"

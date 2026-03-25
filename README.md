@@ -13,6 +13,8 @@ npm run prisma:generate
 - `LLM_ENABLED=false` skips the LLM fallback and keeps commands/triggers active.
 - `BOT_TIMEZONE` (default `America/Cuiaba`) controls all reminder parsing/formatting.
 - `BOT_PREFIX` (default `/`) is the global command prefix; parsing/help text respect this value.
+- `INBOUND_MAX_MESSAGE_AGE_SECONDS` (default `30`) discards stale backlog messages on reconnect/new instance before command/AI processing. If timestamp is unavailable, message is accepted (safe fallback) and logged at debug level.
+- `STICKER_MAX_VIDEO_SECONDS` (default `10`) limits short-video sticker generation; videos above this threshold are rejected with friendly feedback.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
@@ -32,16 +34,36 @@ What it does:
 - starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
 - writes state to `.zappy-dev/dev-stack.json` so the stop script can cleanly shut things down
 
+Production flow (no watch mode, stable bootstrap):
+
+```bash
+npm run start:prod
+```
+
+What it does in `prod`:
+- checks/starts infra (`postgres`, `redis`) and waits for ports
+- runs `npm run build` before bootstrapping services
+- starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` with `npm run start -w ...`
+- writes state to `.zappy-dev/prod-stack.json`
+
 Stop services while keeping infra up:
 
 ```bash
 npm run stop:dev
 ```
 
+```bash
+npm run stop:prod
+```
+
 Stop services **and** infra (postgres/redis):
 
 ```bash
 npm run stop:dev -- --with-infra
+```
+
+```bash
+npm run stop:prod -- --with-infra
 ```
 
 If you still prefer the old behavior, `npm run dev` remains available (it will print each service banner).
@@ -64,7 +86,12 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
-- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`.
+- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg` e `/rnfig`.
+- Stickers capability:
+  - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
+  - `/toimg` funciona apenas respondendo uma figurinha válida.
+  - `/rnfig Autor|Pacote` atualiza apenas metadados EXIF de autor/pacote ao responder uma figurinha.
+  - Limitações atuais: vídeo curto apenas (limitado por `STICKER_MAX_VIDEO_SECONDS`), sem gif avançado, sem editor visual, sem suporte a vídeos longos.
 - Reminders:
   - `/reminder in <duration> <message>` where duration accepts `1`, `10m`, `1h40m30s`, `2d`.
   - `/reminder at <DD-MM[-YYYY]> [HH:MM] <message>` uses `BOT_TIMEZONE` and defaults time to `08:00`.
@@ -97,9 +124,11 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - WA-IN/WA-OUT dev lines: `[HH:MM:SS] [WA-IN] [DIRECT|GROUP] <role> <profile> <phone> -> "preview"` with `action=` for outbound. Structured fields (`waMessageId`, `tenantId`, etc.) stay in the JSON payload.
 - Warnings/errors are rendered in a block with source module and a short hint; full stack only when `DEBUG=stack`.
 - Baileys low-level sync chatter is silenced in dev unless `DEBUG=trace` is set.
+- Replayed old inbound messages are skipped with short log `stale inbound skipped` when age exceeds `INBOUND_MAX_MESSAGE_AGE_SECONDS`.
 
 ## Startup banner (dev)
 - `npm run start:dev` prints a single cfonts banner (`Zappy Assistant ©`) with metadata: Creator (NZ_Dev©), Company (Services.NET), Version (beta 1.0), Environment, Timezone, LLM/model, WA session path. It sets `ZAPPY_SKIP_SERVICE_BANNER=1` so individual services don't repeat the banner.
+- `npm run start:prod` prints a compact runtime header (`mode=prod`) and starts services without watch mode.
 - Running a service directly (`npm run dev -w ...`) still shows the per-service startup banner with status hints (Redis/DB/Worker/LLM) and Admin URLs. Status transitions remain logged clearly: WhatsApp CONNECTING/QR READY/CONNECTED/DISCONNECTED, Redis/DB OK|FAIL, Worker OK|FAIL.
 
 ## Admin

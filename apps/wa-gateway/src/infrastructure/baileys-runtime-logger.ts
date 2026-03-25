@@ -157,23 +157,27 @@ export const createBaileysRuntimeLogger = (input: CreateBaileysRuntimeLoggerInpu
     if (!tracked.shouldLog) return true;
 
     const windowSeconds = Math.max(0, Math.round((tracked.entry.lastSeenAt - tracked.entry.firstSeenAt) / 1000));
-    input.appLogger.warn?.(
-      input.withCategory("AUTH", {
-        status: "WA_DECRYPT_ISSUE",
-        issueCode: issue.code,
-        severity: issue.severity,
-        signature,
-        occurrences: tracked.entry.count,
-        suppressedSinceLastLog: tracked.suppressedBeforeLog,
-        windowSeconds,
-        firstSeenAt: new Date(tracked.entry.firstSeenAt).toISOString(),
-        lastSeenAt: new Date(tracked.entry.lastSeenAt).toISOString(),
-        remoteJid,
-        recommendation: recommendationFor(issue.severity, tracked.entry.count),
-        sample: toShortText(text)
-      }),
-      "baileys decrypt issue"
-    );
+    try {
+      input.appLogger.warn?.(
+        input.withCategory("AUTH", {
+          status: "WA_DECRYPT_ISSUE",
+          issueCode: issue.code,
+          severity: issue.severity,
+          signature,
+          occurrences: tracked.entry.count,
+          suppressedSinceLastLog: tracked.suppressedBeforeLog,
+          windowSeconds,
+          firstSeenAt: new Date(tracked.entry.firstSeenAt).toISOString(),
+          lastSeenAt: new Date(tracked.entry.lastSeenAt).toISOString(),
+          remoteJid,
+          recommendation: recommendationFor(issue.severity, tracked.entry.count),
+          sample: toShortText(text)
+        }),
+        "baileys decrypt issue"
+      );
+    } catch {
+      // Logging must never fail the runtime path.
+    }
     return true;
   };
 
@@ -182,7 +186,8 @@ export const createBaileysRuntimeLogger = (input: CreateBaileysRuntimeLoggerInpu
       get(obj, prop, receiver) {
         if (prop === "child") {
           return (...args: unknown[]) => {
-            const child = obj.child ? obj.child(...args) : obj;
+            const child =
+              typeof obj.child === "function" ? ((obj.child as (...childArgs: unknown[]) => LoggerLike).apply(obj, args) ?? obj) : obj;
             return wrap(child);
           };
         }
@@ -191,7 +196,25 @@ export const createBaileysRuntimeLogger = (input: CreateBaileysRuntimeLoggerInpu
           return (...args: unknown[]) => {
             if (interceptDecryptIssue(obj, prop, args)) return;
             const method = obj[prop] as ((...methodArgs: unknown[]) => unknown) | undefined;
-            if (typeof method === "function") return method(...args);
+            if (typeof method !== "function") return;
+            try {
+              return method.apply(obj, args);
+            } catch (error) {
+              try {
+                input.appLogger.warn?.(
+                  {
+                    category: "WARN",
+                    module: "baileys-runtime-logger",
+                    status: "BAILEYS_LOGGER_FORWARD_FAILED",
+                    level: prop,
+                    err: error
+                  },
+                  "baileys logger forwarding failed"
+                );
+              } catch {
+                // Never throw from logger wrapper.
+              }
+            }
           };
         }
 

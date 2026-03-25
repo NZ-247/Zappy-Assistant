@@ -56,7 +56,7 @@ Consome apenas `assistant-api`, sem lógica de domínio embarcada.
 
 ## 4. Fluxo lógico de aplicação (alto nível)
 
-1. Normalização de entrada
+1. Normalização de entrada + stale guard (`INBOUND_MAX_MESSAGE_AGE_SECONDS`)
 2. Resolução de identidade e contexto
 3. Verificações de consentimento/acesso
 4. Classificação de intenção
@@ -157,6 +157,11 @@ Diretriz oficial para próxima fase (multimídia/utilitários):
 - capabilities separadas em `modules/tools/<capability>`
 - dependências pesadas isoladas em adapters e carregadas sob demanda
 - ativação gradual por feature flag/política
+
+Primeira capability entregue neste padrão:
+- `packages/core/src/modules/tools/stickers` com comandos `/sticker` (`/s`, `/stk`, `/fig`), `/toimg` e `/rnfig`
+- execução concreta de conversão isolada no `apps/wa-gateway` (fora do core)
+- versão atual da capability: sticker por imagem/vídeo curto com limite configurável (`STICKER_MAX_VIDEO_SECONDS`), `contain + transparent padding`, conversão sticker->imagem e rename de metadados EXIF
 
 Referência detalhada:
 - `docs/capability-modules-blueprint.md`

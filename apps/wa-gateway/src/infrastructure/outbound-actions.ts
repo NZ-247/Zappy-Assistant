@@ -2,6 +2,7 @@ import { buildResponseActionId } from "./outbound/context.js";
 import { handleBasicOutboundAction } from "./outbound/handlers/basic-actions.js";
 import { handleGroupAdminOutboundAction } from "./outbound/handlers/group-admin-action.js";
 import { handleModerationOutboundAction } from "./outbound/handlers/moderation-action.js";
+import { handleStickerOutboundAction } from "./outbound/handlers/sticker-action.js";
 import type { ExecuteOutboundActionsInput } from "./outbound/types.js";
 
 type OutboundHandler = (input: {
@@ -10,7 +11,7 @@ type OutboundHandler = (input: {
   responseActionId: string;
 }) => Promise<boolean>;
 
-const outboundHandlers: OutboundHandler[] = [handleBasicOutboundAction, handleGroupAdminOutboundAction, handleModerationOutboundAction];
+const outboundHandlers: OutboundHandler[] = [handleBasicOutboundAction, handleStickerOutboundAction, handleGroupAdminOutboundAction, handleModerationOutboundAction];
 
 export const executeOutboundActions = async (input: ExecuteOutboundActionsInput): Promise<void> => {
   for (let actionIndex = 0; actionIndex < input.actions.length; actionIndex += 1) {

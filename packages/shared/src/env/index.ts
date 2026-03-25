@@ -20,6 +20,8 @@ const envSchema = z.object({
   LLM_PERSONA: z.string().default("secretary_default"),
   BOT_TIMEZONE: z.string().default("America/Cuiaba"),
   BOT_PREFIX: z.string().default("/"),
+  INBOUND_MAX_MESSAGE_AGE_SECONDS: z.coerce.number().int().min(0).default(30),
+  STICKER_MAX_VIDEO_SECONDS: z.coerce.number().int().min(1).max(30).default(10),
   WA_SESSION_PATH: z.string().default(".wa_auth"),
   ONLY_GROUP_ID: z.string().optional(),
   DEFAULT_TENANT_NAME: z.string().default("Default Tenant"),

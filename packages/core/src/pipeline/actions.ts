@@ -46,6 +46,19 @@ export interface AiToolSuggestionAction {
   text?: string;
 }
 
+export type StickerTransformOperation = "media_to_sticker" | "image_to_sticker" | "sticker_to_image" | "sticker_rename_metadata";
+export type StickerTransformSource = "inbound" | "quoted";
+export type StickerSourceMediaType = "image" | "video";
+
+export interface StickerTransformAction {
+  kind: "sticker_transform";
+  operation: StickerTransformOperation;
+  source: StickerTransformSource;
+  sourceMediaType?: StickerSourceMediaType;
+  author?: string;
+  packName?: string;
+}
+
 export type GroupAdminOperation =
   | "set_subject"
   | "set_description"
@@ -77,6 +90,7 @@ export interface ModerationAction {
 export type ResponseAction =
   | ReplyTextAction
   | ReplyListAction
+  | StickerTransformAction
   | EnqueueJobAction
   | NoopAction
   | ErrorAction

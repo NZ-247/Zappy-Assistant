@@ -78,6 +78,9 @@ import type {
   ErrorAction,
   HandoffAction,
   AiToolSuggestionAction,
+  StickerTransformOperation,
+  StickerTransformSource,
+  StickerTransformAction,
   ModerationAction,
   OrchestratorAction
 } from "./pipeline/actions.js";
@@ -159,6 +162,9 @@ export type {
   ErrorAction,
   HandoffAction,
   AiToolSuggestionAction,
+  StickerTransformOperation,
+  StickerTransformSource,
+  StickerTransformAction,
   GroupAdminOperation,
   GroupAdminAction,
   ModerationActionKind,
@@ -302,6 +308,7 @@ export class Orchestrator {
       isReplyToBot: Boolean(event.isReplyToBot),
       quotedWaMessageId: event.quotedWaMessageId,
       quotedWaUserId: event.quotedWaUserId,
+      quotedMessageType: event.quotedMessageType,
       botIsGroupAdmin: event.botIsGroupAdmin,
       groupName: event.groupName
     };

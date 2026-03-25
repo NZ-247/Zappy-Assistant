@@ -53,6 +53,7 @@ export interface ExecuteOutboundActionsInput {
   withCategory: (category: any, payload?: Record<string, unknown>) => unknown;
   metrics: { increment: (key: any, by?: number) => Promise<void> };
   auditTrail: { record: (event: any) => Promise<void> };
+  stickerMaxVideoSeconds: number;
 }
 
 export type OutboundScope = "group" | "direct";

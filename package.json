@@ -7,8 +7,10 @@
     "packages/*"
   ],
   "scripts": {
-    "start:dev": "node scripts/start-dev.mjs",
-    "stop:dev": "node scripts/stop-dev.mjs",
+    "start:dev": "node scripts/start.mjs dev",
+    "stop:dev": "node scripts/stop.mjs dev",
+    "start:prod": "node scripts/start.mjs prod",
+    "stop:prod": "node scripts/stop.mjs prod",
     "dev": "concurrently -k -n assistant-api,wa-gateway,worker,admin-ui \"npm run dev -w @zappy/assistant-api\" \"npm run dev -w @zappy/wa-gateway\" \"npm run dev -w @zappy/worker\" \"npm run dev -w @zappy/admin-ui\"",
     "build": "npm run prisma:generate && npm run build -w @zappy/shared && npm run build -w @zappy/core && npm run build -w @zappy/ai && npm run build -w @zappy/adapters && npm run build -w @zappy/admin-ui && npm run build -w @zappy/assistant-api && npm run build -w @zappy/wa-gateway && npm run build -w @zappy/worker",
     "lint": "npm run typecheck --workspaces --if-present",

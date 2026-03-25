@@ -19,6 +19,7 @@ interface MessagesUpsertHandlerDeps {
     ONLY_GROUP_ID?: string;
     DEFAULT_TENANT_NAME: string;
     BOT_TIMEZONE: string;
+    INBOUND_MAX_MESSAGE_AGE_SECONDS: number;
   };
   getSocket: () => any | null;
   normalizeJid: (value: string) => string;
@@ -69,6 +70,7 @@ interface MessagesUpsertHandlerDeps {
     baileysLogger: any;
     metrics: any;
     auditTrail: any;
+    stickerMaxVideoSeconds: number;
   };
 }
 
@@ -82,7 +84,7 @@ const buildInboundMessageId = (input: {
   const explicit = input.message.key.id?.trim();
   if (explicit) return explicit;
 
-  const timestamp = input.message.messageTimestamp ? Number(input.message.messageTimestamp) : Date.now();
+  const timestamp = resolveMessageTimestampMs(input.message.messageTimestamp) ?? Date.now();
   const rawType = Object.keys(input.message.message ?? {})[0] ?? "unknown";
   const seed = [
     input.remoteJid,
@@ -99,6 +101,14 @@ const buildInboundMessageId = (input: {
 
 const buildExecutionId = (waMessageId: string): string => {
   return `exec_${Date.now().toString(36)}_${waMessageId.slice(-8)}_${randomUUID().slice(0, 8)}`;
+};
+
+const resolveMessageTimestampMs = (rawTimestamp: InboundUpsertMessage["messageTimestamp"]): number | null => {
+  if (rawTimestamp === undefined || rawTimestamp === null) return null;
+  const rawValue = typeof rawTimestamp === "number" ? rawTimestamp : Number(rawTimestamp.toString?.() ?? rawTimestamp);
+  if (!Number.isFinite(rawValue) || rawValue <= 0) return null;
+  const millis = rawValue > 1_000_000_000_000 ? rawValue : rawValue * 1000;
+  return Math.trunc(millis);
 };
 
 export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => {
@@ -120,6 +130,39 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       if (!text && !mediaPresent) continue;
       const inboundMessageId = buildInboundMessageId({ message, remoteJid, waUserId, text, mediaPresent });
       const executionId = buildExecutionId(inboundMessageId);
+      const messageTimestampMs = resolveMessageTimestampMs(message.messageTimestamp);
+      const maxMessageAgeSeconds = Math.max(0, deps.env.INBOUND_MAX_MESSAGE_AGE_SECONDS);
+
+      if (maxMessageAgeSeconds > 0 && messageTimestampMs !== null) {
+        const ageMs = Date.now() - messageTimestampMs;
+        if (ageMs > maxMessageAgeSeconds * 1000) {
+          deps.logger.info(
+            deps.withCategory("WA-IN", {
+              status: "stale_inbound_skipped",
+              remoteJid,
+              waUserId,
+              waMessageId: inboundMessageId,
+              executionId,
+              messageTimestamp: new Date(messageTimestampMs).toISOString(),
+              messageAgeSeconds: Math.max(0, Math.floor(ageMs / 1000)),
+              maxAgeSeconds: maxMessageAgeSeconds
+            }),
+            "stale inbound skipped"
+          );
+          continue;
+        }
+      } else if (maxMessageAgeSeconds > 0 && messageTimestampMs === null) {
+        deps.logger.debug(
+          deps.withCategory("WA-IN", {
+            status: "stale_guard_timestamp_missing",
+            remoteJid,
+            waUserId,
+            waMessageId: inboundMessageId,
+            executionId
+          }),
+          "stale guard timestamp missing; inbound accepted"
+        );
+      }
 
       const botJid = socket.user?.id ? deps.normalizeJid(socket.user.id) : undefined;
       deps.setBotSelfLidKey(botJid);
@@ -132,6 +175,10 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const quotedWaUserId = quotedWaUserIdRaw ? deps.normalizeJid(quotedWaUserIdRaw) : undefined;
       const quotedRemoteJid = (contextInfo as any)?.remoteJid as string | undefined;
       const quotedMessageExists = Boolean((contextInfo as any)?.quotedMessage);
+      const quotedMessageType =
+        quotedMessageExists && typeof (contextInfo as any)?.quotedMessage === "object" && (contextInfo as any)?.quotedMessage
+          ? Object.keys((contextInfo as any).quotedMessage)[0] ?? undefined
+          : undefined;
       const learnedBotLid = await deps.maybeLearnBotLidFromQuote({
         quotedWaMessageId,
         quotedParticipantRaw: quotedWaUserIdRaw,
@@ -214,7 +261,7 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         waUserId,
         text,
         waMessageId: inboundMessageId,
-        timestamp: new Date((message.messageTimestamp ? Number(message.messageTimestamp) : Date.now() / 1000) * 1000),
+        timestamp: new Date(messageTimestampMs ?? Date.now()),
         isGroup,
         remoteJid,
         isStatusBroadcast: remoteJid === "status@broadcast",
@@ -226,6 +273,7 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         isBotMentioned,
         quotedWaMessageId,
         quotedWaUserId,
+        quotedMessageType,
         isReplyToBot,
         senderIsGroupAdmin,
         botIsGroupAdmin,
@@ -320,7 +368,8 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         logger: deps.logger,
         withCategory: deps.withCategory,
         metrics: deps.outboundRuntime.metrics,
-        auditTrail: deps.outboundRuntime.auditTrail
+        auditTrail: deps.outboundRuntime.auditTrail,
+        stickerMaxVideoSeconds: deps.outboundRuntime.stickerMaxVideoSeconds
       });
     }
   };

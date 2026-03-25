@@ -5,6 +5,7 @@ import { handleModerationCommand } from "../modules/moderation/presentation/comm
 import { handleReminderCommand } from "../modules/reminders/presentation/commands/reminder-commands.js";
 import { handleTaskCommand } from "../modules/tasks/presentation/commands/task-commands.js";
 import { handleNoteCommand } from "../modules/notes/presentation/commands/note-commands.js";
+import { handleStickerCommand } from "../modules/tools/stickers/presentation/commands/sticker-commands.js";
 import { evaluateExpression } from "../common/math-expression.js";
 import { formatAgenda } from "../modules/reminders/infrastructure/agenda-formatter.js";
 import type { ResponseAction } from "../pipeline/actions.js";
@@ -139,6 +140,18 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     deps: { notesRepository: deps.ports.notesRepository, formatUsage: (name) => usageFor(name) }
   });
   if (noteHandled) return noteHandled;
+
+  const stickerHandled = handleStickerCommand({
+    commandKey,
+    cmd,
+    ctx,
+    deps: {
+      config: { defaultAuthor: "Zappy-Assistant ;)" },
+      formatUsage: (name) => usageFor(name),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text)
+    }
+  });
+  if (stickerHandled) return stickerHandled;
 
   return null;
 };

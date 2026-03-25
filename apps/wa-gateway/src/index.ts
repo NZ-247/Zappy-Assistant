@@ -307,7 +307,8 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
   env: {
     ONLY_GROUP_ID: env.ONLY_GROUP_ID,
     DEFAULT_TENANT_NAME: env.DEFAULT_TENANT_NAME,
-    BOT_TIMEZONE: env.BOT_TIMEZONE
+    BOT_TIMEZONE: env.BOT_TIMEZONE,
+    INBOUND_MAX_MESSAGE_AGE_SECONDS: env.INBOUND_MAX_MESSAGE_AGE_SECONDS
   },
   getSocket,
   normalizeJid,
@@ -344,7 +345,8 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
     downloadMediaMessage,
     baileysLogger,
     metrics,
-    auditTrail
+    auditTrail,
+    stickerMaxVideoSeconds: env.STICKER_MAX_VIDEO_SECONDS
   }
 });
 

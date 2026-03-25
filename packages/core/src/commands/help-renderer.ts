@@ -14,6 +14,7 @@ export type HelpVisibilityContext = {
 const CATEGORY_ORDER: CommandCategory[] = [
   "core",
   "identity",
+  "tools",
   "groups",
   "reminders",
   "tasks",
@@ -26,6 +27,7 @@ const CATEGORY_ORDER: CommandCategory[] = [
 const CATEGORY_LABELS: Record<CommandCategory, string> = {
   core: "Core",
   identity: "Identidade",
+  tools: "Tools",
   groups: "Grupos",
   reminders: "Lembretes",
   tasks: "Tarefas",

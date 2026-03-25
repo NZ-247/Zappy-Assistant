@@ -221,6 +221,33 @@ export const reminderCommands: CommandDefinition[] = [
   }
 ];
 
+export const stickerCommands: CommandDefinition[] = [
+  {
+    category: "tools",
+    name: "sticker",
+    aliases: ["s", "stk", "fig"],
+    scope: "both",
+    description: "Converte imagem ou vídeo curto em sticker (envie com legenda ou responda a mídia).",
+    usage: "sticker [Autor|Nome_Pacote]",
+    examples: ["sticker", "s Zappy-Assistant ;)", "stk Zappy-Assistant ;)|Minha_Pack"]
+  },
+  {
+    category: "tools",
+    name: "toimg",
+    scope: "both",
+    description: "Converte figurinha para imagem (responda um sticker).",
+    usage: "toimg"
+  },
+  {
+    category: "tools",
+    name: "rnfig",
+    scope: "both",
+    description: "Renomeia autor e pacote de uma figurinha existente (responda um sticker).",
+    usage: "rnfig Autor|Pacote",
+    examples: ["rnfig Zappy Team|Pacote Oficial"]
+  }
+];
+
 export const identityCommands: CommandDefinition[] = [
   {
     category: "identity",
@@ -245,6 +272,7 @@ export const allCommands: CommandDefinition[] = [
   ...moderationCommands,
   ...taskCommands,
   ...noteCommands,
+  ...stickerCommands,
   ...reminderCommands,
   ...identityCommands
 ];
