@@ -36,7 +36,7 @@ test("trl uses replied text and defaults target to pt for non-pt source", async 
 
   assert.equal(requestedTarget, "pt");
   assert.equal(actions?.[0]?.kind, "reply_text");
-  assert.equal((actions?.[0] as { text: string }).text, "ola");
+  assert.equal((actions?.[0] as { text: string }).text, "Tradução: ola");
 });
 
 test("trl defaults target to en for pt source", async () => {
@@ -69,21 +69,57 @@ test("trl defaults target to en for pt source", async () => {
   });
 
   assert.equal(requestedTarget, "en");
-  assert.equal((actions?.[0] as { text: string }).text, "hello");
+  assert.equal((actions?.[0] as { text: string }).text, "Tradução: hello");
 });
 
-test("trl full mode returns writing and pronunciation when available", async () => {
+test("trl replying to audio emits transcribe-then-dispatch action", async () => {
   const actions = await handleTranslationCommand({
     commandKey: "trl",
-    cmd: "trl ola |zh-cn|full",
+    cmd: "trl |ar",
     ctx: {
-      event: {}
+      event: {
+        quotedWaMessageId: "msg-trl-module-2",
+        quotedMessageType: "audioMessage"
+      }
+    } as any,
+    deps: {
+      config: {
+        enabled: true,
+        maxTextChars: 1200,
+        defaultTargetForPortuguese: "en",
+        defaultTargetForOther: "pt"
+      },
+      commandPrefix: "/"
+    }
+  });
+
+  assert.equal(actions?.[0]?.kind, "audio_transcription");
+  const action = actions?.[0] as {
+    source: string;
+    mode: string;
+    allowCommandDispatch?: boolean;
+    dispatchTemplate?: string;
+  };
+  assert.equal(action.source, "quoted");
+  assert.equal(action.mode, "transcribe_and_route");
+  assert.equal(action.allowCommandDispatch, false);
+  assert.equal(action.dispatchTemplate, "/trl {{transcript}} |ar");
+});
+
+test("trl from synthetic audio-stt context includes transcription and translation lines", async () => {
+  const actions = await handleTranslationCommand({
+    commandKey: "trl",
+    cmd: "trl hello there |pt",
+    ctx: {
+      event: {
+        ingressSource: "audio_stt",
+        sttTranscript: "hello there"
+      }
     } as any,
     deps: {
       textTranslation: {
         translate: async () => ({
-          translatedText: "你好",
-          transliteration: "Ni hao"
+          translatedText: "ola"
         })
       },
       config: {
@@ -96,6 +132,5 @@ test("trl full mode returns writing and pronunciation when available", async () 
   });
 
   const text = (actions?.[0] as { text: string }).text;
-  assert.match(text, /Escrita:/i);
-  assert.match(text, /Pronuncia:/i);
+  assert.match(text, /^Transcrição: hello there\nTradução: ola$/);
 });

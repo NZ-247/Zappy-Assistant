@@ -7,6 +7,8 @@ import type { GroupAccessState } from "../pipeline/types.js";
 import { createRouterRuntime } from "./command-router-runtime.js";
 import { commandRouterStages, handleUnknownCommandFallback } from "./command-router-stages.js";
 
+const COMMAND_IDEMPOTENCY_TTL_SECONDS = 30;
+
 export interface CommandRouterDeps {
   ports: CorePorts;
   commandPrefix: string;
@@ -44,10 +46,101 @@ export interface RouterRuntime {
   formatGroupAccessBotAdmin: (group: GroupAccessState, now: Date) => string;
 }
 
+const normalizeCommandKey = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_:-]/g, "")
+    .slice(0, 80);
+
+const buildCommandIdempotencyKey = (input: {
+  tenantId: string;
+  waMessageId: string;
+  commandName: string;
+}): string => `cmd:idempotency:${input.tenantId}:${input.waMessageId}:${normalizeCommandKey(input.commandName)}`;
+
 export const runCommandRouter = async (ctx: PipelineContext, deps: CommandRouterDeps): Promise<ResponseAction[]> => {
   const commandStartedAt = deps.ports.clock?.now?.() ?? new Date();
   const parsed = parseCommandText(ctx.event.normalizedText, deps.commandRegistry);
   if (!parsed) return [];
+
+  const commandName = parsed.match?.command.name ?? parsed.token;
+  const idempotencyKey = buildCommandIdempotencyKey({
+    tenantId: ctx.event.tenantId,
+    waMessageId: ctx.event.waMessageId,
+    commandName
+  });
+
+  let canExecute = true;
+  try {
+    canExecute = await deps.ports.cooldown.canFire(idempotencyKey, COMMAND_IDEMPOTENCY_TTL_SECONDS);
+  } catch (error) {
+    deps.ports.logger?.warn?.(
+      {
+        category: "COMMAND_TRACE",
+        status: "command_idempotency_check_failed",
+        tenantId: ctx.event.tenantId,
+        waGroupId: ctx.event.waGroupId,
+        waUserId: ctx.event.waUserId,
+        waMessageId: ctx.event.waMessageId,
+        executionId: ctx.event.executionId,
+        commandName,
+        commandIdempotencyKey: idempotencyKey,
+        err: error
+      },
+      "command idempotency guard failed; allowing execution"
+    );
+  }
+
+  if (!canExecute) {
+    deps.ports.logger?.info?.(
+      {
+        category: "COMMAND_TRACE",
+        status: "command_idempotency_hit",
+        tenantId: ctx.event.tenantId,
+        waGroupId: ctx.event.waGroupId,
+        waUserId: ctx.event.waUserId,
+        waMessageId: ctx.event.waMessageId,
+        executionId: ctx.event.executionId,
+        commandName,
+        commandIdempotencyKey: idempotencyKey,
+        ttlSeconds: COMMAND_IDEMPOTENCY_TTL_SECONDS
+      },
+      "command idempotency hit"
+    );
+    deps.ports.logger?.info?.(
+      {
+        category: "COMMAND_TRACE",
+        status: "command_idempotency_suppressed",
+        tenantId: ctx.event.tenantId,
+        waGroupId: ctx.event.waGroupId,
+        waUserId: ctx.event.waUserId,
+        waMessageId: ctx.event.waMessageId,
+        executionId: ctx.event.executionId,
+        commandName,
+        commandIdempotencyKey: idempotencyKey
+      },
+      "duplicate command execution suppressed"
+    );
+    return [{ kind: "noop", reason: "command_idempotency_suppressed" }];
+  }
+
+  deps.ports.logger?.info?.(
+    {
+      category: "COMMAND_TRACE",
+      status: "command_idempotency_miss",
+      tenantId: ctx.event.tenantId,
+      waGroupId: ctx.event.waGroupId,
+      waUserId: ctx.event.waUserId,
+      waMessageId: ctx.event.waMessageId,
+      executionId: ctx.event.executionId,
+      commandName,
+      commandIdempotencyKey: idempotencyKey,
+      ttlSeconds: COMMAND_IDEMPOTENCY_TTL_SECONDS
+    },
+    "command idempotency miss"
+  );
 
   const runtime = createRouterRuntime(ctx, deps, parsed, commandStartedAt);
   for (const stage of commandRouterStages) {

@@ -178,6 +178,7 @@ export interface InboundMessageEvent {
   quotedMessageType?: string;
   quotedText?: string;
   quotedHasMedia?: boolean;
+  quotedAudioPtt?: boolean;
   isReplyToBot?: boolean;
   senderIsGroupAdmin?: boolean;
   messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };

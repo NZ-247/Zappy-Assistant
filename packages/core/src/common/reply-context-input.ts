@@ -21,9 +21,9 @@ export type AudioInputResolution =
 
 const normalizeInlineText = (value?: string): string => (value ?? "").replace(/\s+/g, " ").trim();
 
-const normalizeMessageType = (value?: string): string => (value ?? "").trim().toLowerCase();
+export const normalizeMessageType = (value?: string): string => (value ?? "").trim().toLowerCase();
 
-const isAudioMessageType = (value?: string): boolean => normalizeMessageType(value) === "audiomessage";
+export const isAudioMessageType = (value?: string): boolean => normalizeMessageType(value) === "audiomessage";
 
 export const resolveTextInputFromExplicitOrReply = (input: {
   explicitText?: string;
@@ -88,4 +88,3 @@ export const resolveAudioInputSource = (input: {
 
   return { ok: false, reason: "missing_audio" };
 };
-

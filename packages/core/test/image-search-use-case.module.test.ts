@@ -161,3 +161,44 @@ test("imglink mode returns concise single-link fallback when no deliverable medi
   assert.doesNotMatch(reply, /1\./);
   assert.doesNotMatch(reply, /2\./);
 });
+
+test("img caption formatting rejects filename-like titles", async () => {
+  const imageBase64 = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xdb]), Buffer.alloc(640, 9)]).toString("base64");
+
+  const actions = await executeImageSearch({
+    query: "meme arabe",
+    config: { enabled: true, maxResults: 3 },
+    imageSearch: {
+      search: async () => ({
+        provider: "google_cse",
+        results: [
+          {
+            source: "google_cse",
+            title: "IMG_20250202_194455.JPG",
+            link: "https://example.com/meme-arabe",
+            pageUrl: "https://example.com/meme-arabe",
+            imageUrl: "https://cdn.example.com/meme-arabe.jpg"
+          }
+        ],
+        deliverableImage: {
+          source: "google_cse",
+          title: "IMG_20250202_194455.JPG",
+          link: "https://example.com/meme-arabe",
+          pageUrl: "https://example.com/meme-arabe",
+          imageUrl: "https://cdn.example.com/meme-arabe.jpg",
+          imageBase64,
+          mimeType: "image/jpeg",
+          byteLength: 644,
+          candidateIndex: 1
+        }
+      })
+    }
+  });
+
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]?.kind, "reply_image");
+  const caption = (actions[0] as { caption?: string }).caption ?? "";
+  assert.match(caption, /Fonte:/i);
+  assert.match(caption, /https:\/\/example\.com\/meme-arabe/i);
+  assert.doesNotMatch(caption, /IMG_20250202_194455/i);
+});

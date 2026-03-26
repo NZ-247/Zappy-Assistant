@@ -21,32 +21,69 @@ const normalizeInlineText = (value: string): string => value.replace(/\s+/g, " "
 
 const resolvePageUrl = (item: { pageUrl?: string; link?: string }): string => item.pageUrl?.trim() || item.link?.trim() || "";
 
-const isUsefulTitle = (value?: string): boolean => {
+const isFilenameLikeTitle = (value?: string): boolean => {
   const normalized = normalizeInlineText(value ?? "");
   if (!normalized) return false;
   const lower = normalized.toLowerCase();
-  if (["imagem", "image", "foto", "photo"].includes(lower)) return false;
-  return normalized.length >= 3;
+
+  if (/[\\/]/.test(normalized) && /\.(jpe?g|png|webp|gif|bmp|svg|avif|heic|heif|tiff?)(?:$|[?#])/i.test(normalized)) {
+    return true;
+  }
+
+  if (/^[^ ]+\.(jpe?g|png|webp|gif|bmp|svg|avif|heic|heif|tiff?)$/i.test(lower)) {
+    return true;
+  }
+
+  const compact = normalized.replace(/[\s_-]+/g, "");
+  if (compact.length >= 14 && /^[a-z0-9]+$/i.test(compact) && (/\d{5,}/.test(compact) || /^[a-f0-9]{14,}$/i.test(compact))) {
+    return true;
+  }
+
+  return false;
 };
 
-const buildConciseCaption = (input: { title?: string; link: string }): string => {
-  const title = isUsefulTitle(input.title) ? shorten(normalizeInlineText(input.title ?? ""), 96) : "Imagem encontrada";
-  return `${title}. Fonte: ${input.link}`;
+const isNoisyTitle = (value?: string): boolean => {
+  const normalized = normalizeInlineText(value ?? "");
+  if (!normalized) return true;
+  const lower = normalized.toLowerCase();
+  if (["imagem", "image", "foto", "photo"].includes(lower)) return true;
+  if (lower.startsWith("file:") || lower.startsWith("img_") || lower.startsWith("dsc_")) return true;
+  if (/^https?:\/\//i.test(normalized)) return true;
+  if (isFilenameLikeTitle(normalized)) return true;
+  return false;
+};
+
+const sanitizeCaptionDescription = (value?: string): string | null => {
+  const normalized = normalizeInlineText((value ?? "").replace(/[_]+/g, " "));
+  if (!normalized) return null;
+  if (isNoisyTitle(normalized)) return null;
+  if (normalized.length < 3) return null;
+  return shorten(normalized, 84);
+};
+
+const shouldUseQueryFallbackCaption = (query: string): boolean => {
+  const normalized = normalizeInlineText(query);
+  if (!normalized || normalized.length < 4 || normalized.length > 42) return false;
+  if (normalized.split(/\s+/).length < 2) return false;
+  if (/^https?:\/\//i.test(normalized)) return false;
+  if (/\d{5,}/.test(normalized)) return false;
+  return true;
+};
+
+const buildConciseCaption = (input: { title?: string; link: string; query: string }): string => {
+  const description = sanitizeCaptionDescription(input.title);
+  if (description) return `${description}. Fonte: ${input.link}`;
+  if (shouldUseQueryFallbackCaption(input.query)) {
+    return `Imagem relacionada a ${shorten(normalizeInlineText(input.query), 52)}. Fonte: ${input.link}`;
+  }
+  return `Fonte: ${input.link}`;
 };
 
 const buildConciseLinkReply = (input: {
   title?: string;
   link: string;
-  correctedQuery?: string;
   query: string;
-}): string => {
-  const base = buildConciseCaption({ title: input.title, link: input.link });
-  const corrected =
-    input.correctedQuery && input.correctedQuery.toLowerCase() !== input.query.toLowerCase()
-      ? `\nConsulta ajustada: ${input.correctedQuery}`
-      : "";
-  return `${base}${corrected}`;
-};
+}): string => buildConciseCaption({ title: input.title, link: input.link, query: input.query });
 
 const sanitizeErrorMessage = (error: unknown): string => {
   if (!(error instanceof Error)) return "erro desconhecido";
@@ -205,7 +242,8 @@ export const executeImageSearch = async (input: {
       const sourceLink = resolvePageUrl(deliverable);
       const caption = buildConciseCaption({
         title: deliverable.title,
-        link: sourceLink || deliverable.link || deliverable.imageUrl
+        link: sourceLink || deliverable.link || deliverable.imageUrl,
+        query: normalizedQuery
       });
 
       logImageSearch(input.logger, {
@@ -266,7 +304,6 @@ export const executeImageSearch = async (input: {
         buildConciseLinkReply({
           title: firstWithLink.title,
           link: resolvePageUrl(firstWithLink) || firstWithLink.link,
-          correctedQuery: result.correctedQuery,
           query: normalizedQuery
         })
       );

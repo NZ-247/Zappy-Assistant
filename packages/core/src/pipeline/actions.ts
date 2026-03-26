@@ -24,6 +24,16 @@ export interface ReplyImageAction {
   fallbackText?: string;
 }
 
+export interface ReplyVideoAction {
+  kind: "reply_video";
+  videoUrl: string;
+  caption?: string;
+  videoBase64?: string;
+  mimeType?: string;
+  fileName?: string;
+  fallbackText?: string;
+}
+
 export interface ReplyListItem {
   title: string;
   description?: string;
@@ -87,6 +97,7 @@ export interface AudioTranscriptionAction {
   mode: AudioTranscriptionMode;
   allowCommandDispatch?: boolean;
   commandPrefix?: string;
+  dispatchTemplate?: string;
   origin?: "command" | "auto";
 }
 
@@ -108,6 +119,21 @@ export interface GroupAdminAction {
 
 export type ModerationActionKind = "ban" | "kick" | "mute" | "unmute" | "hidetag" | "delete_message";
 
+export type HidetagContentKind =
+  | "text"
+  | "reply_text"
+  | "reply_image"
+  | "reply_ptt"
+  | "reply_audio"
+  | "reply_sticker"
+  | "reply_video"
+  | "reply_document";
+
+export interface HidetagContentPayload {
+  kind: HidetagContentKind;
+  text?: string;
+}
+
 export interface ModerationAction {
   kind: "moderation_action";
   action: ModerationActionKind;
@@ -115,6 +141,7 @@ export interface ModerationAction {
   targetWaUserId?: string;
   durationMs?: number;
   text?: string;
+  hidetagContent?: HidetagContentPayload;
   messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };
 }
 
@@ -122,6 +149,7 @@ export type ResponseAction =
   | ReplyTextAction
   | ReplyAudioAction
   | ReplyImageAction
+  | ReplyVideoAction
   | ReplyListAction
   | StickerTransformAction
   | AudioTranscriptionAction

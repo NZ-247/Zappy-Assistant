@@ -180,8 +180,9 @@ export const moderationCommands: CommandDefinition[] = [
     scope: "group",
     requiredRole: "admin",
     botAdminRequired: true,
-    description: "Envia mensagem com menção oculta a todos.",
-    usage: "hidetag <texto>"
+    description: "Envia texto ou reenvia mídia respondida com menção oculta a todos.",
+    usage: "hidetag <texto>  ou  hidetag (respondendo texto/mídia)",
+    examples: ["hidetag aviso importante", "hidetag (respondendo sticker)", "hidetag (respondendo áudio)"]
   }
 ];
 
@@ -285,9 +286,9 @@ export const translationCommands: CommandDefinition[] = [
     name: "trl",
     scope: "both",
     progressAck: true,
-    description: "Traduz texto com deteccao automatica de idioma; aceita texto direto ou mensagem respondida.",
-    usage: "trl <texto> |<destino>|full  ou  trl |<destino>|full (respondendo texto)",
-    examples: ["trl bonjour", "trl ola |zh-cn|full", "trl |es (respondendo texto)"]
+    description: "Traduz texto ou áudio respondido com detecção automática e saída curta.",
+    usage: "trl <texto> |<destino>  ou  trl |<destino> (respondendo texto/áudio)",
+    examples: ["trl Hello", "trl Olá |en", "trl (respondendo texto)", "trl |ar (respondendo áudio)"]
   }
 ];
 
@@ -329,9 +330,9 @@ export const imageSearchCommands: CommandDefinition[] = [
     aliases: ["gimage"],
     scope: "both",
     progressAck: true,
-    description: "Busca imagens na web com variacao controlada; aceita termo direto ou mensagem respondida.",
+    description: "Busca imagem com legenda curta/relevante e fonte única; aceita termo direto ou mensagem respondida.",
     usage: "img <termo da busca>  ou  img (respondendo texto)",
-    examples: ["img gatos persas", "gimage infraestrutura de redes", "img (respondendo texto)"]
+    examples: ["img meme arabe", "img gatos persas", "gimage infraestrutura de redes", "img (respondendo texto)"]
   },
   {
     category: "tools",
@@ -350,9 +351,13 @@ export const downloadCommands: CommandDefinition[] = [
     name: "dl",
     scope: "both",
     progressAck: true,
-    description: "Processa links por provider (yt, ig, fb, direct) com política de compliance.",
-    usage: "dl <yt|ig|fb|direct> <link>",
-    examples: ["dl yt https://...", "dl ig https://...", "dl fb https://...", "dl direct https://..."]
+    description: "Baixa mídia por link com detecção automática de provider (ou provider explícito).",
+    usage: "dl <link>  ou  dl <yt|ig|fb|direct> <link>",
+    examples: [
+      "dl https://www.instagram.com/reel/...",
+      "dl ig https://www.instagram.com/p/...",
+      "dl direct https://..."
+    ]
   }
 ];
 

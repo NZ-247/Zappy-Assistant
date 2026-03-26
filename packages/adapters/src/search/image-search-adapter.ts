@@ -188,6 +188,21 @@ const countTokenMatches = (tokens: string[], text: string): number => {
   return score;
 };
 
+const isFilenameLikeTitle = (value?: string): boolean => {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+  const lower = normalized.toLowerCase();
+  if (/^[^ ]+\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif|tiff?)$/i.test(lower)) return true;
+  if (lower.startsWith("file:") || lower.startsWith("img_") || lower.startsWith("dsc_")) return true;
+
+  const compact = normalized.replace(/[\s_-]+/g, "");
+  if (compact.length >= 14 && /^[a-z0-9]+$/i.test(compact) && (/\d{5,}/.test(compact) || /^[a-f0-9]{14,}$/i.test(compact))) {
+    return true;
+  }
+
+  return false;
+};
+
 const normalizeMimeType = (value?: string | null): string => {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized) return "";
@@ -316,17 +331,25 @@ const rankAndFilterImageResults = (input: { query: string; items: ImageSearchRes
       const providerConfidence = normalized.providerConfidence ?? sourceReliability;
       const domainScore = sourceDomainScore(normalized.source, normalized.pageUrl, normalized.imageUrl);
       const extensionScore = imageExtensionScore(normalized.imageUrl, normalized.mimeType);
+      const titleCoverage = tokens.length > 0 ? titleMatches / tokens.length : 0;
+      const pageCoverage = tokens.length > 0 ? pageMatches / tokens.length : 0;
+      const titlePhraseHit = query.length >= 4 && normalized.title.toLowerCase().includes(query);
+      const titleLooksFilename = isFilenameLikeTitle(normalized.title);
 
       let score = 0;
       score += fullQueryHit ? 7 : 0;
       score += titleMatches * 3.1;
       score += pageMatches * 1.8;
       score += imageMatches * 1.2;
+      score += titleCoverage * 2.2;
+      score += pageCoverage * 0.9;
+      score += titlePhraseHit ? 1.4 : 0;
       score += sourceReliability * 3.3;
       score += providerConfidence * 2.7;
       score += domainScore * 1.9;
       score += extensionScore;
       if (normalized.title.length < 6) score -= 0.8;
+      if (titleLooksFilename) score -= 2.8;
       if ((normalized.thumbnailUrl ?? "").toLowerCase().includes("thumb")) score -= 0.2;
 
       return {

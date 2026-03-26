@@ -177,3 +177,53 @@ test("image search anti-repeat avoids returning same image for same tenant/query
   assert.ok(second.deliverableImage?.imageUrl);
   assert.notEqual(first.deliverableImage?.imageUrl, second.deliverableImage?.imageUrl);
 });
+
+test("image ranking penalizes filename-like titles when semantic title exists", async () => {
+  const openverseStubUrl = "https://openverse.local/v1/images/";
+  const fetchImpl = async (input: string | URL): Promise<Response> => {
+    const url = String(input);
+    if (url.startsWith(openverseStubUrl)) {
+      return jsonResponse({ results: [] });
+    }
+    if (url.startsWith("https://commons.wikimedia.org/w/api.php")) {
+      return jsonResponse({
+        query: {
+          pages: {
+            "1": {
+              title: "IMG_20250303_223344.JPG",
+              imageinfo: [{ url: "https://cdn.example.com/raw-name.jpg", descriptionurl: "https://example.com/raw-name" }]
+            },
+            "2": {
+              title: "Meme arabe no mercado",
+              imageinfo: [{ url: "https://cdn.example.com/semantic.jpg", descriptionurl: "https://example.com/semantic" }]
+            }
+          }
+        }
+      });
+    }
+
+    if (url === "https://cdn.example.com/raw-name.jpg" || url === "https://cdn.example.com/semantic.jpg") {
+      return new Response(validJpegBuffer, {
+        status: 200,
+        headers: { "content-type": "image/jpeg" }
+      });
+    }
+
+    throw new Error(`unexpected_url:${url}`);
+  };
+
+  const adapter = createImageSearchAdapter({
+    preferredProvider: "wikimedia",
+    openverseApiBaseUrl: openverseStubUrl,
+    fetchImpl,
+    variabilityPoolSize: 1,
+    maxValidatedDeliverables: 2
+  });
+
+  const result = await adapter.search({
+    query: "meme arabe",
+    limit: 3
+  });
+
+  assert.equal(result.deliverableImage?.imageUrl, "https://cdn.example.com/semantic.jpg");
+});

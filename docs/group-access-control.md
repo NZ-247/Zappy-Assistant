@@ -69,7 +69,7 @@
   - `/set gp welcome text <text>`
 
 ## Moderation base
-- Commands (group only, admin required): `/ban`, `/kick`, `/mute <user> <duration>`, `/unmute <user>`, `/hidetag <text>`.
+- Commands (group only, admin required): `/ban`, `/kick`, `/mute <user> <duration>`, `/unmute <user>`, `/hidetag <text>` (ou respondendo texto/mídia para reenvio com menção oculta; reply de voice note mantém envio como PTT).
 - Per-user mute is scoped to the group and enforced in the pipeline; muted users get a quoted reply when blocked.
 - Anti-link hooks: if `moderationConfig.antiLink` + `autoDeleteLinks` are on, links from non-admins are deleted and a warning is sent; optional `tempMuteSeconds` applies a temporary mute.
 - All moderation replies quote the origin message and follow operation-first admin checks.

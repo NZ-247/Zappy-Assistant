@@ -186,6 +186,7 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
         defaultTargetForPortuguese: "en",
         defaultTargetForOther: "pt"
       },
+      commandPrefix: deps.commandPrefix,
       formatUsage: () => usageFor("trl"),
       stylizeReply: (text) => deps.stylizeReply(ctx, text),
       logger: deps.ports.logger

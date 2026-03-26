@@ -2,6 +2,7 @@ import { resolveTargetUserFromMentionOrReply } from "../../../../common/bot-comm
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
 import { parseDurationInput } from "../../../../time.js";
+import { resolveHidetagInput } from "../../infrastructure/hidetag-input-resolver.js";
 import {
   banUserAction,
   hideTagAction,
@@ -88,9 +89,53 @@ export const handleModerationCommand = (
     if (adminCheck) return adminCheck;
     const botAdminGuard = enforceBotAdmin(lower);
     if (botAdminGuard) return botAdminGuard;
-    const text = cmd.replace(/^(hidetag)\s*/i, "").trim();
-    if (!text) return [{ kind: "reply_text", text: stylizeReply(`Envie o texto após ${formatCmd("hidetag")}.`) }];
-    return [hideTagAction({ waGroupId: ctx.event.waGroupId!, text })];
+    const resolved = resolveHidetagInput({
+      explicitText: cmd.replace(/^(hidetag)\s*/i, "").trim(),
+      replyContext: {
+        quotedWaMessageId: ctx.event.quotedWaMessageId,
+        quotedMessageType: ctx.event.quotedMessageType,
+        quotedText: ctx.event.quotedText,
+        quotedHasMedia: ctx.event.quotedHasMedia,
+        quotedAudioPtt: ctx.event.quotedAudioPtt
+      }
+    });
+    if (!resolved.ok) {
+      if (resolved.reason === "unsupported_reply_media") {
+        return [
+          {
+            kind: "reply_text",
+            text: stylizeReply(
+              "Tipo de mídia não suportado para hidetag. Responda texto, imagem, áudio, sticker, vídeo ou documento compatível."
+            )
+          }
+        ];
+      }
+      return [
+        {
+          kind: "reply_text",
+          text: stylizeReply(
+            `Use ${formatCmd("hidetag")} <texto> ou responda uma mensagem de texto/mídia para reenviar com menção oculta.`
+          )
+        }
+      ];
+    }
+
+    if (resolved.payload.kind === "text" || resolved.payload.kind === "reply_text") {
+      return [
+        hideTagAction({
+          waGroupId: ctx.event.waGroupId!,
+          text: resolved.payload.text,
+          hidetagContent: resolved.payload
+        })
+      ];
+    }
+
+    return [
+      hideTagAction({
+        waGroupId: ctx.event.waGroupId!,
+        hidetagContent: resolved.payload
+      })
+    ];
   }
 
   return null;

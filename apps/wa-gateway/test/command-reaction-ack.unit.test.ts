@@ -40,6 +40,13 @@ test("ack decision resolves aliases and skips non-latency commands", () => {
   assert.equal(trlDecision.enabled, true);
   assert.equal(trlDecision.commandName, "trl");
 
+  const dlDecision = resolveCommandProgressAckDecision({
+    text: "/dl https://www.instagram.com/reel/abc123/",
+    commandPrefix: "/"
+  });
+  assert.equal(dlDecision.enabled, true);
+  assert.equal(dlDecision.commandName, "dl");
+
   const pingDecision = resolveCommandProgressAckDecision({
     text: "/ping",
     commandPrefix: "/"

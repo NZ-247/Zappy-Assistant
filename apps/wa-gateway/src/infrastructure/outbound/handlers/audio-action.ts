@@ -12,6 +12,7 @@ type AudioRuntimeAction = {
   mode: "transcribe_only" | "transcribe_and_route";
   allowCommandDispatch?: boolean;
   commandPrefix?: string;
+  dispatchTemplate?: string;
   origin?: "command" | "auto";
 };
 
@@ -121,6 +122,19 @@ type CommandCandidate = {
 };
 
 const stripLeadingCommandWord = (value: string): string => value.replace(/^[\s/]+/, "").trim();
+
+const sanitizeTranscriptForCommandTemplate = (value: string): string => value.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+
+const renderDispatchTemplate = (template: string, transcript: string): string => {
+  const normalizedTemplate = template.replace(/\s+/g, " ").trim();
+  if (!normalizedTemplate) return "";
+  const normalizedTranscript = sanitizeTranscriptForCommandTemplate(transcript);
+  if (!normalizedTranscript) return "";
+  if (normalizedTemplate.includes("{{transcript}}")) {
+    return normalizedTemplate.replace(/\{\{transcript\}\}/g, normalizedTranscript).replace(/\s+/g, " ").trim();
+  }
+  return `${normalizedTemplate} ${normalizedTranscript}`.replace(/\s+/g, " ").trim();
+};
 
 const resolveCommandCandidate = (runtime: ExecuteOutboundActionsInput, transcript: string): CommandCandidate | null => {
   const trimmed = transcript.replace(/\s+/g, " ").trim();
@@ -304,6 +318,57 @@ export const handleAudioOutboundAction = async (input: {
         scope,
         responseActionId
       });
+      await progress.success();
+      return true;
+    }
+
+    if (typedAction.dispatchTemplate?.trim()) {
+      const dispatchCommand = renderDispatchTemplate(typedAction.dispatchTemplate, transcript);
+      if (!dispatchCommand) {
+        await progress.failure();
+        await sendTextAndPersist({
+          runtime,
+          to: target,
+          text: "Não consegui transcrever esse áudio para executar o comando.",
+          actionName: "audio_transcription_empty",
+          scope,
+          responseActionId
+        });
+        return true;
+      }
+
+      const dispatchResult = await runtime.dispatchTranscribedText({
+        text: dispatchCommand,
+        transcript,
+        commandText: dispatchCommand,
+        action: "dispatch_command"
+      });
+
+      runtime.logger.info?.(
+        runtime.withCategory("WA-OUT", {
+          ...logBase(runtime, { responseActionId, mediaType: source.mediaType }),
+          action: "dispatch_command",
+          status: hasResponses(dispatchResult) ? "success" : "failure",
+          commandExecutionId: dispatchResult.dispatchExecutionId,
+          transcriptPreview: safePreview(transcript, runtime.audioConfig.transcriptPreviewChars),
+          dispatchTextPreview: safePreview(dispatchCommand, runtime.audioConfig.transcriptPreviewChars),
+          dispatchReason: "action_template",
+          confidence: 1
+        }),
+        "audio capability"
+      );
+
+      if (!hasResponses(dispatchResult)) {
+        await sendTranscriptFallback({
+          runtime,
+          scope,
+          target,
+          responseActionId,
+          transcript,
+          askRephrase: false
+        });
+      }
+
       await progress.success();
       return true;
     }

@@ -48,6 +48,18 @@ export const hasInboundMedia = (message: any): boolean => {
   );
 };
 
+export const getInboundAudioMessage = (
+  message: any
+): { ptt?: boolean; mimeType?: string } | null => {
+  const unwrapped = unwrapInboundMessage(message);
+  const audio = unwrapped?.audioMessage;
+  if (!audio || typeof audio !== "object") return null;
+  return {
+    ptt: audio.ptt === true,
+    mimeType: typeof audio.mimetype === "string" ? audio.mimetype : undefined
+  };
+};
+
 export const getInboundContextInfo = (message: any): any => {
   const unwrapped = unwrapInboundMessage(message);
   return (

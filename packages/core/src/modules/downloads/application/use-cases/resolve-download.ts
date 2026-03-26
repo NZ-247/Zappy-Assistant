@@ -3,37 +3,48 @@ import type { MediaDownloadPort, MediaDownloadProvider } from "../../ports.js";
 
 export interface DownloadUseCaseConfig {
   enabled: boolean;
+  maxBytes?: number;
 }
 
-const sanitizeErrorMessage = (error: unknown): string => {
-  if (!(error instanceof Error)) return "erro desconhecido";
-  const message = error.message.trim();
-  if (!message) return "erro desconhecido";
-  return message.length <= 140 ? message : `${message.slice(0, 137)}...`;
+const trimCaption = (value?: string): string | undefined => {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  if (normalized.length <= 96) return normalized;
+  return `${normalized.slice(0, 93)}...`;
 };
 
-const formatBytes = (value?: number): string | null => {
-  if (!value || !Number.isFinite(value) || value <= 0) return null;
-  const units = ["B", "KB", "MB", "GB"];
-  let amount = value;
-  let idx = 0;
-  while (amount >= 1024 && idx < units.length - 1) {
-    amount /= 1024;
-    idx += 1;
+const statusMessage = (status: string, reason?: string): string => {
+  const detail = (reason ?? "").trim();
+  if (detail === "preview_only") {
+    return "Esse link só mostra prévia pública; não encontrei vídeo para baixar.";
   }
-  return `${amount.toFixed(amount >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+  if (status === "unsupported") {
+    return "Esse link ainda não é suportado pelo /dl.";
+  }
+  if (status === "blocked") {
+    return "Esse link está privado, bloqueado ou requer login.";
+  }
+  if (status === "invalid") {
+    return "Não consegui validar esse link. Verifique se ele é público.";
+  }
+  if (detail) {
+    return "Não consegui baixar esse link agora. Tente novamente em instantes.";
+  }
+  return "Falha ao processar o download agora.";
 };
 
-const statusToText = (status: string): string => {
-  if (status === "ready") return "pronto";
-  if (status === "unsupported") return "não suportado";
-  if (status === "blocked") return "bloqueado";
-  if (status === "invalid") return "inválido";
-  return "erro";
+const resolveAssetUrl = (input: {
+  directUrl?: string;
+  resultUrl?: string;
+  fallbackUrl: string;
+}): string => {
+  const preferred = (input.directUrl ?? input.resultUrl ?? "").trim();
+  if (preferred) return preferred;
+  return input.fallbackUrl;
 };
 
 export const resolveMediaDownload = async (input: {
-  provider: MediaDownloadProvider;
+  provider?: MediaDownloadProvider;
   url: string;
   mediaDownload?: MediaDownloadPort;
   config: DownloadUseCaseConfig;
@@ -58,24 +69,75 @@ export const resolveMediaDownload = async (input: {
       url: input.url,
       tenantId: input.tenantId,
       waUserId: input.waUserId,
-      waGroupId: input.waGroupId
+      waGroupId: input.waGroupId,
+      maxBytes: input.config.maxBytes
     });
 
-    const size = formatBytes(result.sizeBytes);
-    const lines = [
-      `Download provider: ${result.provider}`,
-      `Status: ${statusToText(result.status)}`
-    ];
+    if (result.status !== "ready") {
+      return replyText(statusMessage(result.status, result.reason));
+    }
 
-    if (result.title) lines.push(`Título: ${result.title}`);
-    if (result.mimeType) lines.push(`Tipo: ${result.mimeType}`);
-    if (size) lines.push(`Tamanho: ${size}`);
-    if (result.url) lines.push(`Link: ${result.url}`);
-    if (result.reason) lines.push(`Detalhe: ${result.reason}`);
+    const asset = result.asset;
+    if (!asset) {
+      if (result.url) {
+        return replyText(`Download pronto: ${result.url}`);
+      }
+      return replyText("Consegui processar o link, mas não encontrei mídia para enviar.");
+    }
 
-    return [{ kind: "reply_text", text: lines.join("\n") }];
-  } catch (error) {
-    const message = sanitizeErrorMessage(error);
-    return replyText(`Falha ao processar download: ${message}.`);
+    const caption = trimCaption(result.title) ?? `via /dl ${result.provider}`;
+
+    if (asset.kind === "image") {
+      return [
+        {
+          kind: "reply_image",
+          imageUrl: resolveAssetUrl({
+            directUrl: asset.directUrl,
+            resultUrl: result.url,
+            fallbackUrl: input.url
+          }),
+          imageBase64: asset.bufferBase64,
+          mimeType: asset.mimeType,
+          caption
+        }
+      ];
+    }
+
+    if (asset.kind === "video") {
+      return [
+        {
+          kind: "reply_video",
+          videoUrl: resolveAssetUrl({
+            directUrl: asset.directUrl,
+            resultUrl: result.url,
+            fallbackUrl: input.url
+          }),
+          videoBase64: asset.bufferBase64,
+          mimeType: asset.mimeType,
+          fileName: asset.fileName,
+          caption
+        }
+      ];
+    }
+
+    if (asset.kind === "audio" && asset.bufferBase64) {
+      return [
+        {
+          kind: "reply_audio",
+          audioBase64: asset.bufferBase64,
+          mimeType: asset.mimeType,
+          fileName: asset.fileName,
+          caption
+        }
+      ];
+    }
+
+    if (result.url) {
+      return replyText(`Download pronto: ${result.url}`);
+    }
+
+    return replyText("Consegui processar o link, mas esse formato ainda não está pronto para envio direto.");
+  } catch {
+    return replyText("Não consegui processar esse link agora. Tente novamente em instantes.");
   }
 };

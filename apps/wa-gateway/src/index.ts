@@ -45,7 +45,7 @@ import { createLogger, loadEnv, printStartupBanner, withCategory, type InternalG
 import { buildBotAliases, jidMatchesBot, normalizeJid, normalizeLidJid, stripUser } from "./bot-alias.js";
 import { startInternalDispatchApi } from "./infrastructure/internal-dispatch-api.js";
 import { createCommandGuards } from "./infrastructure/command-guards.js";
-import { getInboundContextInfo, getInboundMessageType, getInboundText, hasInboundMedia } from "./infrastructure/inbound-message.js";
+import { getInboundAudioMessage, getInboundContextInfo, getInboundMessageType, getInboundText, hasInboundMedia } from "./infrastructure/inbound-message.js";
 import { createBotSelfLidService } from "./infrastructure/bot-self-lid.js";
 import { createBotAdminStatusService, GROUP_ADMIN_OPERATION_CACHE_TTL_MS } from "./infrastructure/bot-admin-status.js";
 import { createBaileysRuntimeLogger } from "./infrastructure/baileys-runtime-logger.js";
@@ -153,7 +153,8 @@ const mediaDownloadAdapter = env.DOWNLOADS_MODULE_ENABLED
   ? createMediaDownloadRouter({
       direct: {
         timeoutMs: env.DOWNLOADS_DIRECT_TIMEOUT_MS
-      }
+      },
+      logger
     })
   : undefined;
 const audioCommandAllowlist = env.AUDIO_COMMAND_ALLOWLIST.split(",")
@@ -458,6 +459,7 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
   getInboundText,
   getInboundMessageType,
   hasInboundMedia,
+  getInboundAudioMessage,
   getInboundContextInfo,
   setBotSelfLidKey,
   getBotSelfLid,

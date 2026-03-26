@@ -1,6 +1,6 @@
 import type { TranslationCommandInput } from "../domain/translation-request.js";
-import { normalizeLanguageTag, normalizeMode } from "../domain/translation-request.js";
-import { resolvePrimarySegmentTextFromReply, type ReplyContextInput } from "../../../common/reply-context-input.js";
+import { normalizeLanguageTag, normalizeMode, normalizeTranslationText } from "../domain/translation-request.js";
+import { isAudioMessageType, type ReplyContextInput, type ReplyInputSource } from "../../../common/reply-context-input.js";
 
 export type TranslationCommandParseFailureReason =
   | "missing_text"
@@ -8,8 +8,21 @@ export type TranslationCommandParseFailureReason =
   | "too_many_segments"
   | "malformed_command";
 
+export type TranslationCommandResolvedInput =
+  | {
+      kind: "text";
+      source: ReplyInputSource;
+      request: TranslationCommandInput;
+    }
+  | {
+      kind: "audio_reply";
+      source: "quoted";
+      targetLanguage?: string;
+      mode?: "basic" | "full";
+    };
+
 export type TranslationCommandParseResult =
-  | { ok: true; value: TranslationCommandInput }
+  | { ok: true; value: TranslationCommandResolvedInput }
   | { ok: false; reason: TranslationCommandParseFailureReason };
 
 const isFullToken = (value: string): boolean => normalizeMode(value) === "full";
@@ -22,24 +35,15 @@ export const parseTranslationCommand = (
   const segments = (args ? args.split("|") : [""]).map((segment) => segment.trim());
   if (segments.length > 3) return { ok: false, reason: "too_many_segments" };
 
-  const resolvedPrimary = resolvePrimarySegmentTextFromReply({
-    segments,
-    replyContext: input?.replyContext
-  });
+  const first = segments[0] ?? "";
+  const second = segments[1] ?? "";
+  const third = segments[2] ?? "";
 
-  if (!resolvedPrimary.ok) {
-    return { ok: false, reason: resolvedPrimary.reason === "incompatible_reply" ? "incompatible_reply" : "missing_text" };
-  }
-
-  const normalizedSegments = resolvedPrimary.segments;
-  const second = normalizedSegments[1] ?? "";
-  const third = normalizedSegments[2] ?? "";
-
-  if (normalizedSegments.length === 2 && !second) {
+  if (segments.length === 2 && !second) {
     return { ok: false, reason: "malformed_command" };
   }
 
-  if (normalizedSegments.length === 3 && !third && !second) {
+  if (segments.length === 3 && !third && !second) {
     return { ok: false, reason: "malformed_command" };
   }
 
@@ -55,18 +59,61 @@ export const parseTranslationCommand = (
   }
 
   if (third) {
+    if (isFullToken(second)) {
+      return { ok: false, reason: "malformed_command" };
+    }
     if (!isFullToken(third)) {
       return { ok: false, reason: "malformed_command" };
     }
     mode = "full";
   }
 
-  return {
-    ok: true,
-    value: {
-      text: resolvedPrimary.text,
-      targetLanguage,
-      mode
+  const explicitText = normalizeTranslationText(first);
+  if (explicitText) {
+    return {
+      ok: true,
+      value: {
+        kind: "text",
+        source: "explicit",
+        request: {
+          text: explicitText,
+          targetLanguage,
+          mode
+        }
+      }
+    };
+  }
+
+  const repliedText = normalizeTranslationText(input?.replyContext?.quotedText ?? "");
+  if (repliedText) {
+    return {
+      ok: true,
+      value: {
+        kind: "text",
+        source: "reply",
+        request: {
+          text: repliedText,
+          targetLanguage,
+          mode
+        }
+      }
+    };
+  }
+
+  if (input?.replyContext?.quotedWaMessageId) {
+    if (isAudioMessageType(input.replyContext.quotedMessageType)) {
+      return {
+        ok: true,
+        value: {
+          kind: "audio_reply",
+          source: "quoted",
+          targetLanguage,
+          mode
+        }
+      };
     }
-  };
+    return { ok: false, reason: "incompatible_reply" };
+  }
+
+  return { ok: false, reason: "missing_text" };
 };

@@ -1,10 +1,12 @@
 import type { ModerationAction } from "../../../../pipeline/actions.js";
+import type { HidetagContentPayload } from "../../../../pipeline/actions.js";
 
 export interface ModerationActionInput {
   waGroupId: string;
   targetWaUserId?: string;
   durationMs?: number;
   text?: string;
+  hidetagContent?: HidetagContentPayload;
   messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };
 }
 
@@ -41,5 +43,6 @@ export const hideTagAction = (input: ModerationActionInput): ModerationAction =>
   kind: "moderation_action",
   action: "hidetag",
   waGroupId: input.waGroupId,
-  text: input.text
+  text: input.text,
+  hidetagContent: input.hidetagContent
 });

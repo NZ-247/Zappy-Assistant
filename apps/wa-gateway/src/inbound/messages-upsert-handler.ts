@@ -34,6 +34,7 @@ interface MessagesUpsertHandlerDeps {
   getInboundText: (message: any) => string;
   getInboundMessageType: (message: any) => string | undefined;
   hasInboundMedia: (message: any) => boolean;
+  getInboundAudioMessage: (message: any) => { ptt?: boolean; mimeType?: string } | null;
   getInboundContextInfo: (message: any) => any;
   setBotSelfLidKey: (botJid?: string | null) => void;
   getBotSelfLid: () => Promise<string | null>;
@@ -286,6 +287,7 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const quotedMessageType = deps.getInboundMessageType(quotedMessage);
       const quotedText = deps.getInboundText(quotedMessage).trim() || undefined;
       const quotedHasMedia = deps.hasInboundMedia(quotedMessage);
+      const quotedAudioPtt = deps.getInboundAudioMessage(quotedMessage)?.ptt;
       const learnedBotLid = await deps.maybeLearnBotLidFromQuote({
         quotedWaMessageId,
         quotedParticipantRaw: quotedWaUserIdRaw,
@@ -383,6 +385,7 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         quotedMessageType,
         quotedText,
         quotedHasMedia,
+        quotedAudioPtt,
         isReplyToBot,
         senderIsGroupAdmin,
         botIsGroupAdmin,
@@ -584,6 +587,8 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         deps.logger.warn?.(
           deps.withCategory("WA-OUT", {
             status: "command_or_outbound_failure",
+            pipelineDomain: "feature_pipeline",
+            transportSessionStatus: "separate_from_wa_decrypt_issue",
             tenantId: event.tenantId,
             waGroupId: event.waGroupId,
             waUserId: event.waUserId,

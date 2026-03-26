@@ -161,11 +161,11 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Saída padrão como voice note/PTT (`TTS_SEND_AS_PTT=true`) com recodificação final para `OGG/Opus` no gateway (mimetype final `audio/ogg; codecs=opus`).
   - Limitações: qualidade de tradução depende do provider/model configurado; textos muito longos respeitam `TTS_MAX_TEXT_CHARS`; para PTT 100% compatível o host deve ter `ffmpeg` disponível (sem isso o gateway faz fallback para áudio comum).
 - Translation module:
-  - `/trl <texto>` traduz com detecção automática de idioma.
+  - `/trl <texto>` traduz com detecção automática de idioma e saída curta para WhatsApp.
   - Alvo padrão: origem `pt*` -> `en`; demais origens -> `pt`.
-  - Override de alvo: `/trl <texto> |<destino>`.
-  - Modo completo: `/trl <texto> |<destino>|full` (inclui escrita e pronúncia/transliteração quando disponível).
-  - Também aceita uso por resposta: responda um texto e envie `/trl` ou `/trl |<destino>|full`.
+  - Override de alvo: `/trl <texto> |<destino>` (ex: `/trl Olá |en`).
+  - Também aceita uso por resposta: responda um texto e envie `/trl`.
+  - Resposta a áudio também é suportada: responda um áudio e envie `/trl` (ou `/trl |<destino>`); o fluxo interno transcreve e depois traduz.
 - Web search module:
   - `/search <termo>` executa busca textual genérica (provider preferido em `SEARCH_PROVIDER` com fallback automático) e aceita termo via resposta.
   - `/google <termo>` usa Google Programmable Search real (sem cair silenciosamente no mesmo fluxo de `/search`) e aceita termo via resposta.
@@ -189,8 +189,10 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Política de qualidade de domínio: prioriza fontes confiáveis e exclui Pinterest/Behance/Dribbble/ArtStation/DeviantArt do pipeline `/img`.
   - O adapter valida e normaliza mídia (resize/re-encode JPEG/PNG quando necessário) para melhorar entregabilidade no WhatsApp.
 - Downloads module (provider router):
-  - `/dl direct <link>` valida link direto (http/https), tipo de mídia e metadados básicos.
-  - `/dl yt|ig|fb <link>` usa providers separados com resposta explícita quando bloqueado por compliance/permissão.
+  - `/dl <link>` tenta detectar provider automaticamente e enviar mídia de forma compacta.
+  - `/dl ig <link instagram público>` suporta `instagram.com/p/...`, `.../reel/...` e `.../tv/...` com fallback seguro para privado/login-required.
+  - `/dl direct <link>` mantém validação de link direto (http/https), tipo de mídia e metadados básicos.
+  - `/dl yt|fb <link>` continua com resposta explícita de bloqueio por compliance/permissão.
   - Parsing, validação, roteamento e tratamento de erro padronizados em módulo dedicado.
 - Reminders:
   - `/reminder in <duration> <message>` where duration accepts `1`, `10m`, `1h40m30s`, `2d`.

@@ -76,6 +76,7 @@ import type {
   ReplyTextAction,
   ReplyAudioAction,
   ReplyImageAction,
+  ReplyVideoAction,
   ReplyListAction,
   EnqueueJobAction,
   NoopAction,
@@ -116,6 +117,8 @@ import type {
   SearchAiPort,
   ImageSearchPort,
   MediaDownloadPort,
+  MediaDownloadAssetKind,
+  MediaDownloadResolvedAsset,
   MediaDownloadProvider,
   WebSearchResultItem,
   SearchAiSourceItem,
@@ -176,6 +179,7 @@ export type {
   ReplyTextAction,
   ReplyAudioAction,
   ReplyImageAction,
+  ReplyVideoAction,
   ReplyListAction,
   EnqueueJobAction,
   NoopAction,
@@ -219,6 +223,8 @@ export type {
   SearchAiPort,
   ImageSearchPort,
   MediaDownloadPort,
+  MediaDownloadAssetKind,
+  MediaDownloadResolvedAsset,
   MediaDownloadProvider,
   WebSearchResultItem,
   SearchAiSourceItem,
@@ -237,6 +243,23 @@ export type {
 export type { PipelineContext, NormalizedEvent } from "./pipeline/context.js";
 export { resolveRelationshipProfile } from "./modules/identity/domain/relationship-profile.js";
 export type { AudioModuleConfigPort, SpeechToTextPort } from "./modules/tools/audio/ports.js";
+export type { DownloadProviderKey } from "./modules/downloads/domain/download-provider.js";
+export type {
+  DownloadProviderFamily,
+  DownloadProviderDetection,
+  DownloadProbeStatus,
+  DownloadAssetMetadata,
+  DownloadProbeResult,
+  DownloadAssetKind,
+  DownloadOutputAsset,
+  DownloadExecutionResult
+} from "./modules/downloads/domain/download-contracts.js";
+export type {
+  DownloadProviderProbeInput,
+  DownloadProviderDownloadInput,
+  DownloadProviderPort,
+  DownloadProviderRouterPort
+} from "./modules/downloads/ports/download-provider.port.js";
 
 export class Orchestrator {
   private readonly ports: CorePorts;
@@ -346,6 +369,7 @@ export class Orchestrator {
       quotedMessageType: event.quotedMessageType,
       quotedText: event.quotedText,
       quotedHasMedia: event.quotedHasMedia,
+      quotedAudioPtt: event.quotedAudioPtt,
       botIsGroupAdmin: event.botIsGroupAdmin,
       groupName: event.groupName
     };

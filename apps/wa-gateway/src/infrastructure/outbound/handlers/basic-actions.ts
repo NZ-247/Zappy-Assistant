@@ -1,6 +1,6 @@
 import { sendTextAndPersist } from "../context.js";
 import type { ExecuteOutboundActionsInput } from "../types.js";
-import { AudioTranscodingError, inspectAudioPayload, transcodeToWhatsAppPtt } from "./wa-audio-transcoding.js";
+import { prepareWhatsAppAudioForSend } from "./wa-audio-send-pipeline.js";
 
 const IMAGE_FETCH_TIMEOUT_MS = 12_000;
 const IMAGE_FETCH_MAX_BYTES = 8 * 1024 * 1024;
@@ -9,7 +9,6 @@ const IMAGE_FETCH_MIN_BYTES = 512;
 const normalizeText = (value: string): string => value.replace(/\s+/g, " ").trim();
 
 const normalizeErrorReason = (error: unknown, fallback = "unknown_error"): string => {
-  if (error instanceof AudioTranscodingError) return error.reason;
   if (error instanceof Error) {
     const message = normalizeText(error.message);
     return message || fallback;
@@ -278,46 +277,28 @@ export const handleBasicOutboundAction = async (input: {
     }
 
     const requestedMimeType = typeof action.mimeType === "string" && action.mimeType.trim() ? action.mimeType.trim() : "application/octet-stream";
-    let outboundAudioBuffer = audioBuffer;
-    let outboundMimeType = requestedMimeType;
-    let outboundPtt = Boolean(action.ptt);
-    let inputProbe = inspectAudioPayload({ audioBuffer, mimeType: requestedMimeType });
-    let outputProbe = inputProbe;
-    let transcodeReason: string | undefined;
-    let transcodedToPtt = false;
+    const prepared = await prepareWhatsAppAudioForSend({
+      audioBuffer,
+      mimeType: requestedMimeType,
+      requestPtt: Boolean(action.ptt)
+    });
 
-    if (action.ptt) {
-      try {
-        const pttAudio = await transcodeToWhatsAppPtt({
-          audioBuffer,
-          mimeType: requestedMimeType
-        });
-        outboundAudioBuffer = pttAudio.audioBuffer;
-        outboundMimeType = pttAudio.mimeType;
-        outboundPtt = true;
-        transcodedToPtt = pttAudio.transcoded;
-        inputProbe = pttAudio.inputProbe;
-        outputProbe = inspectAudioPayload({ audioBuffer: outboundAudioBuffer, mimeType: outboundMimeType });
-      } catch (error) {
-        outboundPtt = false;
-        transcodeReason = normalizeErrorReason(error, "ptt_transcode_failed");
-        outputProbe = inspectAudioPayload({ audioBuffer: outboundAudioBuffer, mimeType: outboundMimeType });
-        runtime.logger.warn?.(
-          runtime.withCategory("WA-OUT", {
-            action: "send_ptt",
-            status: "fallback_audio",
-            reason: transcodeReason,
-            requestedMimeType,
-            requestedPtt: true,
-            finalPtt: false,
-            inputContainer: inputProbe.container,
-            inputCodecGuess: inputProbe.codecGuess,
-            inputBytes: inputProbe.byteLength,
-            ...audioLogBase
-          }),
-          "voice message transcoding failed; sending standard audio instead"
-        );
-      }
+    if (action.ptt && !prepared.ptt) {
+      runtime.logger.warn?.(
+        runtime.withCategory("WA-OUT", {
+          action: "send_ptt",
+          status: "fallback_audio",
+          reason: prepared.transcodeReason ?? "ptt_transcode_failed",
+          requestedMimeType,
+          requestedPtt: true,
+          finalPtt: false,
+          inputContainer: prepared.inputProbe.container,
+          inputCodecGuess: prepared.inputProbe.codecGuess,
+          inputBytes: prepared.inputProbe.byteLength,
+          ...audioLogBase
+        }),
+        "voice message transcoding failed; sending standard audio instead"
+      );
     }
 
     await sendTextAndPersist({
@@ -328,38 +309,107 @@ export const handleBasicOutboundAction = async (input: {
       scope: runtime.isGroup ? "group" : "direct",
       responseActionId,
       content: {
-        audio: outboundAudioBuffer,
-        mimetype: outboundMimeType,
-        ptt: outboundPtt,
+        audio: prepared.audioBuffer,
+        mimetype: prepared.mimeType,
+        ptt: prepared.ptt,
         fileName: action.fileName
       }
     });
 
     if (action.ptt) {
-      const actionName = outboundPtt ? "send_ptt" : "send_audio_fallback";
-      const status = outboundPtt ? "success" : "fallback";
-      const logMessage = outboundPtt ? "voice message sent" : "voice note sent as regular audio fallback";
+      const actionName = prepared.ptt ? "send_ptt" : "send_audio_fallback";
+      const status = prepared.ptt ? "success" : "fallback";
+      const logMessage = prepared.ptt ? "voice message sent" : "voice note sent as regular audio fallback";
       runtime.logger.info?.(
         runtime.withCategory("WA-OUT", {
           action: actionName,
           status,
           requestedPtt: true,
-          finalPtt: outboundPtt,
+          finalPtt: prepared.ptt,
           requestedMimeType,
-          finalMimeType: outboundMimeType,
-          inputContainer: inputProbe.container,
-          inputCodecGuess: inputProbe.codecGuess,
-          outputContainer: outputProbe.container,
-          outputCodecGuess: outputProbe.codecGuess,
-          outputBytes: outputProbe.byteLength,
-          transcodedToPtt,
-          transcodeReason,
+          finalMimeType: prepared.mimeType,
+          inputContainer: prepared.inputProbe.container,
+          inputCodecGuess: prepared.inputProbe.codecGuess,
+          outputContainer: prepared.outputProbe.container,
+          outputCodecGuess: prepared.outputProbe.codecGuess,
+          outputBytes: prepared.outputProbe.byteLength,
+          transcodedToPtt: prepared.transcodedToPtt,
+          transcodeReason: prepared.transcodeReason,
           ...audioLogBase
         }),
         logMessage
       );
     }
 
+    return true;
+  }
+
+  if (action.kind === "reply_video") {
+    const target = runtime.isGroup ? runtime.remoteJid : runtime.waUserId;
+    const scope: "group" | "direct" = runtime.isGroup ? "group" : "direct";
+    const caption = typeof action.caption === "string" && action.caption.trim() ? action.caption.trim() : undefined;
+    const videoUrl = typeof action.videoUrl === "string" ? action.videoUrl.trim() : "";
+    const fallbackText =
+      typeof action.fallbackText === "string" && action.fallbackText.trim()
+        ? action.fallbackText.trim()
+        : "Nao consegui enviar o video agora. Tente novamente em instantes.";
+    const persistedText = (caption ?? videoUrl) || "[video]";
+    let videoPayload: Buffer | { url: string } | null = null;
+
+    if (typeof action.videoBase64 === "string" && action.videoBase64.trim()) {
+      try {
+        const decoded = Buffer.from(action.videoBase64, "base64");
+        if (decoded.length > 0) {
+          videoPayload = decoded;
+        }
+      } catch (error) {
+        runtime.logger.warn?.(
+          runtime.withCategory("WA-OUT", {
+            action: "reply_video",
+            status: "invalid_inline_payload",
+            responseActionId,
+            reason: normalizeErrorReason(error, "invalid_base64"),
+            tenantId: runtime.event.tenantId,
+            waGroupId: runtime.event.waGroupId,
+            waUserId: runtime.waUserId,
+            inboundWaMessageId: runtime.event.waMessageId,
+            executionId: runtime.event.executionId
+          }),
+          "video inline payload decode failed"
+        );
+      }
+    }
+
+    if (!videoPayload && videoUrl) {
+      videoPayload = { url: videoUrl };
+    }
+
+    if (!videoPayload) {
+      await sendTextAndPersist({
+        runtime,
+        to: target,
+        text: fallbackText,
+        actionName: "reply_video_error",
+        scope,
+        responseActionId
+      });
+      return true;
+    }
+
+    await sendTextAndPersist({
+      runtime,
+      to: target,
+      text: persistedText,
+      actionName: "reply_video",
+      scope,
+      responseActionId,
+      content: {
+        video: videoPayload,
+        mimetype: typeof action.mimeType === "string" && action.mimeType.trim() ? action.mimeType.trim() : undefined,
+        fileName: typeof action.fileName === "string" && action.fileName.trim() ? action.fileName.trim() : undefined,
+        caption
+      }
+    });
     return true;
   }
 

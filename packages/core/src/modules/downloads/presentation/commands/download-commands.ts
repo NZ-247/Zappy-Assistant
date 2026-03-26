@@ -13,9 +13,9 @@ export interface DownloadCommandDeps {
 
 const parseErrorMessage = (reason: string, usage?: string | null): string => {
   if (usage) return usage;
-  if (reason === "missing_provider") return "Uso correto: dl <yt|ig|fb|direct> <link>";
-  if (reason === "invalid_provider") return "Provider inválido. Use: yt, ig, fb ou direct.";
-  if (reason === "missing_url") return "Informe um link para processar. Exemplo: dl direct https://...";
+  if (reason === "missing_input" || reason === "missing_provider_or_url") return "Use /dl <link> ou /dl <provider> <link>.";
+  if (reason === "invalid_provider_or_url") return "Informe um provider válido (yt/ig/fb/direct) ou um link http(s).";
+  if (reason === "missing_url") return "Informe o link após o provider. Exemplo: /dl ig https://...";
   return "Link inválido. Use URL http(s) válida.";
 };
 

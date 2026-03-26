@@ -7,7 +7,6 @@ import {
   isPortugueseLanguage,
   isValidLanguageTag,
   normalizeLanguageTag,
-  normalizeMode,
   normalizeTranslationText
 } from "../../domain/translation-request.js";
 
@@ -99,6 +98,7 @@ export const executeTranslation = async (input: {
   request: TranslationCommandInput;
   textTranslation?: TextTranslationPort;
   config: TranslationUseCaseConfig;
+  transcriptionText?: string;
   stylizeReply?: (text: string) => string;
   logger?: LoggerPort;
 }): Promise<ResponseAction[]> => {
@@ -118,8 +118,6 @@ export const executeTranslation = async (input: {
   if (text.length > input.config.maxTextChars) {
     return replyText(`Texto muito longo para traducao. Limite atual: ${input.config.maxTextChars} caracteres.`);
   }
-
-  const mode = normalizeMode(input.request.mode);
 
   const explicitTarget = input.request.targetLanguage ? normalizeLanguageTag(input.request.targetLanguage) : undefined;
   if (explicitTarget && !isValidLanguageTag(explicitTarget)) {
@@ -149,7 +147,7 @@ export const executeTranslation = async (input: {
       text,
       sourceLanguage: detectedSource,
       targetLanguage,
-      mode
+      mode: "basic"
     });
 
     const translatedText = normalizeTranslationText(translated.translatedText);
@@ -165,21 +163,17 @@ export const executeTranslation = async (input: {
       text,
       sourceLanguage: detectedOutput,
       targetLanguage,
-      mode,
+      mode: "basic",
       provider: translated.provider,
       model: translated.model
     });
 
-    if (mode === "full") {
-      const pronunciation = normalizeTranslationText(translated.transliteration ?? translated.pronunciation ?? "");
-      const lines = [`Escrita: ${translatedText}`];
-      if (pronunciation) {
-        lines.push(`Pronuncia: ${pronunciation}`);
-      }
-      return replyText(lines.join("\n"));
+    const transcriptionText = normalizeTranslationText(input.transcriptionText ?? "");
+    if (transcriptionText) {
+      return replyText(`Transcrição: ${transcriptionText}\nTradução: ${translatedText}`);
     }
 
-    return replyText(translatedText);
+    return replyText(`Tradução: ${translatedText}`);
   } catch (error) {
     const reason = sanitizeErrorMessage(error);
     logTranslation(input.logger, {
@@ -188,7 +182,7 @@ export const executeTranslation = async (input: {
       text,
       sourceLanguage: detectedSource,
       targetLanguage,
-      mode,
+      mode: "basic",
       reason
     });
     return replyText(`Falha na traducao: ${reason}.`);

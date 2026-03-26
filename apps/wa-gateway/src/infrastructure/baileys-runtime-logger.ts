@@ -161,6 +161,7 @@ export const createBaileysRuntimeLogger = (input: CreateBaileysRuntimeLoggerInpu
       input.appLogger.warn?.(
         input.withCategory("AUTH", {
           status: "WA_DECRYPT_ISSUE",
+          pipelineDomain: "transport_session",
           issueCode: issue.code,
           severity: issue.severity,
           signature,

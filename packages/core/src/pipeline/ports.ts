@@ -328,21 +328,41 @@ export interface SearchAiPort {
 
 export type MediaDownloadProvider = "yt" | "ig" | "fb" | "direct";
 
+export type MediaDownloadAssetKind = "audio" | "video" | "image" | "document";
+
+export interface MediaDownloadResolvedAsset {
+  kind: MediaDownloadAssetKind;
+  mimeType: string;
+  fileName?: string;
+  sizeBytes?: number;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  directUrl?: string;
+  bufferBase64?: string;
+  thumbnailUrl?: string;
+}
+
 export interface MediaDownloadPort {
   resolve(input: {
-    provider: MediaDownloadProvider;
+    provider?: MediaDownloadProvider;
     url: string;
     tenantId?: string;
     waUserId?: string;
     waGroupId?: string;
+    quality?: "low" | "medium" | "high" | "best";
+    maxBytes?: number;
   }): Promise<{
     provider: MediaDownloadProvider;
+    detectedProvider?: MediaDownloadProvider;
     status: "ready" | "unsupported" | "blocked" | "invalid" | "error";
     reason?: string;
     title?: string;
+    canonicalUrl?: string;
     url?: string;
     mimeType?: string;
     sizeBytes?: number;
+    asset?: MediaDownloadResolvedAsset;
   }>;
 }
 
