@@ -22,7 +22,7 @@ npm run prisma:generate
 - TTS is controlled by `TTS_ENABLED`, `TTS_MODEL`, `TTS_TIMEOUT_MS`, `TTS_AUDIO_FORMAT`, `TTS_TRANSLATION_MODEL`, `TTS_TRANSLATION_TIMEOUT_MS`, `TTS_DEFAULT_SOURCE_LANGUAGE`, `TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`, `TTS_MALE_VOICE`, `TTS_FEMALE_VOICE`, `TTS_MAX_TEXT_CHARS`, `TTS_SEND_AS_PTT`.
 - Web search is controlled by `SEARCH_ENABLED`, `SEARCH_PROVIDER`, `SEARCH_MAX_RESULTS`, `SEARCH_TIMEOUT_MS`, `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_ENGINE_ID` (`GOOGLE_SEARCH_CX` remains supported for backward compatibility).
 - AI-assisted web search is controlled by `SEARCH_AI_ENABLED`, `SEARCH_AI_PROVIDER`, `SEARCH_AI_MODEL`, `SEARCH_AI_TIMEOUT_MS`, `SEARCH_AI_MAX_SOURCES`, `GEMINI_API_KEY`, `GEMINI_SEARCH_AI_MODEL`, `GEMINI_SEARCH_GROUNDING_ENABLED`.
-- Image search is controlled by `IMAGE_SEARCH_ENABLED`, `IMAGE_SEARCH_PROVIDER`, `IMAGE_SEARCH_MAX_RESULTS` (`google` fallback to `wikimedia` when needed).
+- Image search is controlled by `IMAGE_SEARCH_ENABLED`, `IMAGE_SEARCH_PROVIDER`, `IMAGE_SEARCH_MAX_RESULTS`, provider credentials (`PIXABAY_API_KEY`, `PEXELS_API_KEY`, `UNSPLASH_ACCESS_KEY`), optional `OPENVERSE_API_BASE_URL`, and normalization knobs (`IMAGE_SEARCH_MEDIA_NORMALIZE_*`).
 - Downloads module is controlled by `DOWNLOADS_MODULE_ENABLED`, `DOWNLOADS_DIRECT_TIMEOUT_MS`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
@@ -140,7 +140,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
-- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`, `/tts`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/dl`.
+- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`, `/tts`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
   - `/toimg` funciona apenas respondendo uma figurinha válida.
@@ -174,10 +174,12 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Limitações: depende de modelo com suporte a web tool/grounding; falhas de quota/permissão do provider podem indisponibilizar o recurso.
 - Image search module:
   - `/img <termo>` e `/gimage <termo>` priorizam resultado visual relevante e enviam imagem diretamente quando possível.
+  - `/imglink <termo>` usa a mesma busca e retorna fallback estruturado com 3 links úteis quando não há mídia entregável.
   - Legenda curta inclui fonte e até sugestões extras de links relacionados.
   - Quantidade de resultados controlada por `IMAGE_SEARCH_MAX_RESULTS`.
-  - Provider configurável (`IMAGE_SEARCH_PROVIDER`) com fallback para Wikimedia.
-  - Limitações: quando não há URL de imagem direta confiável, o fallback volta para resposta textual curta com fontes.
+  - Estratégia nativa-first: Wikimedia Commons -> Openverse -> Pixabay -> Pexels -> Unsplash; Google CSE entra apenas como fallback de descoberta.
+  - Política de qualidade de domínio: prioriza fontes confiáveis e exclui Pinterest/Behance/Dribbble/ArtStation/DeviantArt do pipeline `/img`.
+  - O adapter valida e normaliza mídia (resize/re-encode JPEG/PNG quando necessário) para melhorar entregabilidade no WhatsApp.
 - Downloads module (provider router):
   - `/dl direct <link>` valida link direto (http/https), tipo de mídia e metadados básicos.
   - `/dl yt|ig|fb <link>` usa providers separados com resposta explícita quando bloqueado por compliance/permissão.

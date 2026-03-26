@@ -1,39 +1,53 @@
 import type { ImageSearchPort, ImageSearchResultItem, LoggerPort } from "@zappy/core";
+import {
+  clampInt,
+  createGoogleCseImageProvider,
+  createOpenverseImageProvider,
+  createPexelsImageProvider,
+  createPixabayImageProvider,
+  createUnsplashImageProvider,
+  createWikimediaImageProvider,
+  normalizeOptional,
+  resolveGoogleEngineId,
+  type FetchLike,
+  type ImageProviderAdapter,
+  type ImageProviderSource
+} from "./image-providers/index.js";
+import { inferMimeTypeFromUrl } from "./image-providers/common.js";
 
-type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+export type ImageSearchPreferredProvider = "native" | "wikimedia" | "openverse" | "pixabay" | "pexels" | "unsplash" | "google";
 
 export interface ImageSearchAdapterInput {
   googleApiKey?: string;
   googleSearchEngineId?: string;
   googleCx?: string;
+  openverseApiBaseUrl?: string;
+  pixabayApiKey?: string;
+  pexelsApiKey?: string;
+  unsplashAccessKey?: string;
   timeoutMs?: number;
-  preferredProvider?: "google" | "wikimedia";
+  preferredProvider?: ImageSearchPreferredProvider;
   logger?: LoggerPort;
   fetchImpl?: FetchLike;
   mediaValidationTimeoutMs?: number;
   mediaValidationMaxBytes?: number;
   mediaValidationMinBytes?: number;
   mediaValidationCandidates?: number;
+  mediaNormalizationEnabled?: boolean;
+  mediaNormalizationMaxDimension?: number;
+  mediaNormalizationJpegQuality?: number;
+  mediaNormalizationTriggerBytes?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MEDIA_VALIDATION_TIMEOUT_MS = 8_000;
 const DEFAULT_MEDIA_VALIDATION_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MEDIA_VALIDATION_MIN_BYTES = 512;
-const DEFAULT_MEDIA_VALIDATION_CANDIDATES = 5;
-
-const normalizeOptional = (value?: string): string | undefined => {
-  const normalized = value?.trim();
-  return normalized ? normalized : undefined;
-};
-
-const clampInt = (value: number, min: number, max: number): number => {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.trunc(value)));
-};
-
-const resolveGoogleEngineId = (input: ImageSearchAdapterInput): string | undefined =>
-  normalizeOptional(input.googleSearchEngineId) ?? normalizeOptional(input.googleCx);
+const DEFAULT_MEDIA_VALIDATION_CANDIDATES = 6;
+const DEFAULT_MEDIA_NORMALIZATION_ENABLED = true;
+const DEFAULT_MEDIA_NORMALIZATION_MAX_DIMENSION = 2_048;
+const DEFAULT_MEDIA_NORMALIZATION_JPEG_QUALITY = 86;
+const DEFAULT_MEDIA_NORMALIZATION_TRIGGER_BYTES = 2 * 1024 * 1024;
 
 const STOPWORDS = new Set([
   "a",
@@ -59,12 +73,271 @@ const STOPWORDS = new Set([
   "for"
 ]);
 
+const SOURCE_RELIABILITY: Record<string, number> = {
+  wikimedia: 1,
+  openverse: 0.96,
+  pixabay: 0.92,
+  pexels: 0.9,
+  unsplash: 0.88,
+  google_cse: 0.54
+};
+
+const EXCLUDED_DOMAIN_PATTERNS = [
+  /(^|\.)pinterest\./i,
+  /(^|\.)pinimg\./i,
+  /(^|\.)behance\.net$/i,
+  /(^|\.)dribbble\.com$/i,
+  /(^|\.)artstation\.com$/i,
+  /(^|\.)deviantart\.com$/i,
+  /(^|\.)wixmp\.com$/i
+];
+
+const SOURCE_DOMAIN_BONUS: Array<{ source: string; pattern: RegExp; score: number }> = [
+  { source: "wikimedia", pattern: /(^|\.)wikimedia\.org$/i, score: 1.2 },
+  { source: "openverse", pattern: /(^|\.)openverse\.org$/i, score: 1 },
+  { source: "pixabay", pattern: /(^|\.)pixabay\.com$/i, score: 0.95 },
+  { source: "pexels", pattern: /(^|\.)pexels\.com$/i, score: 0.9 },
+  { source: "unsplash", pattern: /(^|\.)unsplash\.com$/i, score: 0.88 },
+  { source: "google_cse", pattern: /(^|\.)google\./i, score: 0.45 }
+];
+
+const NATIVE_PROVIDER_ORDER: ImageProviderSource[] = ["wikimedia", "openverse", "pixabay", "pexels", "unsplash"];
+
+type CandidateDiagnostic = {
+  source?: string;
+  title: string;
+  link: string;
+  pageUrl?: string;
+  imageUrl: string;
+  candidateIndex: number;
+  status: "accepted" | "rejected";
+  reason: string;
+  httpStatus?: number;
+  mimeType?: string;
+  byteLength?: number;
+};
+
+type NormalizedImageCandidate = ImageSearchResultItem & {
+  source: string;
+  title: string;
+  link: string;
+  pageUrl: string;
+  imageUrl: string;
+};
+
+type ValidatedCandidatePool = {
+  deliverableImage:
+    | {
+        source: string;
+        title: string;
+        link: string;
+        pageUrl?: string;
+        imageUrl: string;
+        thumbnailUrl?: string;
+        imageBase64: string;
+        mimeType: string;
+        attribution?: string;
+        providerConfidence?: number;
+        licenseInfo?: {
+          code?: string;
+          name?: string;
+          version?: string;
+          url?: string;
+          requiresAttribution?: boolean;
+        };
+        byteLength: number;
+        candidateIndex: number;
+      }
+    | undefined;
+  candidateDiagnostics: CandidateDiagnostic[];
+  triedImageKeys: Set<string>;
+};
+
 const shorten = (value: string, max = 180): string => (value.length <= max ? value : `${value.slice(0, max - 3)}...`);
+
+const normalizePreferredProvider = (value?: string): ImageSearchPreferredProvider => {
+  const normalized = normalizeOptional(value)?.toLowerCase();
+  if (!normalized) return "native";
+  if (["native", "wikimedia", "openverse", "pixabay", "pexels", "unsplash", "google"].includes(normalized)) {
+    return normalized as ImageSearchPreferredProvider;
+  }
+  return "native";
+};
+
+const tokenize = (value: string): string[] =>
+  value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+
+const countTokenMatches = (tokens: string[], text: string): number => {
+  if (!tokens.length || !text) return 0;
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const token of tokens) {
+    if (lower.includes(token)) score += 1;
+  }
+  return score;
+};
 
 const normalizeMimeType = (value?: string | null): string => {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized) return "";
-  return normalized.split(";")[0]?.trim() ?? "";
+  const main = normalized.split(";")[0]?.trim() ?? "";
+  return main === "image/jpg" ? "image/jpeg" : main;
+};
+
+const getHost = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
+const isExcludedDomain = (value?: string): boolean => {
+  const host = getHost(value);
+  if (!host) return false;
+  return EXCLUDED_DOMAIN_PATTERNS.some((pattern) => pattern.test(host));
+};
+
+const canonicalImageUrl = (value: string): string => {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.toString().toLowerCase();
+  } catch {
+    return value.trim().toLowerCase();
+  }
+};
+
+const normalizeCandidate = (item: ImageSearchResultItem): NormalizedImageCandidate | null => {
+  const imageUrl = normalizeOptional(item.imageUrl);
+  if (!imageUrl) return null;
+
+  const pageUrl = normalizeOptional(item.pageUrl) ?? normalizeOptional(item.link) ?? imageUrl;
+  if (!pageUrl) return null;
+
+  if (isExcludedDomain(imageUrl) || isExcludedDomain(pageUrl)) return null;
+
+  const source = normalizeOptional(item.source) ?? "unknown";
+  const title = normalizeOptional(item.title) ?? "Imagem";
+  const mimeType = normalizeOptional(item.mimeType) ?? inferMimeTypeFromUrl(imageUrl);
+  const attribution = normalizeOptional(item.attribution);
+  const providerConfidenceRaw = Number(item.providerConfidence);
+  const providerConfidence = Number.isFinite(providerConfidenceRaw) ? Math.min(1, Math.max(0, providerConfidenceRaw)) : undefined;
+
+  return {
+    ...item,
+    source,
+    title,
+    pageUrl,
+    link: pageUrl,
+    imageUrl,
+    thumbnailUrl: normalizeOptional(item.thumbnailUrl),
+    mimeType,
+    attribution,
+    providerConfidence
+  };
+};
+
+const imageExtensionScore = (url: string, mimeType?: string): number => {
+  const normalizedMime = normalizeMimeType(mimeType);
+  const lower = url.toLowerCase();
+
+  if (normalizedMime === "image/svg+xml" || lower.endsWith(".svg") || lower.includes("format=svg")) return -6;
+  if (normalizedMime === "image/gif" || lower.endsWith(".gif") || lower.includes("format=gif")) return -1.5;
+  if (normalizedMime === "image/jpeg" || normalizedMime === "image/png") return 1.2;
+  if (normalizedMime === "image/webp") return 0.8;
+  if (["image/heic", "image/heif", "image/avif", "image/tiff", "image/bmp"].includes(normalizedMime)) return 0.4;
+
+  if (/\.(jpe?g|png)(?:$|[?#])/i.test(lower)) return 1;
+  if (/\.(webp)(?:$|[?#])/i.test(lower)) return 0.7;
+  if (/\.(avif|heic|heif|tiff?|bmp)(?:$|[?#])/i.test(lower)) return 0.3;
+
+  return 0;
+};
+
+const sourceDomainScore = (source: string, pageUrl: string, imageUrl: string): number => {
+  const pageHost = getHost(pageUrl);
+  const imageHost = getHost(imageUrl);
+  let score = 0;
+
+  if (pageHost) {
+    for (const entry of SOURCE_DOMAIN_BONUS) {
+      if (entry.source === source && entry.pattern.test(pageHost)) {
+        score = Math.max(score, entry.score);
+      }
+    }
+  }
+
+  if (imageHost) {
+    for (const entry of SOURCE_DOMAIN_BONUS) {
+      if (entry.source === source && entry.pattern.test(imageHost)) {
+        score = Math.max(score, entry.score);
+      }
+    }
+  }
+
+  return score;
+};
+
+const rankAndFilterImageResults = (input: { query: string; items: ImageSearchResultItem[]; limit: number }): NormalizedImageCandidate[] => {
+  const query = input.query.trim().toLowerCase();
+  const tokens = tokenize(query);
+  const seenImageUrls = new Set<string>();
+
+  const scored = input.items
+    .map((item) => {
+      const normalized = normalizeCandidate(item);
+      if (!normalized) return null;
+
+      const key = canonicalImageUrl(normalized.imageUrl);
+      if (seenImageUrls.has(key)) return null;
+      seenImageUrls.add(key);
+
+      const titleMatches = countTokenMatches(tokens, normalized.title);
+      const imageMatches = countTokenMatches(tokens, normalized.imageUrl);
+      const pageMatches = countTokenMatches(tokens, normalized.pageUrl);
+      const fullQueryHit =
+        query.length >= 4 &&
+        (normalized.title.toLowerCase().includes(query) || normalized.pageUrl.toLowerCase().includes(query) || normalized.imageUrl.toLowerCase().includes(query));
+
+      const sourceReliability = SOURCE_RELIABILITY[normalized.source] ?? 0.5;
+      const providerConfidence = normalized.providerConfidence ?? sourceReliability;
+      const domainScore = sourceDomainScore(normalized.source, normalized.pageUrl, normalized.imageUrl);
+      const extensionScore = imageExtensionScore(normalized.imageUrl, normalized.mimeType);
+
+      let score = 0;
+      score += fullQueryHit ? 7 : 0;
+      score += titleMatches * 3.1;
+      score += pageMatches * 1.8;
+      score += imageMatches * 1.2;
+      score += sourceReliability * 3.3;
+      score += providerConfidence * 2.7;
+      score += domainScore * 1.9;
+      score += extensionScore;
+      if (normalized.title.length < 6) score -= 0.8;
+      if ((normalized.thumbnailUrl ?? "").toLowerCase().includes("thumb")) score -= 0.2;
+
+      return {
+        item: normalized,
+        score,
+        relevance: titleMatches + pageMatches + imageMatches
+      };
+    })
+    .filter((entry): entry is { item: NormalizedImageCandidate; score: number; relevance: number } => Boolean(entry));
+
+  const filtered = scored.filter((entry) => (tokens.length === 0 ? true : entry.relevance > 0));
+  const pool = filtered.length > 0 ? filtered : scored;
+
+  return pool
+    .sort((a, b) => b.score - a.score)
+    .slice(0, input.limit)
+    .map((entry) => entry.item);
 };
 
 const hasLikelyImageSignature = (bytes: Buffer): boolean => {
@@ -84,24 +357,16 @@ const hasLikelyImageSignature = (bytes: Buffer): boolean => {
     return true;
   }
 
-  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
-    return true;
-  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return true;
 
   const gifSig = bytes.subarray(0, 6).toString("ascii");
-  if (gifSig === "GIF87a" || gifSig === "GIF89a") {
-    return true;
-  }
+  if (gifSig === "GIF87a" || gifSig === "GIF89a") return true;
 
   const riffSig = bytes.subarray(0, 4).toString("ascii");
   const webpSig = bytes.length >= 12 ? bytes.subarray(8, 12).toString("ascii") : "";
-  if (riffSig === "RIFF" && webpSig === "WEBP") {
-    return true;
-  }
+  if (riffSig === "RIFF" && webpSig === "WEBP") return true;
 
-  if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
-    return true;
-  }
+  if (bytes[0] === 0x42 && bytes[1] === 0x4d) return true;
 
   if (
     (bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a && bytes[3] === 0x00) ||
@@ -112,9 +377,7 @@ const hasLikelyImageSignature = (bytes: Buffer): boolean => {
 
   if (bytes.length >= 12 && bytes.subarray(4, 8).toString("ascii") === "ftyp") {
     const brand = bytes.subarray(8, 12).toString("ascii").toLowerCase();
-    if (["avif", "avis", "heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand)) {
-      return true;
-    }
+    if (["avif", "avis", "heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand)) return true;
   }
 
   return false;
@@ -141,6 +404,7 @@ const logMediaValidation = (
     status: "started" | "success" | "rejected" | "failure";
     query: string;
     provider?: string;
+    source?: string;
     candidateIndex: number;
     imageUrl: string;
     reason?: string;
@@ -157,6 +421,7 @@ const logMediaValidation = (
       status: payload.status,
       queryPreview: shorten(payload.query, 120),
       provider: payload.provider,
+      source: payload.source,
       candidateIndex: payload.candidateIndex,
       imageUrlPreview: shorten(payload.imageUrl, 180),
       reason: payload.reason,
@@ -173,211 +438,6 @@ const logMediaValidation = (
           ? "media candidate rejected"
           : "media download failure"
   );
-};
-
-const fetchJson = async <T>(input: {
-  url: string;
-  timeoutMs: number;
-  fetchImpl: FetchLike;
-}): Promise<T> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.timeoutMs);
-  try {
-    const response = await input.fetchImpl(input.url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "zappy-assistant/1.5 (+image-search)"
-      },
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      throw new Error(`http_${response.status}`);
-    }
-    return (await response.json()) as T;
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-const tokenize = (value: string): string[] =>
-  value
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
-    .split(/\s+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
-
-const countTokenMatches = (tokens: string[], text: string): number => {
-  if (!tokens.length || !text) return 0;
-  const lower = text.toLowerCase();
-  let score = 0;
-  for (const token of tokens) {
-    if (lower.includes(token)) score += 1;
-  }
-  return score;
-};
-
-const isLikelyImageUrl = (value: string): boolean => {
-  try {
-    const url = new URL(value);
-    if (!/^https?:$/i.test(url.protocol)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const imageExtensionPenalty = (url: string): number => {
-  const lower = url.toLowerCase();
-  if (lower.endsWith(".svg") || lower.includes("format=svg")) return -3;
-  if (lower.endsWith(".gif") || lower.includes("format=gif")) return -1;
-  return 0;
-};
-
-const rankAndFilterImageResults = (input: { query: string; items: ImageSearchResultItem[]; limit: number }): ImageSearchResultItem[] => {
-  const query = input.query.trim().toLowerCase();
-  const tokens = tokenize(query);
-  const seenImageUrls = new Set<string>();
-
-  const scored = input.items
-    .map((item) => {
-      const title = item.title.trim();
-      const imageUrl = item.imageUrl?.trim() || "";
-      const link = item.link.trim();
-
-      if (!title || !imageUrl || !link) return null;
-      if (!isLikelyImageUrl(imageUrl)) return null;
-
-      const imageKey = imageUrl.toLowerCase();
-      if (seenImageUrls.has(imageKey)) return null;
-      seenImageUrls.add(imageKey);
-
-      const titleMatches = countTokenMatches(tokens, title);
-      const imageMatches = countTokenMatches(tokens, imageUrl);
-      const linkMatches = countTokenMatches(tokens, link);
-      const fullQueryHit = query.length >= 4 && (title.toLowerCase().includes(query) || link.toLowerCase().includes(query));
-
-      let score = 0;
-      score += fullQueryHit ? 6 : 0;
-      score += titleMatches * 2.8;
-      score += linkMatches * 1.4;
-      score += imageMatches * 1.2;
-      score += imageExtensionPenalty(imageUrl);
-      if (title.length < 6) score -= 1;
-
-      return {
-        item: {
-          title,
-          imageUrl,
-          link
-        } as ImageSearchResultItem,
-        score,
-        relevance: titleMatches + imageMatches + linkMatches
-      };
-    })
-    .filter((value): value is { item: ImageSearchResultItem; score: number; relevance: number } => Boolean(value));
-
-  const filtered = scored.filter((entry) => (tokens.length === 0 ? true : entry.relevance > 0));
-  const pool = filtered.length > 0 ? filtered : scored;
-
-  return pool
-    .sort((a, b) => b.score - a.score)
-    .slice(0, input.limit)
-    .map((entry) => entry.item);
-};
-
-const googleImageSearch = async (input: {
-  apiKey: string;
-  cx: string;
-  query: string;
-  limit: number;
-  timeoutMs: number;
-  fetchImpl: FetchLike;
-}): Promise<{ results: ImageSearchResultItem[]; correctedQuery?: string }> => {
-  const runGoogleQuery = async (query: string) => {
-    const url = new URL("https://www.googleapis.com/customsearch/v1");
-    url.searchParams.set("key", input.apiKey);
-    url.searchParams.set("cx", input.cx);
-    url.searchParams.set("q", query);
-    url.searchParams.set("searchType", "image");
-    url.searchParams.set("safe", "active");
-    url.searchParams.set("num", String(Math.min(10, Math.max(1, input.limit))));
-
-    const payload = await fetchJson<{
-      items?: Array<{ title?: string; link?: string; image?: { contextLink?: string } }>;
-      spelling?: { correctedQuery?: string };
-    }>({
-      url: url.toString(),
-      timeoutMs: input.timeoutMs,
-      fetchImpl: input.fetchImpl
-    });
-
-    const mapped = (payload.items ?? [])
-      .filter((item) => item && item.title && item.link)
-      .map((item) => ({
-        title: String(item.title),
-        imageUrl: String(item.link),
-        link: item.image?.contextLink ? String(item.image.contextLink) : String(item.link)
-      }));
-
-    return {
-      correctedQuery: normalizeOptional(payload.spelling?.correctedQuery),
-      results: rankAndFilterImageResults({ query, items: mapped, limit: input.limit })
-    };
-  };
-
-  const first = await runGoogleQuery(input.query);
-  const suggested = first.correctedQuery;
-  if (first.results.length > 0 || !suggested || suggested.toLowerCase() === input.query.toLowerCase()) {
-    return { results: first.results };
-  }
-
-  const retried = await runGoogleQuery(suggested);
-  return { results: retried.results, correctedQuery: suggested };
-};
-
-const wikimediaImageSearch = async (input: {
-  query: string;
-  limit: number;
-  timeoutMs: number;
-  fetchImpl: FetchLike;
-}): Promise<ImageSearchResultItem[]> => {
-  const url = new URL("https://commons.wikimedia.org/w/api.php");
-  url.searchParams.set("action", "query");
-  url.searchParams.set("format", "json");
-  url.searchParams.set("origin", "*");
-  url.searchParams.set("generator", "search");
-  url.searchParams.set("gsrsearch", input.query);
-  url.searchParams.set("gsrnamespace", "6");
-  url.searchParams.set("gsrlimit", String(Math.min(10, Math.max(1, input.limit))));
-  url.searchParams.set("prop", "imageinfo");
-  url.searchParams.set("iiprop", "url");
-
-  const payload = await fetchJson<{
-    query?: {
-      pages?: Record<string, { title?: string; imageinfo?: Array<{ url?: string; descriptionurl?: string }> }>;
-    };
-  }>({
-    url: url.toString(),
-    timeoutMs: input.timeoutMs,
-    fetchImpl: input.fetchImpl
-  });
-
-  const pages = payload.query?.pages ?? {};
-  const mapped = Object.values(pages)
-    .map((page) => {
-      const imageInfo = page.imageinfo?.[0];
-      if (!imageInfo?.url) return null;
-      return {
-        title: page.title ?? "Imagem",
-        imageUrl: imageInfo.url,
-        link: imageInfo.descriptionurl ?? imageInfo.url
-      } as ImageSearchResultItem;
-    })
-    .filter((item): item is ImageSearchResultItem => Boolean(item));
-
-  return rankAndFilterImageResults({ query: input.query, items: mapped, limit: input.limit });
 };
 
 const downloadCandidateImage = async (input: {
@@ -399,7 +459,7 @@ const downloadCandidateImage = async (input: {
       redirect: "follow",
       headers: {
         Accept: "image/*,*/*;q=0.8",
-        "User-Agent": "zappy-assistant/1.5 (+image-search-delivery)"
+        "User-Agent": "zappy-assistant/1.6 (+image-search-delivery)"
       },
       signal: controller.signal
     });
@@ -504,41 +564,158 @@ const downloadCandidateImage = async (input: {
   }
 };
 
+let sharpLoader: Promise<((input: Buffer | Uint8Array) => any) | null> | null = null;
+const loadSharp = async (): Promise<((input: Buffer | Uint8Array) => any) | null> => {
+  if (!sharpLoader) {
+    sharpLoader = import("sharp")
+      .then((module) => module.default)
+      .catch(() => null);
+  }
+  return sharpLoader;
+};
+
+const normalizeImageForDelivery = async (input: {
+  buffer: Buffer;
+  mimeType: string;
+  maxBytes: number;
+  config: {
+    enabled: boolean;
+    maxDimension: number;
+    jpegQuality: number;
+    triggerBytes: number;
+  };
+}): Promise<{ buffer: Buffer; mimeType: string; byteLength: number; normalized: boolean }> => {
+  const normalizedMime = normalizeMimeType(input.mimeType);
+  const mustNormalize =
+    input.config.enabled &&
+    (!normalizedMime ||
+      !["image/jpeg", "image/png"].includes(normalizedMime) ||
+      input.buffer.length > input.config.triggerBytes ||
+      /^image\/(heic|heif|avif|tiff|bmp|gif|webp)$/i.test(normalizedMime));
+
+  if (!mustNormalize) {
+    return {
+      buffer: input.buffer,
+      mimeType: normalizedMime || "image/jpeg",
+      byteLength: input.buffer.length,
+      normalized: false
+    };
+  }
+
+  const sharp = await loadSharp();
+  if (!sharp) {
+    return {
+      buffer: input.buffer,
+      mimeType: normalizedMime || "image/jpeg",
+      byteLength: input.buffer.length,
+      normalized: false
+    };
+  }
+
+  try {
+    const base = sharp(input.buffer).rotate();
+    const metadata = await base.metadata();
+    const hasAlpha = Boolean(metadata.hasAlpha);
+
+    let transformed = sharp(input.buffer)
+      .rotate()
+      .resize({
+        width: input.config.maxDimension,
+        height: input.config.maxDimension,
+        fit: "inside",
+        withoutEnlargement: true
+      });
+
+    let output: Buffer;
+    let outputMimeType: string;
+
+    if (hasAlpha) {
+      output = await transformed.png({ compressionLevel: 9 }).toBuffer();
+      outputMimeType = "image/png";
+    } else {
+      output = await transformed.jpeg({ quality: input.config.jpegQuality, mozjpeg: true }).toBuffer();
+      outputMimeType = "image/jpeg";
+
+      if (output.length > input.maxBytes) {
+        const smaller = Math.max(1_024, Math.trunc(input.config.maxDimension * 0.82));
+        transformed = sharp(input.buffer)
+          .rotate()
+          .resize({
+            width: smaller,
+            height: smaller,
+            fit: "inside",
+            withoutEnlargement: true
+          });
+        output = await transformed.jpeg({ quality: Math.max(62, input.config.jpegQuality - 18), mozjpeg: true }).toBuffer();
+      }
+    }
+
+    if (!output.length) {
+      return {
+        buffer: input.buffer,
+        mimeType: normalizedMime || "image/jpeg",
+        byteLength: input.buffer.length,
+        normalized: false
+      };
+    }
+
+    return {
+      buffer: output,
+      mimeType: outputMimeType,
+      byteLength: output.length,
+      normalized: true
+    };
+  } catch {
+    return {
+      buffer: input.buffer,
+      mimeType: normalizedMime || "image/jpeg",
+      byteLength: input.buffer.length,
+      normalized: false
+    };
+  }
+};
+
 const validateCandidatePool = async (input: {
   query: string;
   provider?: string;
-  items: ImageSearchResultItem[];
+  items: NormalizedImageCandidate[];
   fetchImpl: FetchLike;
   timeoutMs: number;
   maxBytes: number;
   minBytes: number;
   maxCandidates: number;
   logger?: LoggerPort;
-}) => {
-  const diagnostics: Array<{
-    title: string;
-    link: string;
-    imageUrl: string;
-    candidateIndex: number;
-    status: "accepted" | "rejected";
-    reason: string;
-    httpStatus?: number;
-    mimeType?: string;
-    byteLength?: number;
-  }> = [];
+  normalization: {
+    enabled: boolean;
+    maxDimension: number;
+    jpegQuality: number;
+    triggerBytes: number;
+  };
+  skipImageKeys?: Set<string>;
+}): Promise<ValidatedCandidatePool> => {
+  const diagnostics: CandidateDiagnostic[] = [];
+  const candidates = input.items.slice(0, input.maxCandidates);
+  const triedImageKeys = new Set<string>();
+  const skipped = input.skipImageKeys ?? new Set<string>();
 
-  const candidates = input.items.filter((item) => Boolean(item.imageUrl)).slice(0, input.maxCandidates);
+  let processedCandidates = 0;
 
-  for (let index = 0; index < candidates.length; index += 1) {
-    const candidate = candidates[index]!;
-    const imageUrl = candidate.imageUrl!.trim();
-    const candidateIndex = index + 1;
+  for (const candidate of candidates) {
+    const imageUrl = candidate.imageUrl.trim();
+    const key = canonicalImageUrl(imageUrl);
+    if (skipped.has(key)) continue;
+    if (triedImageKeys.has(key)) continue;
+
+    triedImageKeys.add(key);
+    processedCandidates += 1;
+    const candidateIndex = processedCandidates;
     const startedAt = Date.now();
 
     logMediaValidation(input.logger, {
       status: "started",
       query: input.query,
       provider: input.provider,
+      source: candidate.source,
       candidateIndex,
       imageUrl
     });
@@ -555,8 +732,10 @@ const validateCandidatePool = async (input: {
 
     if (!downloaded.ok) {
       diagnostics.push({
+        source: candidate.source,
         title: candidate.title,
         link: candidate.link,
+        pageUrl: candidate.pageUrl,
         imageUrl,
         candidateIndex,
         status: "rejected",
@@ -570,6 +749,7 @@ const validateCandidatePool = async (input: {
         status: downloaded.reason === "network_error" || downloaded.reason === "timeout" ? "failure" : "rejected",
         query: input.query,
         provider: input.provider,
+        source: candidate.source,
         candidateIndex,
         imageUrl,
         reason: downloaded.reason,
@@ -581,54 +761,149 @@ const validateCandidatePool = async (input: {
       continue;
     }
 
+    const normalized = await normalizeImageForDelivery({
+      buffer: downloaded.buffer,
+      mimeType: downloaded.mimeType,
+      maxBytes: input.maxBytes,
+      config: input.normalization
+    });
+
+    if (normalized.byteLength < input.minBytes) {
+      diagnostics.push({
+        source: candidate.source,
+        title: candidate.title,
+        link: candidate.link,
+        pageUrl: candidate.pageUrl,
+        imageUrl,
+        candidateIndex,
+        status: "rejected",
+        reason: "normalized_body_too_small",
+        httpStatus: downloaded.httpStatus,
+        mimeType: normalized.mimeType,
+        byteLength: normalized.byteLength
+      });
+      logMediaValidation(input.logger, {
+        status: "rejected",
+        query: input.query,
+        provider: input.provider,
+        source: candidate.source,
+        candidateIndex,
+        imageUrl,
+        reason: "normalized_body_too_small",
+        httpStatus: downloaded.httpStatus,
+        mimeType: normalized.mimeType,
+        byteLength: normalized.byteLength,
+        elapsedMs
+      });
+      continue;
+    }
+
+    if (normalized.byteLength > input.maxBytes) {
+      diagnostics.push({
+        source: candidate.source,
+        title: candidate.title,
+        link: candidate.link,
+        pageUrl: candidate.pageUrl,
+        imageUrl,
+        candidateIndex,
+        status: "rejected",
+        reason: "normalized_payload_too_large",
+        httpStatus: downloaded.httpStatus,
+        mimeType: normalized.mimeType,
+        byteLength: normalized.byteLength
+      });
+      logMediaValidation(input.logger, {
+        status: "rejected",
+        query: input.query,
+        provider: input.provider,
+        source: candidate.source,
+        candidateIndex,
+        imageUrl,
+        reason: "normalized_payload_too_large",
+        httpStatus: downloaded.httpStatus,
+        mimeType: normalized.mimeType,
+        byteLength: normalized.byteLength,
+        elapsedMs
+      });
+      continue;
+    }
+
+    const acceptanceReason = normalized.normalized ? "ok_normalized" : "ok";
     diagnostics.push({
+      source: candidate.source,
       title: candidate.title,
       link: candidate.link,
+      pageUrl: candidate.pageUrl,
       imageUrl,
       candidateIndex,
       status: "accepted",
-      reason: "ok",
+      reason: acceptanceReason,
       httpStatus: downloaded.httpStatus,
-      mimeType: downloaded.mimeType,
-      byteLength: downloaded.byteLength
+      mimeType: normalized.mimeType,
+      byteLength: normalized.byteLength
     });
 
     logMediaValidation(input.logger, {
       status: "success",
       query: input.query,
       provider: input.provider,
+      source: candidate.source,
       candidateIndex,
       imageUrl,
-      reason: "ok",
+      reason: acceptanceReason,
       httpStatus: downloaded.httpStatus,
-      mimeType: downloaded.mimeType,
-      byteLength: downloaded.byteLength,
+      mimeType: normalized.mimeType,
+      byteLength: normalized.byteLength,
       elapsedMs
     });
 
     return {
       deliverableImage: {
+        source: candidate.source,
         title: candidate.title,
         link: candidate.link,
+        pageUrl: candidate.pageUrl,
         imageUrl,
-        imageBase64: downloaded.buffer.toString("base64"),
-        mimeType: downloaded.mimeType,
-        byteLength: downloaded.byteLength,
+        thumbnailUrl: candidate.thumbnailUrl,
+        imageBase64: normalized.buffer.toString("base64"),
+        mimeType: normalized.mimeType,
+        attribution: candidate.attribution,
+        providerConfidence: candidate.providerConfidence,
+        licenseInfo: candidate.licenseInfo,
+        byteLength: normalized.byteLength,
         candidateIndex
       },
-      candidateDiagnostics: diagnostics
+      candidateDiagnostics: diagnostics,
+      triedImageKeys
     };
   }
 
   return {
     deliverableImage: undefined,
-    candidateDiagnostics: diagnostics
+    candidateDiagnostics: diagnostics,
+    triedImageKeys
   };
+};
+
+const resolveNativeOrder = (preferredProvider: ImageSearchPreferredProvider): ImageProviderSource[] => {
+  if (preferredProvider === "native" || preferredProvider === "google") return [...NATIVE_PROVIDER_ORDER];
+  const preferred = preferredProvider as ImageProviderSource;
+  if (!NATIVE_PROVIDER_ORDER.includes(preferred)) return [...NATIVE_PROVIDER_ORDER];
+
+  return [preferred, ...NATIVE_PROVIDER_ORDER.filter((source) => source !== preferred)];
+};
+
+const sanitizeProviderError = (error: unknown): string => {
+  if (!(error instanceof Error)) return "unknown_error";
+  const text = error.message.replace(/\s+/g, " ").trim();
+  return text || "unknown_error";
 };
 
 export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageSearchPort => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl = input.fetchImpl ?? fetch;
+  const preferredProvider = normalizePreferredProvider(input.preferredProvider);
+
   const mediaValidationTimeoutMs = clampInt(input.mediaValidationTimeoutMs ?? DEFAULT_MEDIA_VALIDATION_TIMEOUT_MS, 1_000, 20_000);
   const mediaValidationMaxBytes = clampInt(input.mediaValidationMaxBytes ?? DEFAULT_MEDIA_VALIDATION_MAX_BYTES, 64_000, 16 * 1024 * 1024);
   const mediaValidationMinBytes = clampInt(
@@ -636,154 +911,198 @@ export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageS
     1,
     Math.max(1, mediaValidationMaxBytes)
   );
-  const mediaValidationCandidates = clampInt(input.mediaValidationCandidates ?? DEFAULT_MEDIA_VALIDATION_CANDIDATES, 1, 10);
-  const googleApiKey = normalizeOptional(input.googleApiKey);
-  const googleEngineId = resolveGoogleEngineId(input);
-  const hasGoogleConfig = Boolean(googleApiKey && googleEngineId);
+  const mediaValidationCandidates = clampInt(input.mediaValidationCandidates ?? DEFAULT_MEDIA_VALIDATION_CANDIDATES, 1, 12);
+
+  const mediaNormalizationConfig = {
+    enabled: input.mediaNormalizationEnabled ?? DEFAULT_MEDIA_NORMALIZATION_ENABLED,
+    maxDimension: clampInt(input.mediaNormalizationMaxDimension ?? DEFAULT_MEDIA_NORMALIZATION_MAX_DIMENSION, 256, 4_096),
+    jpegQuality: clampInt(input.mediaNormalizationJpegQuality ?? DEFAULT_MEDIA_NORMALIZATION_JPEG_QUALITY, 45, 95),
+    triggerBytes: clampInt(input.mediaNormalizationTriggerBytes ?? DEFAULT_MEDIA_NORMALIZATION_TRIGGER_BYTES, 64_000, mediaValidationMaxBytes)
+  };
+
+  const googleEngineId = resolveGoogleEngineId({
+    googleSearchEngineId: input.googleSearchEngineId,
+    googleCx: input.googleCx
+  });
+
+  const providers: Record<ImageProviderSource, ImageProviderAdapter> = {
+    wikimedia: createWikimediaImageProvider(),
+    openverse: createOpenverseImageProvider({ apiBaseUrl: input.openverseApiBaseUrl }),
+    pixabay: createPixabayImageProvider({ apiKey: input.pixabayApiKey }),
+    pexels: createPexelsImageProvider({ apiKey: input.pexelsApiKey }),
+    unsplash: createUnsplashImageProvider({ accessKey: input.unsplashAccessKey }),
+    google_cse: createGoogleCseImageProvider({ apiKey: input.googleApiKey, cx: googleEngineId })
+  };
+
+  const searchProviderSafely = async (provider: ImageProviderAdapter, payload: { query: string; limit: number; locale?: string }) => {
+    if (!provider.isConfigured()) {
+      return {
+        source: provider.source,
+        configured: false,
+        results: [] as ImageSearchResultItem[],
+        correctedQuery: undefined as string | undefined,
+        error: undefined as string | undefined
+      };
+    }
+
+    try {
+      const result = await provider.search({
+        query: payload.query,
+        limit: payload.limit,
+        locale: payload.locale,
+        timeoutMs,
+        fetchImpl
+      });
+
+      return {
+        source: provider.source,
+        configured: true,
+        results: result.results,
+        correctedQuery: result.correctedQuery,
+        error: undefined as string | undefined
+      };
+    } catch (error) {
+      const reason = sanitizeProviderError(error);
+      input.logger?.debug?.(
+        {
+          capability: "image-search",
+          action: "provider_search",
+          status: "failure",
+          source: provider.source,
+          reason,
+          queryPreview: shorten(payload.query, 120)
+        },
+        "image provider search failed"
+      );
+      return {
+        source: provider.source,
+        configured: true,
+        results: [] as ImageSearchResultItem[],
+        correctedQuery: undefined as string | undefined,
+        error: reason
+      };
+    }
+  };
 
   return {
-    search: async ({ query, limit }) => {
-      const preferred = input.preferredProvider ?? "google";
+    search: async ({ query, limit, locale }) => {
       const requestedLimit = clampInt(limit, 1, 8);
-      const providerLimit = Math.max(requestedLimit, mediaValidationCandidates);
+      const providerLimit = Math.max(requestedLimit + 2, mediaValidationCandidates, 4);
 
-      const runGoogle = async () => {
-        if (!hasGoogleConfig) return { results: [], correctedQuery: undefined as string | undefined };
-        return googleImageSearch({
-          apiKey: googleApiKey!,
-          cx: googleEngineId!,
-          query,
-          limit: providerLimit,
-          timeoutMs,
-          fetchImpl
-        });
-      };
+      const nativeOrder = resolveNativeOrder(preferredProvider);
+      const nativeRuns = await Promise.all(
+        nativeOrder.map((source) => searchProviderSafely(providers[source], { query, limit: providerLimit, locale }))
+      );
 
-      const withValidatedDelivery = async (payload: {
-        provider: string;
-        requestedProvider: "google" | "wikimedia";
-        results: ImageSearchResultItem[];
-        fallbackUsed?: boolean;
-        fallbackReason?: string;
-        correctedQuery?: string;
-      }) => {
-        const normalizedResults = payload.results.slice(0, providerLimit);
-        const validated = await validateCandidatePool({
-          query,
-          provider: payload.provider,
-          items: normalizedResults,
-          fetchImpl,
-          timeoutMs: mediaValidationTimeoutMs,
-          maxBytes: mediaValidationMaxBytes,
-          minBytes: mediaValidationMinBytes,
-          maxCandidates: Math.max(requestedLimit, mediaValidationCandidates),
-          logger: input.logger
-        });
+      const nativeItems = nativeRuns.flatMap((entry) => entry.results);
+      const rankedNative = rankAndFilterImageResults({ query, items: nativeItems, limit: providerLimit * 2 });
 
+      const nativeValidation = await validateCandidatePool({
+        query,
+        provider: "native",
+        items: rankedNative,
+        fetchImpl,
+        timeoutMs: mediaValidationTimeoutMs,
+        maxBytes: mediaValidationMaxBytes,
+        minBytes: mediaValidationMinBytes,
+        maxCandidates: Math.max(requestedLimit, mediaValidationCandidates),
+        logger: input.logger,
+        normalization: mediaNormalizationConfig
+      });
+
+      if (nativeValidation.deliverableImage) {
         return {
-          provider: payload.provider,
-          requestedProvider: payload.requestedProvider,
-          fallbackUsed: payload.fallbackUsed,
-          fallbackReason: payload.fallbackReason,
-          correctedQuery: payload.correctedQuery,
-          results: normalizedResults,
-          deliverableImage: validated.deliverableImage,
-          candidateDiagnostics: validated.candidateDiagnostics
+          provider: nativeValidation.deliverableImage.source,
+          requestedProvider: preferredProvider,
+          fallbackUsed: false,
+          results: rankedNative,
+          deliverableImage: nativeValidation.deliverableImage,
+          candidateDiagnostics: nativeValidation.candidateDiagnostics
         };
-      };
+      }
 
+      const googleProvider = providers.google_cse;
+      const hasGoogleFallback = googleProvider.isConfigured();
       let fallbackUsed = false;
       let fallbackReason: string | undefined;
       let correctedQuery: string | undefined;
+      let mergedResults = rankedNative;
+      const diagnostics = [...nativeValidation.candidateDiagnostics];
 
-      if (preferred === "google") {
-        if (!hasGoogleConfig) {
-          fallbackUsed = true;
-          fallbackReason = "google_not_configured";
-        } else {
-          try {
-            const googleResults = await runGoogle();
-            correctedQuery = googleResults.correctedQuery;
-            if (googleResults.results.length > 0) {
-              return withValidatedDelivery({
-                provider: "google_cse",
-                requestedProvider: "google",
-                fallbackUsed: false,
-                correctedQuery,
-                results: googleResults.results
-              });
-            }
-            fallbackUsed = true;
-            fallbackReason = "google_no_results";
-          } catch {
-            fallbackUsed = true;
-            fallbackReason = "google_error";
-          }
-        }
-        const wikiResults = await wikimediaImageSearch({ query, limit: providerLimit, timeoutMs, fetchImpl });
-        if (wikiResults.length > 0) {
-          return withValidatedDelivery({
-            provider: "wikimedia",
-            requestedProvider: "google",
-            fallbackUsed,
-            fallbackReason,
-            correctedQuery,
-            results: wikiResults
-          });
-        }
-        return {
-          provider: hasGoogleConfig ? "google_cse+wikimedia" : "wikimedia",
-          requestedProvider: "google",
-          fallbackUsed,
-          fallbackReason,
-          correctedQuery,
-          results: [],
-          deliverableImage: undefined,
-          candidateDiagnostics: []
-        };
-      }
+      if (hasGoogleFallback) {
+        fallbackUsed = true;
+        fallbackReason = rankedNative.length > 0 ? "native_no_deliverable" : "native_no_results";
 
-      const wikiResults = await wikimediaImageSearch({ query, limit: providerLimit, timeoutMs, fetchImpl });
-      if (wikiResults.length > 0) {
-        return withValidatedDelivery({
-          provider: "wikimedia",
-          requestedProvider: "wikimedia",
-          fallbackUsed: false,
-          results: wikiResults
+        const googleRun = await searchProviderSafely(googleProvider, { query, limit: providerLimit, locale });
+        correctedQuery = googleRun.correctedQuery;
+
+        const rankedGoogle = rankAndFilterImageResults({
+          query: correctedQuery && correctedQuery.trim() ? correctedQuery : query,
+          items: googleRun.results,
+          limit: providerLimit * 2
         });
-      }
 
-      fallbackUsed = true;
-      fallbackReason = "wikimedia_no_results";
+        if (rankedGoogle.length > 0) {
+          mergedResults = rankAndFilterImageResults({
+            query,
+            items: [...rankedNative, ...rankedGoogle],
+            limit: providerLimit * 2
+          });
 
-      if (hasGoogleConfig) {
-        try {
-          const googleResults = await runGoogle();
-          correctedQuery = googleResults.correctedQuery;
-          if (googleResults.results.length > 0) {
-            return withValidatedDelivery({
-              provider: "google_cse",
-              requestedProvider: "wikimedia",
+          const googleValidation = await validateCandidatePool({
+            query,
+            provider: "google_fallback",
+            items: rankedGoogle,
+            fetchImpl,
+            timeoutMs: mediaValidationTimeoutMs,
+            maxBytes: mediaValidationMaxBytes,
+            minBytes: mediaValidationMinBytes,
+            maxCandidates: Math.max(requestedLimit, mediaValidationCandidates),
+            logger: input.logger,
+            normalization: mediaNormalizationConfig,
+            skipImageKeys: nativeValidation.triedImageKeys
+          });
+
+          diagnostics.push(...googleValidation.candidateDiagnostics);
+
+          if (googleValidation.deliverableImage) {
+            return {
+              provider: googleValidation.deliverableImage.source,
+              requestedProvider: preferredProvider,
               fallbackUsed,
               fallbackReason,
               correctedQuery,
-              results: googleResults.results
-            });
+              results: mergedResults,
+              deliverableImage: googleValidation.deliverableImage,
+              candidateDiagnostics: diagnostics
+            };
           }
-        } catch {
-          fallbackReason = "wikimedia_no_results+google_error";
+
+          fallbackReason = `${fallbackReason}+google_no_deliverable`;
+        } else {
+          fallbackReason = `${fallbackReason}+google_no_results`;
         }
+
+        if (googleRun.error) {
+          fallbackReason = `${fallbackReason}+google_error`;
+        }
+      } else if (rankedNative.length === 0) {
+        fallbackReason = "native_no_results+google_not_configured";
+      } else {
+        fallbackReason = "native_no_deliverable+google_not_configured";
       }
 
+      const representativeSource = mergedResults[0]?.source ?? rankedNative[0]?.source;
+
       return {
-        provider: hasGoogleConfig ? "wikimedia+google_cse" : "wikimedia",
-        requestedProvider: "wikimedia",
+        provider: representativeSource ?? (hasGoogleFallback ? "native+google_cse" : "native"),
+        requestedProvider: preferredProvider,
         fallbackUsed,
         fallbackReason,
         correctedQuery,
-        results: [],
+        results: mergedResults,
         deliverableImage: undefined,
-        candidateDiagnostics: []
+        candidateDiagnostics: diagnostics
       };
     }
   };

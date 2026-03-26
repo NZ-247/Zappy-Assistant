@@ -138,8 +138,16 @@ const imageSearchAdapter = env.IMAGE_SEARCH_ENABLED
       googleApiKey: env.GOOGLE_SEARCH_API_KEY,
       googleSearchEngineId,
       googleCx: env.GOOGLE_SEARCH_CX,
+      openverseApiBaseUrl: env.OPENVERSE_API_BASE_URL,
+      pixabayApiKey: env.PIXABAY_API_KEY,
+      pexelsApiKey: env.PEXELS_API_KEY,
+      unsplashAccessKey: env.UNSPLASH_ACCESS_KEY,
       timeoutMs: env.SEARCH_TIMEOUT_MS,
       preferredProvider: env.IMAGE_SEARCH_PROVIDER,
+      mediaNormalizationEnabled: env.IMAGE_SEARCH_MEDIA_NORMALIZE_ENABLED,
+      mediaNormalizationMaxDimension: env.IMAGE_SEARCH_MEDIA_NORMALIZE_MAX_DIMENSION,
+      mediaNormalizationJpegQuality: env.IMAGE_SEARCH_MEDIA_NORMALIZE_JPEG_QUALITY,
+      mediaNormalizationTriggerBytes: env.IMAGE_SEARCH_MEDIA_NORMALIZE_TRIGGER_BYTES,
       ...({ logger } as any)
     })
   : undefined;

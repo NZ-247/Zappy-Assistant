@@ -11,10 +11,14 @@ const jsonResponse = (payload: unknown, status = 200) =>
 const validJpegBuffer = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xdb]), Buffer.alloc(700, 1)]);
 
 test("image candidate validation skips first failed candidate and selects next", async () => {
+  const openverseStubUrl = "https://openverse.local/v1/images/";
   const fetchCalls: string[] = [];
   const fetchImpl = async (input: string | URL): Promise<Response> => {
     const url = String(input);
     fetchCalls.push(url);
+    if (url.startsWith(openverseStubUrl)) {
+      return jsonResponse({ results: [] });
+    }
     if (url.startsWith("https://commons.wikimedia.org/w/api.php")) {
       return jsonResponse({
         query: {
@@ -48,6 +52,7 @@ test("image candidate validation skips first failed candidate and selects next",
 
   const adapter = createImageSearchAdapter({
     preferredProvider: "wikimedia",
+    openverseApiBaseUrl: openverseStubUrl,
     fetchImpl
   });
 
@@ -67,8 +72,12 @@ test("image candidate validation skips first failed candidate and selects next",
 });
 
 test("image candidate validation returns no deliverable when all candidates are invalid", async () => {
+  const openverseStubUrl = "https://openverse.local/v1/images/";
   const fetchImpl = async (input: string | URL): Promise<Response> => {
     const url = String(input);
+    if (url.startsWith(openverseStubUrl)) {
+      return jsonResponse({ results: [] });
+    }
     if (url.startsWith("https://commons.wikimedia.org/w/api.php")) {
       return jsonResponse({
         query: {
@@ -94,6 +103,7 @@ test("image candidate validation returns no deliverable when all candidates are 
 
   const adapter = createImageSearchAdapter({
     preferredProvider: "wikimedia",
+    openverseApiBaseUrl: openverseStubUrl,
     fetchImpl
   });
 

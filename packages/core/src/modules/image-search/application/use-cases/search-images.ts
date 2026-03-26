@@ -1,5 +1,5 @@
 import type { ResponseAction } from "../../../../pipeline/actions.js";
-import type { LoggerPort } from "../../../../pipeline/ports.js";
+import type { ImageLicenseInfo, LoggerPort } from "../../../../pipeline/ports.js";
 import type { ImageSearchPort } from "../../ports.js";
 import { isValidImageQuery, normalizeImageQuery } from "../../domain/image-search-query.js";
 
@@ -7,6 +7,8 @@ export interface ImageSearchUseCaseConfig {
   enabled: boolean;
   maxResults: number;
 }
+
+export type ImageSearchExecutionMode = "media" | "media_or_links";
 
 const clampResults = (value: number): number => {
   if (!Number.isFinite(value)) return 3;
@@ -16,6 +18,89 @@ const clampResults = (value: number): number => {
 const shorten = (value: string, max = 140): string => (value.length <= max ? value : `${value.slice(0, max - 3)}...`);
 
 const normalizeInlineText = (value: string): string => value.replace(/\s+/g, " ").trim();
+
+const resolvePageUrl = (item: { pageUrl?: string; link?: string }): string => item.pageUrl?.trim() || item.link?.trim() || "";
+
+const SOURCE_LABELS: Record<string, string> = {
+  wikimedia: "Wikimedia Commons",
+  openverse: "Openverse",
+  pixabay: "Pixabay",
+  pexels: "Pexels",
+  unsplash: "Unsplash",
+  google_cse: "Google CSE"
+};
+
+const formatSourceLabel = (source?: string): string => {
+  if (!source) return "fonte desconhecida";
+  const normalized = source.trim().toLowerCase();
+  if (!normalized) return "fonte desconhecida";
+  return SOURCE_LABELS[normalized] ?? normalized;
+};
+
+const formatLicense = (license?: ImageLicenseInfo): string | null => {
+  if (!license) return null;
+  const name = normalizeInlineText(license.name ?? "");
+  const code = normalizeInlineText(license.code ?? "");
+  const version = normalizeInlineText(license.version ?? "");
+  const url = normalizeInlineText(license.url ?? "");
+
+  const base = [name || code, version].filter(Boolean).join(" ");
+  if (base && url) return `${base} (${url})`;
+  if (base) return base;
+  if (url) return url;
+  return null;
+};
+
+const buildStructuredLinksFallback = (input: {
+  query: string;
+  correctedQuery?: string;
+  results: Array<{
+    source?: string;
+    title: string;
+    link: string;
+    pageUrl?: string;
+    attribution?: string;
+    licenseInfo?: ImageLicenseInfo;
+  }>;
+}) => {
+  const candidates = input.results
+    .map((item) => ({
+      ...item,
+      page: resolvePageUrl(item)
+    }))
+    .filter((item) => Boolean(item.page))
+    .slice(0, 3);
+
+  if (candidates.length === 0) {
+    return IMAGE_FALLBACK_TEXT;
+  }
+
+  const lines = [
+    `Nao consegui enviar a imagem agora. Aqui vao 3 fontes uteis para: ${input.query}`,
+    ""
+  ];
+
+  candidates.forEach((item, index) => {
+    lines.push(`${index + 1}. ${shorten(item.title, 90)}`);
+    lines.push(item.page);
+    const details = [`Fonte: ${formatSourceLabel(item.source)}`];
+    if (item.attribution?.trim()) {
+      details.push(`Creditos: ${shorten(item.attribution.trim(), 70)}`);
+    }
+    const licenseLabel = formatLicense(item.licenseInfo);
+    if (licenseLabel) {
+      details.push(`Licenca: ${shorten(licenseLabel, 90)}`);
+    }
+    lines.push(details.join(" | "));
+    lines.push("");
+  });
+
+  if (input.correctedQuery && input.correctedQuery.toLowerCase() !== input.query.toLowerCase()) {
+    lines.push(`Consulta ajustada: ${input.correctedQuery}`);
+  }
+
+  return lines.join("\n").trim();
+};
 
 const sanitizeErrorMessage = (error: unknown): string => {
   if (!(error instanceof Error)) return "erro desconhecido";
@@ -73,8 +158,10 @@ const logCandidateDiagnostics = (
   logger: LoggerPort | undefined,
   query: string,
   diagnostics: Array<{
+    source?: string;
     title: string;
     link: string;
+    pageUrl?: string;
     imageUrl: string;
     candidateIndex: number;
     status: "accepted" | "rejected";
@@ -96,8 +183,9 @@ const logCandidateDiagnostics = (
         httpStatus: diagnostic.httpStatus,
         mimeType: diagnostic.mimeType,
         byteLength: diagnostic.byteLength,
+        source: diagnostic.source,
         titlePreview: shorten(diagnostic.title, 90),
-        sourcePreview: shorten(diagnostic.link, 120),
+        sourcePreview: shorten(resolvePageUrl(diagnostic) || diagnostic.link, 120),
         imageUrlPreview: shorten(diagnostic.imageUrl, 180)
       },
       diagnostic.status === "accepted" ? "image candidate selected" : "image candidate rejected"
@@ -109,6 +197,7 @@ export const executeImageSearch = async (input: {
   query: string;
   imageSearch?: ImageSearchPort;
   config: ImageSearchUseCaseConfig;
+  mode?: ImageSearchExecutionMode;
   stylizeReply?: (text: string) => string;
   logger?: LoggerPort;
 }): Promise<ResponseAction[]> => {
@@ -128,11 +217,15 @@ export const executeImageSearch = async (input: {
   }
 
   const limit = clampResults(input.config.maxResults);
+  const mode = input.mode ?? "media";
+  const allowLinkFallback = mode === "media_or_links";
 
   try {
     const result = await input.imageSearch.search({
       query: normalizedQuery,
-      limit
+      limit,
+      mode: allowLinkFallback ? "link_fallback" : "media",
+      strategy: "native_first"
     });
 
     if (!result.results.length) {
@@ -162,14 +255,22 @@ export const executeImageSearch = async (input: {
 
     if (deliverable?.imageBase64) {
       const secondary = selected.filter((item) => item.imageUrl !== deliverable.imageUrl).slice(0, 2);
+      const deliverablePageUrl = resolvePageUrl(deliverable);
       const captionLines = [
         `${shorten(deliverable.title, 90)}`,
-        `Fonte: ${deliverable.link}`
+        `Fonte (${formatSourceLabel(deliverable.source)}): ${deliverablePageUrl || deliverable.link}`
       ];
+      if (deliverable.attribution?.trim()) {
+        captionLines.push(`Creditos: ${shorten(deliverable.attribution.trim(), 80)}`);
+      }
+      const licenseLabel = formatLicense(deliverable.licenseInfo);
+      if (licenseLabel) {
+        captionLines.push(`Licenca: ${shorten(licenseLabel, 90)}`);
+      }
       if (secondary.length > 0) {
         captionLines.push("Mais resultados:");
         captionLines.push(
-          ...secondary.map((item, index) => `${index + 2}. ${shorten(item.title, 70)}\n${item.link}`)
+          ...secondary.map((item, index) => `${index + 2}. ${shorten(item.title, 70)}\n${resolvePageUrl(item) || item.link}`)
         );
       }
 
@@ -219,6 +320,16 @@ export const executeImageSearch = async (input: {
 
     if (!selected.length) {
       return replyText(`Nenhuma imagem encontrada para: ${normalizedQuery}`);
+    }
+
+    if (allowLinkFallback) {
+      return replyText(
+        buildStructuredLinksFallback({
+          query: normalizedQuery,
+          correctedQuery: result.correctedQuery,
+          results: selected
+        })
+      );
     }
 
     const correctionNote =

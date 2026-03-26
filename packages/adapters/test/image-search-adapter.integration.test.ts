@@ -35,6 +35,9 @@ const createRewritingFetch = (baseUrl: string) => {
     if (raw.startsWith("https://commons.wikimedia.org/w/api.php")) {
       return fetch(`${baseUrl}/wikimedia`, init);
     }
+    if (raw.startsWith("https://api.openverse.org/v1/images/")) {
+      return fetch(`${baseUrl}/openverse`, init);
+    }
     return fetch(raw.replace("https://test.local", baseUrl), init);
   };
 };
@@ -55,6 +58,11 @@ test("integration: adapter keeps flow stable when remote image returns 403", asy
           }
         })
       );
+      return;
+    }
+    if (req.url?.startsWith("/openverse")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ results: [] }));
       return;
     }
     if (req.url === "/forbidden.jpg") {
@@ -97,6 +105,11 @@ test("integration: adapter follows redirects and returns deliverable media", asy
           }
         })
       );
+      return;
+    }
+    if (req.url?.startsWith("/openverse")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ results: [] }));
       return;
     }
     if (req.url === "/redirect-image") {
@@ -144,6 +157,11 @@ test("integration: adapter rejects invalid content-type payloads", async () => {
           }
         })
       );
+      return;
+    }
+    if (req.url?.startsWith("/openverse")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ results: [] }));
       return;
     }
     if (req.url === "/html-response") {

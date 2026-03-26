@@ -208,25 +208,48 @@ export interface WebSearchResultItem {
   link: string;
 }
 
+export interface ImageLicenseInfo {
+  code?: string;
+  name?: string;
+  version?: string;
+  url?: string;
+  requiresAttribution?: boolean;
+}
+
 export interface ImageSearchResultItem {
+  source: string;
   title: string;
   link: string;
+  pageUrl?: string;
   imageUrl?: string;
+  thumbnailUrl?: string;
+  mimeType?: string;
+  attribution?: string;
+  providerConfidence?: number;
+  licenseInfo?: ImageLicenseInfo;
 }
 
 export interface ImageSearchDeliverable {
+  source: string;
   title: string;
   link: string;
+  pageUrl?: string;
   imageUrl: string;
+  thumbnailUrl?: string;
   imageBase64: string;
   mimeType: string;
+  attribution?: string;
+  providerConfidence?: number;
+  licenseInfo?: ImageLicenseInfo;
   byteLength: number;
   candidateIndex: number;
 }
 
 export interface ImageSearchCandidateDiagnostic {
+  source?: string;
   title: string;
   link: string;
+  pageUrl?: string;
   imageUrl: string;
   candidateIndex: number;
   status: "accepted" | "rejected";
@@ -257,6 +280,8 @@ export interface ImageSearchPort {
     query: string;
     limit: number;
     locale?: string;
+    mode?: "media" | "link_fallback";
+    strategy?: "native_first";
   }): Promise<{
     provider: string;
     results: ImageSearchResultItem[];

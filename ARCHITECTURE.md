@@ -171,7 +171,7 @@ Capabilities entregues neste padrão:
 - `packages/core/src/modules/tts` com parser compatível (`texto|destino|voz`) + opção explícita (`texto|origem|destino|voz`), tradução pré-síntese e saída em `reply_audio` com suporte a PTT
 - `packages/core/src/modules/web-search` com provider configurável, ranking/deduplicação e resposta textual legível (título/resumo/link)
 - `packages/core/src/modules/search-ai` dedicado à busca assistida por IA com internet e resposta resumida com fontes
-- `packages/core/src/modules/image-search` separado da busca textual, com priorização de relevância visual e suporte a `reply_image` quando aplicável
+- `packages/core/src/modules/image-search` separado da busca textual, com estratégia native-first (Wikimedia/Openverse/Pixabay/Pexels/Unsplash), fallback Google CSE apenas para descoberta e suporte a `/imglink` para fallback estruturado em links
 - `packages/core/src/modules/downloads` com camada comum de parsing/validação/roteamento e providers isolados por origem (`yt`, `ig`, `fb`, `direct`)
 - providers `yt/ig/fb` com bloqueio explícito por compliance, mantendo evolução segura sem acoplamento frágil
 

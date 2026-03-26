@@ -318,6 +318,15 @@ export const imageSearchCommands: CommandDefinition[] = [
     description: "Busca imagens na web.",
     usage: "img <termo da busca>",
     examples: ["img gatos persas", "gimage infraestrutura de redes"]
+  },
+  {
+    category: "tools",
+    name: "imglink",
+    scope: "both",
+    progressAck: true,
+    description: "Busca imagens e, se nao houver midia entregavel, retorna links confiaveis.",
+    usage: "imglink <termo da busca>",
+    examples: ["imglink Porsche 911 GT3RS", "imglink macarrao com queijo"]
   }
 ];
 
