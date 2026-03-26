@@ -10,7 +10,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --import tsx ./test/bot-alias.test.ts"
+    "test": "node --test --import tsx ./test/*.test.ts"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",

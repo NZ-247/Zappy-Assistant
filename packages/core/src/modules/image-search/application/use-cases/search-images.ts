@@ -24,29 +24,7 @@ const sanitizeErrorMessage = (error: unknown): string => {
   return message.length <= 140 ? message : `${message.slice(0, 137)}...`;
 };
 
-const isDirectImageCandidate = (value?: string): boolean => {
-  if (!value) return false;
-  try {
-    const url = new URL(value);
-    if (!/^https?:$/i.test(url.protocol)) return false;
-    const path = url.pathname.toLowerCase();
-    if (!path || path.endsWith("/")) return false;
-    if (/\.(jpg|jpeg|png|webp|gif|avif|bmp|heic)$/i.test(path)) return true;
-    if (/\.(html|htm|php|asp|aspx|jsp)$/i.test(path)) return false;
-    const formatHint = `${url.search}${url.hash}`.toLowerCase();
-    if (/(format|fm|ext|type)=(jpg|jpeg|png|webp|gif|avif|bmp|heic)/i.test(formatHint)) return true;
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const formatResult = (item: { title: string; link: string; imageUrl?: string }, index: number): string => {
-  const lines = [`${index + 1}. ${shorten(item.title, 110)}`];
-  if (item.imageUrl) lines.push(`   imagem: ${item.imageUrl}`);
-  lines.push(`   fonte: ${item.link}`);
-  return lines.join("\n");
-};
+const IMAGE_FALLBACK_TEXT = "Encontrei resultados, mas não consegui baixar uma imagem válida agora. Tente outro termo em instantes.";
 
 const logImageSearch = (
   logger: LoggerPort | undefined,
@@ -62,6 +40,9 @@ const logImageSearch = (
     resultsCount?: number;
     returnedImage?: boolean;
     directImageUrl?: string;
+    deliverableCandidateIndex?: number;
+    deliverableByteLength?: number;
+    rejectedCandidates?: number;
     reason?: string;
   }
 ) => {
@@ -79,10 +60,49 @@ const logImageSearch = (
       resultsCount: payload.resultsCount,
       returnedImage: payload.returnedImage,
       directImageUrl: payload.directImageUrl,
+      deliverableCandidateIndex: payload.deliverableCandidateIndex,
+      deliverableByteLength: payload.deliverableByteLength,
+      rejectedCandidates: payload.rejectedCandidates,
       reason: payload.reason
     },
     "image-search capability"
   );
+};
+
+const logCandidateDiagnostics = (
+  logger: LoggerPort | undefined,
+  query: string,
+  diagnostics: Array<{
+    title: string;
+    link: string;
+    imageUrl: string;
+    candidateIndex: number;
+    status: "accepted" | "rejected";
+    reason: string;
+    httpStatus?: number;
+    mimeType?: string;
+    byteLength?: number;
+  }>
+) => {
+  for (const diagnostic of diagnostics) {
+    logger?.info?.(
+      {
+        capability: "image-search",
+        action: "media_candidate",
+        queryPreview: shorten(query, 120),
+        candidateIndex: diagnostic.candidateIndex,
+        status: diagnostic.status,
+        reason: diagnostic.reason,
+        httpStatus: diagnostic.httpStatus,
+        mimeType: diagnostic.mimeType,
+        byteLength: diagnostic.byteLength,
+        titlePreview: shorten(diagnostic.title, 90),
+        sourcePreview: shorten(diagnostic.link, 120),
+        imageUrlPreview: shorten(diagnostic.imageUrl, 180)
+      },
+      diagnostic.status === "accepted" ? "image candidate selected" : "image candidate rejected"
+    );
+  }
 };
 
 export const executeImageSearch = async (input: {
@@ -135,14 +155,16 @@ export const executeImageSearch = async (input: {
       return replyText(`Nenhuma imagem encontrada para: ${normalizedQuery}${maybeCorrected}`);
     }
 
-    const selected = result.results.slice(0, limit);
-    const primary = selected.find((item) => isDirectImageCandidate(item.imageUrl));
+    logCandidateDiagnostics(input.logger, normalizedQuery, result.candidateDiagnostics ?? []);
 
-    if (primary?.imageUrl) {
-      const secondary = selected.filter((item) => item !== primary).slice(0, 2);
+    const selected = result.results.slice(0, limit);
+    const deliverable = result.deliverableImage;
+
+    if (deliverable?.imageBase64) {
+      const secondary = selected.filter((item) => item.imageUrl !== deliverable.imageUrl).slice(0, 2);
       const captionLines = [
-        `${shorten(primary.title, 90)}`,
-        `Fonte: ${primary.link}`
+        `${shorten(deliverable.title, 90)}`,
+        `Fonte: ${deliverable.link}`
       ];
       if (secondary.length > 0) {
         captionLines.push("Mais resultados:");
@@ -162,22 +184,23 @@ export const executeImageSearch = async (input: {
         correctedQuery: result.correctedQuery,
         resultsCount: selected.length,
         returnedImage: true,
-        directImageUrl: shorten(primary.imageUrl, 180)
+        directImageUrl: shorten(deliverable.imageUrl, 180),
+        deliverableCandidateIndex: deliverable.candidateIndex,
+        deliverableByteLength: deliverable.byteLength,
+        rejectedCandidates: (result.candidateDiagnostics ?? []).filter((entry) => entry.status === "rejected").length
       });
 
       return [
         {
           kind: "reply_image",
-          imageUrl: primary.imageUrl,
-          caption: captionLines.join("\n")
+          imageUrl: deliverable.imageUrl,
+          imageBase64: deliverable.imageBase64,
+          mimeType: deliverable.mimeType,
+          caption: captionLines.join("\n"),
+          fallbackText: IMAGE_FALLBACK_TEXT
         }
       ];
     }
-
-    const textualFallback = [
-      `Encontrei resultados para "${normalizedQuery}", mas sem uma imagem direta confiável para envio agora.`,
-      ...selected.slice(0, 3).map((item, index) => formatResult(item, index))
-    ];
 
     logImageSearch(input.logger, {
       action: "image_search",
@@ -189,10 +212,20 @@ export const executeImageSearch = async (input: {
       fallbackReason: result.fallbackReason,
       correctedQuery: result.correctedQuery,
       resultsCount: selected.length,
-      returnedImage: false
+      returnedImage: false,
+      rejectedCandidates: (result.candidateDiagnostics ?? []).filter((entry) => entry.status === "rejected").length,
+      reason: selected.length > 0 ? "no_valid_media_candidate" : "no_search_results"
     });
 
-    return [{ kind: "reply_text", text: textualFallback.join("\n") }];
+    if (!selected.length) {
+      return replyText(`Nenhuma imagem encontrada para: ${normalizedQuery}`);
+    }
+
+    const correctionNote =
+      result.correctedQuery && result.correctedQuery.toLowerCase() !== normalizedQuery.toLowerCase()
+        ? ` Consulta ajustada: ${result.correctedQuery}.`
+        : "";
+    return replyText(`${IMAGE_FALLBACK_TEXT}${correctionNote}`);
   } catch (error) {
     const message = sanitizeErrorMessage(error);
     logImageSearch(input.logger, {

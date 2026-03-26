@@ -213,7 +213,8 @@ export const handleAudioOutboundAction = async (input: {
   const progress = createProgressReactionLifecycle({
     runtime,
     responseActionId,
-    actionName: "audio_transcription"
+    actionName: "audio_transcription",
+    enabled: typedAction.origin !== "command"
   });
   await progress.start();
 

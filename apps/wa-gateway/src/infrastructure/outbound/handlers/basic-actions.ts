@@ -4,6 +4,7 @@ import { AudioTranscodingError, inspectAudioPayload, transcodeToWhatsAppPtt } fr
 
 const IMAGE_FETCH_TIMEOUT_MS = 12_000;
 const IMAGE_FETCH_MAX_BYTES = 8 * 1024 * 1024;
+const IMAGE_FETCH_MIN_BYTES = 512;
 
 const normalizeText = (value: string): string => value.replace(/\s+/g, " ").trim();
 
@@ -16,31 +17,150 @@ const normalizeErrorReason = (error: unknown, fallback = "unknown_error"): strin
   return fallback;
 };
 
-const fetchImageBuffer = async (imageUrl: string): Promise<{ buffer: Buffer; mimeType: string } | null> => {
+const normalizeMimeType = (value?: string | null): string => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) return "";
+  return normalized.split(";")[0]?.trim() ?? "";
+};
+
+const hasLikelyImageSignature = (bytes: Buffer): boolean => {
+  if (bytes.length < 4) return false;
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return true;
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return true;
+  const gifSig = bytes.subarray(0, 6).toString("ascii");
+  if (gifSig === "GIF87a" || gifSig === "GIF89a") return true;
+  const riffSig = bytes.subarray(0, 4).toString("ascii");
+  const webpSig = bytes.length >= 12 ? bytes.subarray(8, 12).toString("ascii") : "";
+  if (riffSig === "RIFF" && webpSig === "WEBP") return true;
+  if (bytes[0] === 0x42 && bytes[1] === 0x4d) return true;
+  if (
+    (bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a && bytes[3] === 0x00) ||
+    (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[2] === 0x00 && bytes[3] === 0x2a)
+  ) {
+    return true;
+  }
+  if (bytes.length >= 12 && bytes.subarray(4, 8).toString("ascii") === "ftyp") {
+    const brand = bytes.subarray(8, 12).toString("ascii").toLowerCase();
+    if (["avif", "avis", "heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand)) return true;
+  }
+  return false;
+};
+
+const looksLikeHtmlBody = (bytes: Buffer): boolean => {
+  if (!bytes.length) return false;
+  const probe = bytes.subarray(0, Math.min(bytes.length, 256)).toString("utf-8").trimStart().toLowerCase();
+  return probe.startsWith("<!doctype html") || probe.startsWith("<html") || probe.startsWith("<?xml");
+};
+
+type FetchImageBufferResult =
+  | { ok: true; buffer: Buffer; mimeType: string; byteLength: number; httpStatus: number }
+  | { ok: false; reason: string; httpStatus?: number; mimeType?: string; byteLength?: number };
+
+const fetchImageBuffer = async (imageUrl: string): Promise<FetchImageBufferResult> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(imageUrl, {
       method: "GET",
+      redirect: "follow",
       headers: {
         Accept: "image/*,*/*;q=0.8",
         "User-Agent": "zappy-assistant/1.5 (+wa-gateway-image-send)"
       },
       signal: controller.signal
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: `http_${response.status}`,
+        httpStatus: response.status
+      };
+    }
 
-    const mimeType = normalizeText(response.headers.get("content-type") || "").toLowerCase();
-    if (!mimeType.startsWith("image/")) return null;
+    const mimeType = normalizeMimeType(response.headers.get("content-type"));
+    if (!mimeType.startsWith("image/")) {
+      return {
+        ok: false,
+        reason: "invalid_content_type",
+        mimeType
+      };
+    }
+
+    if (mimeType === "image/svg+xml") {
+      return {
+        ok: false,
+        reason: "unsupported_svg",
+        mimeType
+      };
+    }
 
     const contentLength = Number(response.headers.get("content-length") || "0");
-    if (Number.isFinite(contentLength) && contentLength > IMAGE_FETCH_MAX_BYTES) return null;
+    if (Number.isFinite(contentLength) && contentLength > IMAGE_FETCH_MAX_BYTES) {
+      return {
+        ok: false,
+        reason: "payload_too_large",
+        mimeType,
+        byteLength: contentLength
+      };
+    }
 
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (!bytes.length || bytes.length > IMAGE_FETCH_MAX_BYTES) return null;
-    return { buffer: bytes, mimeType };
-  } catch {
-    return null;
+    if (!bytes.length) {
+      return {
+        ok: false,
+        reason: "empty_body",
+        mimeType,
+        byteLength: 0
+      };
+    }
+    if (bytes.length < IMAGE_FETCH_MIN_BYTES) {
+      return {
+        ok: false,
+        reason: "body_too_small",
+        mimeType,
+        byteLength: bytes.length
+      };
+    }
+    if (bytes.length > IMAGE_FETCH_MAX_BYTES) {
+      return {
+        ok: false,
+        reason: "payload_too_large",
+        mimeType,
+        byteLength: bytes.length
+      };
+    }
+    if (looksLikeHtmlBody(bytes)) {
+      return {
+        ok: false,
+        reason: "suspicious_html_body",
+        mimeType,
+        byteLength: bytes.length
+      };
+    }
+    if (!hasLikelyImageSignature(bytes)) {
+      return {
+        ok: false,
+        reason: "invalid_image_signature",
+        mimeType,
+        byteLength: bytes.length
+      };
+    }
+    return { ok: true, buffer: bytes, mimeType, byteLength: bytes.length, httpStatus: response.status };
+  } catch (error) {
+    const reason = error instanceof Error && error.name === "AbortError" ? "timeout" : "network_error";
+    return { ok: false, reason };
   } finally {
     clearTimeout(timer);
   }
@@ -244,52 +364,156 @@ export const handleBasicOutboundAction = async (input: {
   }
 
   if (action.kind === "reply_image") {
+    const target = runtime.isGroup ? runtime.remoteJid : runtime.waUserId;
+    const scope: "group" | "direct" = runtime.isGroup ? "group" : "direct";
     const imageUrl = typeof action.imageUrl === "string" ? action.imageUrl.trim() : "";
-    if (!imageUrl) {
-      await sendTextAndPersist({
-        runtime,
-        to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
-        text: "Falha ao preparar imagem para envio.",
-        actionName: "reply_image_error",
-        scope: runtime.isGroup ? "group" : "direct",
-        responseActionId
-      });
-      return true;
-    }
-
-    const bufferedImage = await fetchImageBuffer(imageUrl);
+    const fallbackText =
+      typeof action.fallbackText === "string" && action.fallbackText.trim()
+        ? action.fallbackText.trim()
+        : "Nao consegui enviar a imagem agora. Tente novamente em instantes.";
+    const imageLogBase = {
+      capability: "image-send",
+      responseActionId,
+      tenantId: runtime.event.tenantId,
+      waGroupId: runtime.event.waGroupId,
+      waUserId: runtime.waUserId,
+      inboundWaMessageId: runtime.event.waMessageId,
+      executionId: runtime.event.executionId,
+      imageUrlPreview: imageUrl ? imageUrl.slice(0, 180) : undefined
+    };
     const baseSendInput = {
       runtime,
-      to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
-      text: action.caption ?? imageUrl,
+      to: target,
+      text: typeof action.caption === "string" && action.caption.trim() ? action.caption : imageUrl || "[imagem]",
       actionName: "reply_image",
-      scope: runtime.isGroup ? "group" as const : "direct" as const,
+      scope,
       responseActionId
     };
 
-    if (bufferedImage) {
+    let imageBuffer: Buffer | null = null;
+    let imageMimeType = "image/jpeg";
+    let failureReason = "image_unavailable";
+
+    if (typeof action.imageBase64 === "string" && action.imageBase64.trim()) {
+      try {
+        const decoded = Buffer.from(action.imageBase64, "base64");
+        if (!decoded.length) {
+          failureReason = "empty_inline_image_payload";
+        } else if (decoded.length > IMAGE_FETCH_MAX_BYTES) {
+          failureReason = "inline_image_payload_too_large";
+        } else {
+          imageBuffer = decoded;
+          imageMimeType = typeof action.mimeType === "string" && action.mimeType.trim() ? action.mimeType.trim() : imageMimeType;
+        }
+      } catch (error) {
+        failureReason = normalizeErrorReason(error, "invalid_inline_image_payload");
+      }
+    }
+
+    if (!imageBuffer && imageUrl) {
+      runtime.logger.info?.(
+        runtime.withCategory("WA-OUT", {
+          action: "reply_image",
+          status: "download_started",
+          ...imageLogBase
+        }),
+        "media download started"
+      );
+
+      const downloaded = await fetchImageBuffer(imageUrl);
+      if (downloaded.ok) {
+        imageBuffer = downloaded.buffer;
+        imageMimeType = downloaded.mimeType;
+        runtime.logger.info?.(
+          runtime.withCategory("WA-OUT", {
+            action: "reply_image",
+            status: "download_success",
+            mimeType: downloaded.mimeType,
+            byteLength: downloaded.byteLength,
+            httpStatus: downloaded.httpStatus,
+            ...imageLogBase
+          }),
+          "media download success"
+        );
+      } else {
+        failureReason = downloaded.reason;
+        runtime.logger.info?.(
+          runtime.withCategory("WA-OUT", {
+            action: "reply_image",
+            status: "download_failure",
+            reason: downloaded.reason,
+            mimeType: downloaded.mimeType,
+            byteLength: downloaded.byteLength,
+            httpStatus: downloaded.httpStatus,
+            ...imageLogBase
+          }),
+          "media download failure"
+        );
+      }
+    }
+
+    if (!imageBuffer && !imageUrl) {
+      failureReason = "missing_image_source";
+    }
+
+    if (imageBuffer) {
       try {
         await sendTextAndPersist({
           ...baseSendInput,
           content: {
-            image: bufferedImage.buffer,
-            mimetype: bufferedImage.mimeType,
+            image: imageBuffer,
+            mimetype: imageMimeType,
             caption: action.caption
           }
         });
         return true;
-      } catch {
-        // fallback para URL abaixo
+      } catch (error) {
+        failureReason = normalizeErrorReason(error, "send_image_failed");
+        runtime.logger.warn?.(
+          runtime.withCategory("WA-OUT", {
+            action: "reply_image",
+            status: "send_failure",
+            reason: failureReason,
+            err: error,
+            ...imageLogBase
+          }),
+          "reply image send failed"
+        );
       }
     }
 
-    await sendTextAndPersist({
-      ...baseSendInput,
-      content: {
-        image: { url: imageUrl },
-        caption: action.caption
-      }
-    });
+    runtime.logger.info?.(
+      runtime.withCategory("WA-OUT", {
+        action: "reply_image",
+        status: "fallback_text",
+        reason: failureReason,
+        fallbackTextPreview: fallbackText.slice(0, 120),
+        ...imageLogBase
+      }),
+      "reply-image fallback to text"
+    );
+
+    try {
+      await sendTextAndPersist({
+        runtime,
+        to: target,
+        text: fallbackText,
+        actionName: "reply_image_fallback_text",
+        scope,
+        responseActionId
+      });
+    } catch (fallbackError) {
+      runtime.logger.warn?.(
+        runtime.withCategory("WA-OUT", {
+          action: "reply_image",
+          status: "fallback_text_failure",
+          reason: normalizeErrorReason(fallbackError, "fallback_text_send_failed"),
+          err: fallbackError,
+          ...imageLogBase
+        }),
+        "reply-image fallback text failed"
+      );
+    }
     return true;
   }
 

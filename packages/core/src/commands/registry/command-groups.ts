@@ -254,6 +254,7 @@ export const audioCommands: CommandDefinition[] = [
     name: "transcribe",
     aliases: ["tr"],
     scope: "both",
+    progressAck: true,
     description: "Transcreve áudio (responda um áudio) e habilita fluxo automático para áudio direto.",
     usage: "transcribe",
     examples: ["transcribe (respondendo um áudio)"]
@@ -265,6 +266,7 @@ export const ttsCommands: CommandDefinition[] = [
     category: "tools",
     name: "tts",
     scope: "both",
+    progressAck: true,
     description: "Converte texto em voz (PTT), com tradução opcional antes da síntese.",
     usage: "tts <texto> |<destino>|<voz>  ou  tts <texto> |<origem>|<destino>|<voz>",
     examples: [
@@ -280,6 +282,7 @@ export const webSearchCommands: CommandDefinition[] = [
     category: "tools",
     name: "search",
     scope: "both",
+    progressAck: true,
     description: "Busca textual genérica na web (com fallback de provider).",
     usage: "search <termo da busca>",
     examples: ["search arquitetura hexagonal", "search status docker compose"]
@@ -288,6 +291,7 @@ export const webSearchCommands: CommandDefinition[] = [
     category: "tools",
     name: "google",
     scope: "both",
+    progressAck: true,
     description: "Busca textual usando Google real (Programmable Search API).",
     usage: "google <termo da busca>",
     examples: ["google status docker compose", "google release notes typescript"]
@@ -297,6 +301,7 @@ export const webSearchCommands: CommandDefinition[] = [
     name: "search-ai",
     aliases: ["sai"],
     scope: "both",
+    progressAck: true,
     description: "Busca assistida por IA com internet e síntese com fontes.",
     usage: "search-ai <termo da busca>",
     examples: ["search-ai últimas notícias sobre IA no Brasil", "sai diferença entre webhooks e polling"]
@@ -309,6 +314,7 @@ export const imageSearchCommands: CommandDefinition[] = [
     name: "img",
     aliases: ["gimage"],
     scope: "both",
+    progressAck: true,
     description: "Busca imagens na web.",
     usage: "img <termo da busca>",
     examples: ["img gatos persas", "gimage infraestrutura de redes"]
@@ -320,6 +326,7 @@ export const downloadCommands: CommandDefinition[] = [
     category: "tools",
     name: "dl",
     scope: "both",
+    progressAck: true,
     description: "Processa links por provider (yt, ig, fb, direct) com política de compliance.",
     usage: "dl <yt|ig|fb|direct> <link>",
     examples: ["dl yt https://...", "dl ig https://...", "dl fb https://...", "dl direct https://..."]

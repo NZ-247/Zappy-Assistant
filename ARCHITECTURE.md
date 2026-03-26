@@ -132,7 +132,7 @@ Regra central:
 
 ## 7. Sistema de comandos e prefixo
 
-- comando deve ser registrado no Command Registry com metadados (`name`, `aliases`, `scope`, `requiredRole`, `botAdminRequired`, `description`, `usage`, `examples`)
+- comando deve ser registrado no Command Registry com metadados (`name`, `aliases`, `scope`, `requiredRole`, `botAdminRequired`, `progressAck`, `description`, `usage`, `examples`)
 - prefixo global via `BOT_PREFIX` (default `/`)
 - parsing e help devem respeitar o prefixo ativo
 - `/help` deve permanecer orientado por metadata do registry

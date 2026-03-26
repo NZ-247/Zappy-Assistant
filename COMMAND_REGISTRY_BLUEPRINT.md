@@ -30,6 +30,7 @@ It must define:
 - required role
 - scope
 - bot admin requirement
+- progress reaction hint (`progressAck`) for long-running commands
 - prefix compatibility
 
 The registry **does not implement business logic**.
@@ -85,6 +86,7 @@ interface CommandDefinition {
   requiredRole?: CommandRole
 
   botAdminRequired?: boolean
+  progressAck?: boolean
 
   allowMention?: boolean
   allowReply?: boolean

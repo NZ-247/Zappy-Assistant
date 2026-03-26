@@ -139,7 +139,8 @@ const imageSearchAdapter = env.IMAGE_SEARCH_ENABLED
       googleSearchEngineId,
       googleCx: env.GOOGLE_SEARCH_CX,
       timeoutMs: env.SEARCH_TIMEOUT_MS,
-      preferredProvider: env.IMAGE_SEARCH_PROVIDER
+      preferredProvider: env.IMAGE_SEARCH_PROVIDER,
+      ...({ logger } as any)
     })
   : undefined;
 const mediaDownloadAdapter = env.DOWNLOADS_MODULE_ENABLED

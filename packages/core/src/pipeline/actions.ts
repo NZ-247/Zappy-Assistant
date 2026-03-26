@@ -19,6 +19,9 @@ export interface ReplyImageAction {
   kind: "reply_image";
   imageUrl: string;
   caption?: string;
+  imageBase64?: string;
+  mimeType?: string;
+  fallbackText?: string;
 }
 
 export interface ReplyListItem {

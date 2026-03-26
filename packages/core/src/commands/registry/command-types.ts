@@ -21,6 +21,7 @@ export interface CommandDefinition {
   scope: CommandScope;
   requiredRole?: CommandRequiredRole;
   botAdminRequired?: boolean;
+  progressAck?: boolean;
   description: string;
   usage: string;
   examples?: string[];

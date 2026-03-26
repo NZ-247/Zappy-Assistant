@@ -1,5 +1,6 @@
 import type { InboundMessageEvent, Orchestrator } from "@zappy/core";
 import { createHash, randomUUID } from "node:crypto";
+import { createCommandReactionAckLifecycle } from "../infrastructure/command-reaction-ack.js";
 
 type InboundUpsertMessage = {
   key: { fromMe?: boolean; remoteJid?: string; participant?: string; id?: string };
@@ -61,6 +62,7 @@ interface MessagesUpsertHandlerDeps {
   logger: {
     debug: (payload: unknown, message?: string) => void;
     info: (payload: unknown, message?: string) => void;
+    warn?: (payload: unknown, message?: string) => void;
   };
   withCategory: (category: any, payload?: Record<string, unknown>) => unknown;
   executeOutboundActions: (input: any) => Promise<void>;
@@ -424,6 +426,19 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         "inbound message"
       );
 
+      const commandAck = createCommandReactionAckLifecycle({
+        text,
+        commandPrefix: deps.outboundRuntime.commandPrefix,
+        progressReactions: deps.outboundRuntime.progressReactions,
+        getSocket: deps.getSocket,
+        message,
+        remoteJid,
+        event,
+        logger: deps.logger,
+        withCategory: deps.withCategory
+      });
+      await commandAck.start();
+
       const dispatchTranscribedText = async (input: {
         text: string;
         transcript: string;
@@ -521,44 +536,61 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         return { hadResponses: true, dispatchExecutionId };
       };
 
-      const actions = await deps.orchestrator.handleInboundMessage(event);
-      await deps.executeOutboundActions({
-        actions,
-        isGroup,
-        remoteJid,
-        waUserId,
-        event,
-        message,
-        context,
-        contextInfo,
-        quotedWaMessageId,
-        quotedWaUserId,
-        canonical,
-        normalizedPhone,
-        relationshipProfile,
-        permissionRole,
-        timezone: deps.env.BOT_TIMEZONE,
-        commandPrefix: deps.outboundRuntime.commandPrefix,
-        progressReactions: deps.outboundRuntime.progressReactions,
-        audioConfig: deps.outboundRuntime.audioConfig,
-        speechToText: deps.outboundRuntime.speechToText,
-        dispatchTranscribedText,
-        sendWithReplyFallback: deps.outboundRuntime.sendWithReplyFallback,
-        persistOutboundMessage: deps.outboundRuntime.persistOutboundMessage,
-        queueAdapter: deps.outboundRuntime.queueAdapter,
-        groupAccessRepository: deps.outboundRuntime.groupAccessRepository,
-        muteAdapter: deps.outboundRuntime.muteAdapter,
-        attemptGroupAdminAction: deps.outboundRuntime.attemptGroupAdminAction,
-        getSocket: deps.getSocket,
-        downloadMediaMessage: deps.outboundRuntime.downloadMediaMessage,
-        baileysLogger: deps.outboundRuntime.baileysLogger,
-        normalizeJid: deps.normalizeJid,
-        logger: deps.logger,
-        withCategory: deps.withCategory,
-        metrics: deps.outboundRuntime.metrics,
-        auditTrail: deps.outboundRuntime.auditTrail,
-        stickerMaxVideoSeconds: deps.outboundRuntime.stickerMaxVideoSeconds
-      });
+      try {
+        const actions = await deps.orchestrator.handleInboundMessage(event);
+        await deps.executeOutboundActions({
+          actions,
+          isGroup,
+          remoteJid,
+          waUserId,
+          event,
+          message,
+          context,
+          contextInfo,
+          quotedWaMessageId,
+          quotedWaUserId,
+          canonical,
+          normalizedPhone,
+          relationshipProfile,
+          permissionRole,
+          timezone: deps.env.BOT_TIMEZONE,
+          commandPrefix: deps.outboundRuntime.commandPrefix,
+          progressReactions: deps.outboundRuntime.progressReactions,
+          audioConfig: deps.outboundRuntime.audioConfig,
+          speechToText: deps.outboundRuntime.speechToText,
+          dispatchTranscribedText,
+          sendWithReplyFallback: deps.outboundRuntime.sendWithReplyFallback,
+          persistOutboundMessage: deps.outboundRuntime.persistOutboundMessage,
+          queueAdapter: deps.outboundRuntime.queueAdapter,
+          groupAccessRepository: deps.outboundRuntime.groupAccessRepository,
+          muteAdapter: deps.outboundRuntime.muteAdapter,
+          attemptGroupAdminAction: deps.outboundRuntime.attemptGroupAdminAction,
+          getSocket: deps.getSocket,
+          downloadMediaMessage: deps.outboundRuntime.downloadMediaMessage,
+          baileysLogger: deps.outboundRuntime.baileysLogger,
+          normalizeJid: deps.normalizeJid,
+          logger: deps.logger,
+          withCategory: deps.withCategory,
+          metrics: deps.outboundRuntime.metrics,
+          auditTrail: deps.outboundRuntime.auditTrail,
+          stickerMaxVideoSeconds: deps.outboundRuntime.stickerMaxVideoSeconds
+        });
+        await commandAck.success();
+      } catch (error) {
+        await commandAck.failure();
+        deps.logger.warn?.(
+          deps.withCategory("WA-OUT", {
+            status: "command_or_outbound_failure",
+            tenantId: event.tenantId,
+            waGroupId: event.waGroupId,
+            waUserId: event.waUserId,
+            waMessageId: event.waMessageId,
+            executionId: event.executionId,
+            err: error
+          }),
+          "command/outbound execution failed"
+        );
+      }
     }
   };
 };

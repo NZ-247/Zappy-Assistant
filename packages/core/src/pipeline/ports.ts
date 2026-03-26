@@ -214,6 +214,28 @@ export interface ImageSearchResultItem {
   imageUrl?: string;
 }
 
+export interface ImageSearchDeliverable {
+  title: string;
+  link: string;
+  imageUrl: string;
+  imageBase64: string;
+  mimeType: string;
+  byteLength: number;
+  candidateIndex: number;
+}
+
+export interface ImageSearchCandidateDiagnostic {
+  title: string;
+  link: string;
+  imageUrl: string;
+  candidateIndex: number;
+  status: "accepted" | "rejected";
+  reason: string;
+  httpStatus?: number;
+  mimeType?: string;
+  byteLength?: number;
+}
+
 export interface WebSearchPort {
   search(input: {
     query: string;
@@ -238,6 +260,8 @@ export interface ImageSearchPort {
   }): Promise<{
     provider: string;
     results: ImageSearchResultItem[];
+    deliverableImage?: ImageSearchDeliverable;
+    candidateDiagnostics?: ImageSearchCandidateDiagnostic[];
     requestedProvider?: string;
     fallbackUsed?: boolean;
     fallbackReason?: string;
