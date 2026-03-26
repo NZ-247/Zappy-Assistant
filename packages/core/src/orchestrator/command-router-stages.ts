@@ -8,6 +8,7 @@ import { handleNoteCommand } from "../modules/notes/presentation/commands/note-c
 import { handleAudioCommand } from "../modules/tools/audio/presentation/commands/audio-commands.js";
 import { handleStickerCommand } from "../modules/tools/stickers/presentation/commands/sticker-commands.js";
 import { handleTtsCommand } from "../modules/tts/presentation/commands/tts-commands.js";
+import { handleTranslationCommand } from "../modules/translation/presentation/commands/translation-commands.js";
 import { handleWebSearchCommand } from "../modules/web-search/presentation/commands/web-search-commands.js";
 import { handleSearchAiCommand } from "../modules/search-ai/presentation/commands/search-ai-commands.js";
 import { handleImageSearchCommand } from "../modules/image-search/presentation/commands/image-search-commands.js";
@@ -172,6 +173,25 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     }
   });
   if (ttsHandled) return ttsHandled;
+
+  const translationHandled = await handleTranslationCommand({
+    commandKey,
+    cmd,
+    ctx,
+    deps: {
+      textTranslation: deps.ports.textTranslation,
+      config: {
+        enabled: true,
+        maxTextChars: Math.max(120, deps.ports.ttsMaxTextChars ?? 900),
+        defaultTargetForPortuguese: "en",
+        defaultTargetForOther: "pt"
+      },
+      formatUsage: () => usageFor("trl"),
+      stylizeReply: (text) => deps.stylizeReply(ctx, text),
+      logger: deps.ports.logger
+    }
+  });
+  if (translationHandled) return translationHandled;
 
   const webSearchHandled = await handleWebSearchCommand({
     commandKey,

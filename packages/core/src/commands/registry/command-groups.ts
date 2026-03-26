@@ -252,12 +252,12 @@ export const audioCommands: CommandDefinition[] = [
   {
     category: "tools",
     name: "transcribe",
-    aliases: ["tr"],
+    aliases: ["tr", "tss"],
     scope: "both",
     progressAck: true,
-    description: "Transcreve áudio (responda um áudio) e habilita fluxo automático para áudio direto.",
-    usage: "transcribe",
-    examples: ["transcribe (respondendo um áudio)"]
+    description: "Transcreve audio (responda um audio com /transcribe ou /tss) e mantem fluxo automatico para audio direto.",
+    usage: "transcribe (ou tss) respondendo um audio",
+    examples: ["transcribe (respondendo um audio)", "tss (respondendo um audio)"]
   }
 ];
 
@@ -267,13 +267,27 @@ export const ttsCommands: CommandDefinition[] = [
     name: "tts",
     scope: "both",
     progressAck: true,
-    description: "Converte texto em voz (PTT), com tradução opcional antes da síntese.",
-    usage: "tts <texto> |<destino>|<voz>  ou  tts <texto> |<origem>|<destino>|<voz>",
+    description: "Converte texto em voz (PTT), aceitando texto direto ou texto da mensagem respondida.",
+    usage: "tts <texto> |<destino>|<voz>  ou  tts |<destino>|<voz> (respondendo texto)",
     examples: [
       "tts Bom dia a todos",
       "tts Bom dia a todos |en|female",
-      "tts Bom dia a todos |pt-BR|en|female"
+      "tts Bom dia a todos |pt-BR|en|female",
+      "tts (respondendo texto)",
+      "tts |en|female (respondendo texto)"
     ]
+  }
+];
+
+export const translationCommands: CommandDefinition[] = [
+  {
+    category: "tools",
+    name: "trl",
+    scope: "both",
+    progressAck: true,
+    description: "Traduz texto com deteccao automatica de idioma; aceita texto direto ou mensagem respondida.",
+    usage: "trl <texto> |<destino>|full  ou  trl |<destino>|full (respondendo texto)",
+    examples: ["trl bonjour", "trl ola |zh-cn|full", "trl |es (respondendo texto)"]
   }
 ];
 
@@ -283,18 +297,18 @@ export const webSearchCommands: CommandDefinition[] = [
     name: "search",
     scope: "both",
     progressAck: true,
-    description: "Busca textual genérica na web (com fallback de provider).",
-    usage: "search <termo da busca>",
-    examples: ["search arquitetura hexagonal", "search status docker compose"]
+    description: "Busca textual generica na web; aceita termo direto ou mensagem respondida.",
+    usage: "search <termo da busca>  ou  search (respondendo texto)",
+    examples: ["search arquitetura hexagonal", "search (respondendo texto)"]
   },
   {
     category: "tools",
     name: "google",
     scope: "both",
     progressAck: true,
-    description: "Busca textual usando Google real (Programmable Search API).",
-    usage: "google <termo da busca>",
-    examples: ["google status docker compose", "google release notes typescript"]
+    description: "Busca textual usando Google real; aceita termo direto ou mensagem respondida.",
+    usage: "google <termo da busca>  ou  google (respondendo texto)",
+    examples: ["google status docker compose", "google (respondendo texto)"]
   },
   {
     category: "tools",
@@ -302,9 +316,9 @@ export const webSearchCommands: CommandDefinition[] = [
     aliases: ["sai"],
     scope: "both",
     progressAck: true,
-    description: "Busca assistida por IA com internet e síntese com fontes.",
-    usage: "search-ai <termo da busca>",
-    examples: ["search-ai últimas notícias sobre IA no Brasil", "sai diferença entre webhooks e polling"]
+    description: "Busca assistida por IA com internet; aceita termo direto ou mensagem respondida.",
+    usage: "search-ai <termo da busca>  ou  search-ai (respondendo texto)",
+    examples: ["search-ai ultimas noticias sobre IA no Brasil", "sai (respondendo texto)"]
   }
 ];
 
@@ -315,18 +329,18 @@ export const imageSearchCommands: CommandDefinition[] = [
     aliases: ["gimage"],
     scope: "both",
     progressAck: true,
-    description: "Busca imagens na web.",
-    usage: "img <termo da busca>",
-    examples: ["img gatos persas", "gimage infraestrutura de redes"]
+    description: "Busca imagens na web com variacao controlada; aceita termo direto ou mensagem respondida.",
+    usage: "img <termo da busca>  ou  img (respondendo texto)",
+    examples: ["img gatos persas", "gimage infraestrutura de redes", "img (respondendo texto)"]
   },
   {
     category: "tools",
     name: "imglink",
     scope: "both",
     progressAck: true,
-    description: "Busca imagens e, se nao houver midia entregavel, retorna links confiaveis.",
-    usage: "imglink <termo da busca>",
-    examples: ["imglink Porsche 911 GT3RS", "imglink macarrao com queijo"]
+    description: "Busca imagem e retorna link conciso quando necessario; aceita termo direto ou mensagem respondida.",
+    usage: "imglink <termo da busca>  ou  imglink (respondendo texto)",
+    examples: ["imglink Porsche 911 GT3RS", "imglink macarrao com queijo", "imglink (respondendo texto)"]
   }
 ];
 
@@ -369,6 +383,7 @@ export const allCommands: CommandDefinition[] = [
   ...stickerCommands,
   ...audioCommands,
   ...ttsCommands,
+  ...translationCommands,
   ...webSearchCommands,
   ...imageSearchCommands,
   ...downloadCommands,

@@ -2,13 +2,11 @@ import type { ResponseAction } from "../../../../../pipeline/actions.js";
 import type { PipelineContext } from "../../../../../pipeline/context.js";
 import type { AudioModuleConfigPort } from "../../ports.js";
 import { buildTranscribeOnlyAction } from "../../application/use-cases/build-audio-transcription-action.js";
-
-const normalizeMessageType = (value?: string): string => (value ?? "").trim().toLowerCase();
-const isAudioMessageType = (value: string): boolean => value === "audiomessage";
+import { resolveAudioInputSource } from "../../../../../common/reply-context-input.js";
 
 export interface AudioCommandDeps {
   config: AudioModuleConfigPort;
-  formatUsage?: (command: "transcribe") => string | null;
+  formatUsage?: (command: "transcribe" | "tss") => string | null;
   stylizeReply?: (text: string) => string;
 }
 
@@ -28,29 +26,29 @@ export const handleAudioCommand = (input: {
     return replyText(deps, "Capability de áudio está desativada neste ambiente.");
   }
 
-  const inboundType = normalizeMessageType(ctx.event.rawMessageType);
-  const quotedType = normalizeMessageType(ctx.event.quotedMessageType);
-  const hasQuoted = Boolean(ctx.event.quotedWaMessageId);
+  const audioSource = resolveAudioInputSource({
+    inboundMessageType: ctx.event.rawMessageType,
+    replyContext: {
+      quotedWaMessageId: ctx.event.quotedWaMessageId,
+      quotedMessageType: ctx.event.quotedMessageType,
+      quotedText: ctx.event.quotedText,
+      quotedHasMedia: ctx.event.quotedHasMedia
+    }
+  });
 
-  if (isAudioMessageType(inboundType)) {
-    return [
-      buildTranscribeOnlyAction({
-        source: "inbound",
-        commandPrefix: deps.config.commandPrefix
-      })
-    ];
+  if (audioSource.ok) {
+    return [buildTranscribeOnlyAction({ source: audioSource.source, commandPrefix: deps.config.commandPrefix })];
   }
 
-  if (hasQuoted && isAudioMessageType(quotedType)) {
-    return [
-      buildTranscribeOnlyAction({
-        source: "quoted",
-        commandPrefix: deps.config.commandPrefix
-      })
-    ];
+  const usage = deps.formatUsage?.("transcribe") ?? deps.formatUsage?.("tss");
+  if (audioSource.reason === "incompatible_reply") {
+    return replyText(
+      deps,
+      usage ??
+        "Esse comando transcreve audio. Responda um audio com /transcribe (ou /tss), ou envie audio direto para transcricao automatica."
+    );
   }
 
-  const usage = deps.formatUsage?.("transcribe");
   return replyText(
     deps,
     usage ??

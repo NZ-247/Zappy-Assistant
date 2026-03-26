@@ -117,3 +117,63 @@ test("image candidate validation returns no deliverable when all candidates are 
   assert.equal(result.candidateDiagnostics?.[0]?.status, "rejected");
   assert.equal(result.candidateDiagnostics?.[0]?.reason, "invalid_content_type");
 });
+
+test("image search anti-repeat avoids returning same image for same tenant/query when alternatives exist", async () => {
+  const openverseStubUrl = "https://openverse.local/v1/images/";
+  const fetchImpl = async (input: string | URL): Promise<Response> => {
+    const url = String(input);
+    if (url.startsWith(openverseStubUrl)) {
+      return jsonResponse({ results: [] });
+    }
+    if (url.startsWith("https://commons.wikimedia.org/w/api.php")) {
+      return jsonResponse({
+        query: {
+          pages: {
+            "1": {
+              title: "Gato A",
+              imageinfo: [{ url: "https://cdn.example.com/gato-a.jpg", descriptionurl: "https://example.com/gato-a" }]
+            },
+            "2": {
+              title: "Gato B",
+              imageinfo: [{ url: "https://cdn.example.com/gato-b.jpg", descriptionurl: "https://example.com/gato-b" }]
+            }
+          }
+        }
+      });
+    }
+
+    if (url === "https://cdn.example.com/gato-a.jpg" || url === "https://cdn.example.com/gato-b.jpg") {
+      return new Response(validJpegBuffer, {
+        status: 200,
+        headers: { "content-type": "image/jpeg" }
+      });
+    }
+
+    throw new Error(`unexpected_url:${url}`);
+  };
+
+  const adapter = createImageSearchAdapter({
+    preferredProvider: "wikimedia",
+    openverseApiBaseUrl: openverseStubUrl,
+    fetchImpl,
+    variabilityPoolSize: 3,
+    maxValidatedDeliverables: 3,
+    recentDeliveryTtlMs: 120_000
+  });
+
+  const first = await adapter.search({
+    tenantId: "tenant-a",
+    query: "gatos",
+    limit: 3
+  });
+
+  const second = await adapter.search({
+    tenantId: "tenant-a",
+    query: "gatos",
+    limit: 3
+  });
+
+  assert.ok(first.deliverableImage?.imageUrl);
+  assert.ok(second.deliverableImage?.imageUrl);
+  assert.notEqual(first.deliverableImage?.imageUrl, second.deliverableImage?.imageUrl);
+});

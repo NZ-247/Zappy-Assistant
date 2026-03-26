@@ -90,14 +90,18 @@ test("img command returns reply_image only when validated media exists", async (
   const imageAction = actions[0] as {
     imageBase64?: string;
     mimeType?: string;
+    caption?: string;
     fallbackText?: string;
   };
   assert.equal(imageAction.imageBase64, imageBase64);
   assert.equal(imageAction.mimeType, "image/jpeg");
+  assert.match(imageAction.caption ?? "", /Fonte:/i);
+  assert.match(imageAction.caption ?? "", /https:\/\/example.com\/porsche/i);
+  assert.doesNotMatch(imageAction.caption ?? "", /Mais resultados:/i);
   assert.match(imageAction.fallbackText ?? "", /imagem/i);
 });
 
-test("imglink mode returns structured links when no deliverable media is available", async () => {
+test("imglink mode returns concise single-link fallback when no deliverable media is available", async () => {
   const actions = await executeImageSearch({
     query: "ferrari",
     mode: "media_or_links",
@@ -152,8 +156,8 @@ test("imglink mode returns structured links when no deliverable media is availab
   assert.equal(actions.length, 1);
   assert.equal(actions[0]?.kind, "reply_text");
   const reply = (actions[0] as { text: string }).text;
-  assert.match(reply, /Aqui vao 3 fontes uteis/i);
-  assert.match(reply, /1\./);
-  assert.match(reply, /2\./);
-  assert.match(reply, /3\./);
+  assert.match(reply, /Fonte:/i);
+  assert.match(reply, /https:\/\/commons.wikimedia.org\/wiki\/File:Ferrari_F40.jpg/i);
+  assert.doesNotMatch(reply, /1\./);
+  assert.doesNotMatch(reply, /2\./);
 });

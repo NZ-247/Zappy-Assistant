@@ -176,6 +176,8 @@ export interface InboundMessageEvent {
   quotedWaMessageId?: string;
   quotedWaUserId?: string;
   quotedMessageType?: string;
+  quotedText?: string;
+  quotedHasMedia?: boolean;
   isReplyToBot?: boolean;
   senderIsGroupAdmin?: boolean;
   messageKey?: { id: string; remoteJid?: string; fromMe?: boolean; participant?: string };

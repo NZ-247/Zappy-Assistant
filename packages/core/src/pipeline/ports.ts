@@ -192,13 +192,26 @@ export interface TextTranslationPort {
     text: string;
     sourceLanguage?: string;
     targetLanguage: string;
+    mode?: "basic" | "full";
     timeoutMs?: number;
   }): Promise<{
     translatedText: string;
     provider?: string;
     model?: string;
     sourceLanguage?: string;
+    detectedSourceLanguage?: string;
     targetLanguage?: string;
+    transliteration?: string;
+    pronunciation?: string;
+  }>;
+  detectLanguage?(input: {
+    text: string;
+    timeoutMs?: number;
+  }): Promise<{
+    language: string;
+    confidence?: number;
+    provider?: string;
+    model?: string;
   }>;
 }
 
@@ -277,6 +290,7 @@ export interface WebSearchPort {
 
 export interface ImageSearchPort {
   search(input: {
+    tenantId?: string;
     query: string;
     limit: number;
     locale?: string;

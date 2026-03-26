@@ -169,6 +169,7 @@ Capabilities entregues neste padrão:
 - roteamento dinâmico de comando por transcrição com heurística controlada (prefixo explícito, `slash|barra`, allowlist + confiança mínima)
 - reações de progresso reutilizáveis em operações pesadas (stickers/áudio), best-effort e sem quebrar fluxo funcional
 - `packages/core/src/modules/tts` com parser compatível (`texto|destino|voz`) + opção explícita (`texto|origem|destino|voz`), tradução pré-síntese e saída em `reply_audio` com suporte a PTT
+- `packages/core/src/modules/translation` dedicado ao comando `/trl`, com auto-detecção de idioma, alvo padrão pt<->en e modo opcional `full` (escrita + pronúncia/transliteração quando disponível)
 - `packages/core/src/modules/web-search` com provider configurável, ranking/deduplicação e resposta textual legível (título/resumo/link)
 - `packages/core/src/modules/search-ai` dedicado à busca assistida por IA com internet e resposta resumida com fontes
 - `packages/core/src/modules/image-search` separado da busca textual, com estratégia native-first (Wikimedia/Openverse/Pixabay/Pexels/Unsplash), fallback Google CSE apenas para descoberta e suporte a `/imglink` para fallback estruturado em links

@@ -344,6 +344,8 @@ export class Orchestrator {
       quotedWaMessageId: event.quotedWaMessageId,
       quotedWaUserId: event.quotedWaUserId,
       quotedMessageType: event.quotedMessageType,
+      quotedText: event.quotedText,
+      quotedHasMedia: event.quotedHasMedia,
       botIsGroupAdmin: event.botIsGroupAdmin,
       groupName: event.groupName
     };

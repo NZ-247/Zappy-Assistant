@@ -45,7 +45,7 @@ import { createLogger, loadEnv, printStartupBanner, withCategory, type InternalG
 import { buildBotAliases, jidMatchesBot, normalizeJid, normalizeLidJid, stripUser } from "./bot-alias.js";
 import { startInternalDispatchApi } from "./infrastructure/internal-dispatch-api.js";
 import { createCommandGuards } from "./infrastructure/command-guards.js";
-import { getInboundContextInfo, getInboundText, hasInboundMedia } from "./infrastructure/inbound-message.js";
+import { getInboundContextInfo, getInboundMessageType, getInboundText, hasInboundMedia } from "./infrastructure/inbound-message.js";
 import { createBotSelfLidService } from "./infrastructure/bot-self-lid.js";
 import { createBotAdminStatusService, GROUP_ADMIN_OPERATION_CACHE_TTL_MS } from "./infrastructure/bot-admin-status.js";
 import { createBaileysRuntimeLogger } from "./infrastructure/baileys-runtime-logger.js";
@@ -100,13 +100,11 @@ const textToSpeechAdapter = env.TTS_ENABLED
       }
     })
   : undefined;
-const textTranslationAdapter = env.TTS_ENABLED
-  ? createOpenAiTranslationAdapter({
-      apiKey: env.OPENAI_API_KEY,
-      model: env.TTS_TRANSLATION_MODEL,
-      timeoutMs: env.TTS_TRANSLATION_TIMEOUT_MS
-    })
-  : undefined;
+const textTranslationAdapter = createOpenAiTranslationAdapter({
+  apiKey: env.OPENAI_API_KEY,
+  model: env.TTS_TRANSLATION_MODEL,
+  timeoutMs: env.TTS_TRANSLATION_TIMEOUT_MS
+});
 const googleSearchEngineId = env.GOOGLE_SEARCH_ENGINE_ID ?? env.GOOGLE_SEARCH_CX;
 const webSearchAdapter = env.SEARCH_ENABLED
   ? createWebSearchAdapter({
@@ -458,6 +456,7 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
   buildBotAliases,
   jidMatchesBot: (candidate, botAlias) => jidMatchesBot(candidate ?? undefined, botAlias ?? undefined),
   getInboundText,
+  getInboundMessageType,
   hasInboundMedia,
   getInboundContextInfo,
   setBotSelfLidKey,

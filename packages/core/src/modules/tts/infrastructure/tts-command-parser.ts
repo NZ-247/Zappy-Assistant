@@ -1,7 +1,9 @@
 import type { TtsCommandInput } from "../domain/tts-request.js";
+import { resolvePrimarySegmentTextFromReply, type ReplyContextInput } from "../../../common/reply-context-input.js";
 
 export type TtsCommandParseFailureReason =
   | "missing_text"
+  | "incompatible_reply"
   | "too_many_segments"
   | "malformed_command";
 
@@ -16,25 +18,35 @@ const VOICE_TOKEN_PATTERN = /^[a-zA-Z0-9_-]{2,40}$/;
 const isLanguageToken = (value: string): boolean => LANGUAGE_PATTERN.test(value.trim());
 const isVoiceToken = (value: string): boolean => VOICE_TOKEN_PATTERN.test(value.trim()) && !isLanguageToken(value);
 
-export const parseTtsCommand = (commandBody: string): TtsCommandParseResult => {
+export const parseTtsCommand = (
+  commandBody: string,
+  input?: { replyContext?: ReplyContextInput }
+): TtsCommandParseResult => {
   const args = commandBody.replace(/^tts\b/i, "").trim();
-  if (!args) return { ok: false, reason: "missing_text" };
-
-  const segments = args.split("|").map((segment) => segment.trim());
+  const segments = (args ? args.split("|") : [""]).map((segment) => segment.trim());
   if (segments.length > 4) return { ok: false, reason: "too_many_segments" };
 
-  const text = segments[0] ?? "";
-  if (!text) return { ok: false, reason: "missing_text" };
+  const resolvedPrimary = resolvePrimarySegmentTextFromReply({
+    segments,
+    replyContext: input?.replyContext
+  });
 
-  if (segments.length === 1) {
+  if (!resolvedPrimary.ok) {
+    return { ok: false, reason: resolvedPrimary.reason === "incompatible_reply" ? "incompatible_reply" : "missing_text" };
+  }
+
+  const normalizedSegments = resolvedPrimary.segments;
+  const text = normalizedSegments[0] ?? "";
+
+  if (normalizedSegments.length === 1) {
     return { ok: true, value: { text } };
   }
 
-  const second = segments[1] ?? "";
-  const third = segments[2] ?? "";
-  const fourth = segments[3] ?? "";
+  const second = normalizedSegments[1] ?? "";
+  const third = normalizedSegments[2] ?? "";
+  const fourth = normalizedSegments[3] ?? "";
 
-  if (segments.length === 2) {
+  if (normalizedSegments.length === 2) {
     if (!second) return { ok: false, reason: "malformed_command" };
     if (isLanguageToken(second)) {
       return { ok: true, value: { text, targetLanguage: second, language: second } };
@@ -45,7 +57,7 @@ export const parseTtsCommand = (commandBody: string): TtsCommandParseResult => {
     return { ok: false, reason: "malformed_command" };
   }
 
-  if (segments.length === 3) {
+  if (normalizedSegments.length === 3) {
     if (!second || !third) return { ok: false, reason: "malformed_command" };
     if (isLanguageToken(third)) {
       return {

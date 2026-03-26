@@ -32,6 +32,7 @@ interface MessagesUpsertHandlerDeps {
   buildBotAliases: (input: { pnJid?: string | null; lidJid?: string | null }) => string[];
   jidMatchesBot: (candidate: string | null | undefined, botAlias: string | null | undefined) => boolean;
   getInboundText: (message: any) => string;
+  getInboundMessageType: (message: any) => string | undefined;
   hasInboundMedia: (message: any) => boolean;
   getInboundContextInfo: (message: any) => any;
   setBotSelfLidKey: (botJid?: string | null) => void;
@@ -280,15 +281,15 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const quotedWaUserIdRaw = (contextInfo as any)?.participant as string | undefined;
       const quotedWaUserId = quotedWaUserIdRaw ? deps.normalizeJid(quotedWaUserIdRaw) : undefined;
       const quotedRemoteJid = (contextInfo as any)?.remoteJid as string | undefined;
-      const quotedMessageExists = Boolean((contextInfo as any)?.quotedMessage);
-      const quotedMessageType =
-        quotedMessageExists && typeof (contextInfo as any)?.quotedMessage === "object" && (contextInfo as any)?.quotedMessage
-          ? Object.keys((contextInfo as any).quotedMessage)[0] ?? undefined
-          : undefined;
+      const quotedMessage = (contextInfo as any)?.quotedMessage;
+      const quotedMessageExists = Boolean(quotedMessage);
+      const quotedMessageType = deps.getInboundMessageType(quotedMessage);
+      const quotedText = deps.getInboundText(quotedMessage).trim() || undefined;
+      const quotedHasMedia = deps.hasInboundMedia(quotedMessage);
       const learnedBotLid = await deps.maybeLearnBotLidFromQuote({
         quotedWaMessageId,
         quotedParticipantRaw: quotedWaUserIdRaw,
-        quotedMessage: (contextInfo as any)?.quotedMessage
+        quotedMessage
       });
       const botLid = learnedBotLid ?? storedBotLid;
       const botAliases = deps.buildBotAliases({ pnJid: socket.user?.id, lidJid: botLid });
@@ -374,12 +375,14 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         isFromBot: Boolean(message.key.fromMe),
         hasMedia: mediaPresent,
         kind: text ? "text" : mediaPresent ? "media" : "unknown",
-        rawMessageType: Object.keys(message.message ?? {})[0] ?? "unknown",
+        rawMessageType: deps.getInboundMessageType(message.message) ?? "unknown",
         mentionedWaUserIds,
         isBotMentioned,
         quotedWaMessageId,
         quotedWaUserId,
         quotedMessageType,
+        quotedText,
+        quotedHasMedia,
         isReplyToBot,
         senderIsGroupAdmin,
         botIsGroupAdmin,

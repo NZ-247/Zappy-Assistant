@@ -140,7 +140,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
-- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe`, `/tts`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
+- Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe` (`/tr`, `/tss`), `/tts`, `/trl`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
   - `/toimg` funciona apenas respondendo uma figurinha válida.
@@ -148,7 +148,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Operações pesadas de sticker disparam reação de progresso (`⏱️`) e conclusão (`✅`/`❌`) na mensagem de origem (best-effort).
   - Limitações atuais: vídeo curto apenas (limitado por `STICKER_MAX_VIDEO_SECONDS`), sem gif avançado, sem editor visual, sem suporte a vídeos longos.
 - Audio capability (STT-first):
-  - `/transcribe` transcreve áudio ao responder uma mensagem de áudio.
+  - `/transcribe` (alias `/tss`) transcreve áudio ao responder uma mensagem de áudio.
   - Áudio enviado diretamente ao bot pode ser transcrito e roteado para resposta no fluxo existente.
   - Dispatch dinâmico por voz usa estratégia controlada: prefixo explícito (`/`), comando falado `slash|barra <comando>`, ou primeiro token da allowlist (`AUDIO_COMMAND_ALLOWLIST`) com confiança mínima (`AUDIO_COMMAND_MIN_CONFIDENCE`).
   - Em baixa confiança, o bot não executa comando dinâmico e responde com fallback amigável/transcrição curta.
@@ -156,26 +156,34 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - `/tts <texto>` usa origem/destino/voz padrão (`TTS_DEFAULT_SOURCE_LANGUAGE`, `TTS_DEFAULT_LANGUAGE`, `TTS_DEFAULT_VOICE`).
   - Formato compatível: `/tts <texto> |<destino>|<voz>` (ex: `/tts Bom dia |en|female`).
   - Formato explícito origem->destino: `/tts <texto> |<origem>|<destino>|<voz>` (ex: `/tts Bom dia |pt-BR|en|female`).
+  - Também aceita uso por resposta: responda um texto e envie `/tts` (ou `/tts |<destino>|<voz>`).
   - Quando origem e destino diferem, o texto é traduzido antes da síntese; se a tradução falhar, o áudio não é gerado.
   - Saída padrão como voice note/PTT (`TTS_SEND_AS_PTT=true`) com recodificação final para `OGG/Opus` no gateway (mimetype final `audio/ogg; codecs=opus`).
   - Limitações: qualidade de tradução depende do provider/model configurado; textos muito longos respeitam `TTS_MAX_TEXT_CHARS`; para PTT 100% compatível o host deve ter `ffmpeg` disponível (sem isso o gateway faz fallback para áudio comum).
+- Translation module:
+  - `/trl <texto>` traduz com detecção automática de idioma.
+  - Alvo padrão: origem `pt*` -> `en`; demais origens -> `pt`.
+  - Override de alvo: `/trl <texto> |<destino>`.
+  - Modo completo: `/trl <texto> |<destino>|full` (inclui escrita e pronúncia/transliteração quando disponível).
+  - Também aceita uso por resposta: responda um texto e envie `/trl` ou `/trl |<destino>|full`.
 - Web search module:
-  - `/search <termo>` executa busca textual genérica (provider preferido em `SEARCH_PROVIDER` com fallback automático).
-  - `/google <termo>` usa Google Programmable Search real (sem cair silenciosamente no mesmo fluxo de `/search`).
+  - `/search <termo>` executa busca textual genérica (provider preferido em `SEARCH_PROVIDER` com fallback automático) e aceita termo via resposta.
+  - `/google <termo>` usa Google Programmable Search real (sem cair silenciosamente no mesmo fluxo de `/search`) e aceita termo via resposta.
   - Quantidade de resultados controlada por `SEARCH_MAX_RESULTS`.
   - Provider configurável (`SEARCH_PROVIDER`) com fallback para DuckDuckGo no comando `/search`.
   - `/google` depende de `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_ENGINE_ID` (ou `GOOGLE_SEARCH_CX` legado); se faltar configuração, retorna aviso amigável.
   - Limitações: sem síntese semântica de múltiplas fontes (para isso, use `/search-ai`).
 - AI-assisted web search module:
-  - `/search-ai <termo>` e `/sai <termo>` executam busca assistida por IA com acesso à internet.
+  - `/search-ai <termo>` e `/sai <termo>` executam busca assistida por IA com acesso à internet e aceitam termo via resposta.
   - Retorna resposta resumida + principais fontes/links.
   - Provider selecionável por `SEARCH_AI_PROVIDER` (`openai` ou `gemini`).
   - Para `gemini`, habilite `GEMINI_API_KEY` e mantenha `GEMINI_SEARCH_GROUNDING_ENABLED=true` para grounding com Google Search.
   - Limitações: depende de modelo com suporte a web tool/grounding; falhas de quota/permissão do provider podem indisponibilizar o recurso.
 - Image search module:
-  - `/img <termo>` e `/gimage <termo>` priorizam resultado visual relevante e enviam imagem diretamente quando possível.
-  - `/imglink <termo>` usa a mesma busca e retorna fallback estruturado com 3 links úteis quando não há mídia entregável.
-  - Legenda curta inclui fonte e até sugestões extras de links relacionados.
+  - `/img <termo>` e `/gimage <termo>` priorizam resultado visual relevante, com variabilidade controlada para evitar repetição excessiva no mesmo termo.
+  - `/imglink <termo>` usa a mesma busca e retorna fallback conciso em linha curta com link útil.
+  - Ambos aceitam termo via resposta a mensagem de texto.
+  - Legenda/retorno segue formato curto: descrição breve (quando útil) + uma fonte.
   - Quantidade de resultados controlada por `IMAGE_SEARCH_MAX_RESULTS`.
   - Estratégia nativa-first: Wikimedia Commons -> Openverse -> Pixabay -> Pexels -> Unsplash; Google CSE entra apenas como fallback de descoberta.
   - Política de qualidade de domínio: prioriza fontes confiáveis e exclui Pinterest/Behance/Dribbble/ArtStation/DeviantArt do pipeline `/img`.

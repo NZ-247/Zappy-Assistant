@@ -37,6 +37,9 @@ export interface ImageSearchAdapterInput {
   mediaNormalizationMaxDimension?: number;
   mediaNormalizationJpegQuality?: number;
   mediaNormalizationTriggerBytes?: number;
+  variabilityPoolSize?: number;
+  maxValidatedDeliverables?: number;
+  recentDeliveryTtlMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -48,6 +51,9 @@ const DEFAULT_MEDIA_NORMALIZATION_ENABLED = true;
 const DEFAULT_MEDIA_NORMALIZATION_MAX_DIMENSION = 2_048;
 const DEFAULT_MEDIA_NORMALIZATION_JPEG_QUALITY = 86;
 const DEFAULT_MEDIA_NORMALIZATION_TRIGGER_BYTES = 2 * 1024 * 1024;
+const DEFAULT_VARIABILITY_POOL_SIZE = 4;
+const DEFAULT_MAX_VALIDATED_DELIVERABLES = 4;
+const DEFAULT_RECENT_DELIVERY_TTL_MS = 10 * 60 * 1000;
 
 const STOPWORDS = new Set([
   "a",
@@ -125,30 +131,30 @@ type NormalizedImageCandidate = ImageSearchResultItem & {
   imageUrl: string;
 };
 
+type ValidatedDeliverableCandidate = {
+  source: string;
+  title: string;
+  link: string;
+  pageUrl?: string;
+  imageUrl: string;
+  thumbnailUrl?: string;
+  imageBase64: string;
+  mimeType: string;
+  attribution?: string;
+  providerConfidence?: number;
+  licenseInfo?: {
+    code?: string;
+    name?: string;
+    version?: string;
+    url?: string;
+    requiresAttribution?: boolean;
+  };
+  byteLength: number;
+  candidateIndex: number;
+};
+
 type ValidatedCandidatePool = {
-  deliverableImage:
-    | {
-        source: string;
-        title: string;
-        link: string;
-        pageUrl?: string;
-        imageUrl: string;
-        thumbnailUrl?: string;
-        imageBase64: string;
-        mimeType: string;
-        attribution?: string;
-        providerConfidence?: number;
-        licenseInfo?: {
-          code?: string;
-          name?: string;
-          version?: string;
-          url?: string;
-          requiresAttribution?: boolean;
-        };
-        byteLength: number;
-        candidateIndex: number;
-      }
-    | undefined;
+  deliverableCandidates: ValidatedDeliverableCandidate[];
   candidateDiagnostics: CandidateDiagnostic[];
   triedImageKeys: Set<string>;
 };
@@ -691,11 +697,13 @@ const validateCandidatePool = async (input: {
     jpegQuality: number;
     triggerBytes: number;
   };
+  maxDeliverables: number;
   skipImageKeys?: Set<string>;
 }): Promise<ValidatedCandidatePool> => {
   const diagnostics: CandidateDiagnostic[] = [];
   const candidates = input.items.slice(0, input.maxCandidates);
   const triedImageKeys = new Set<string>();
+  const deliverableCandidates: ValidatedDeliverableCandidate[] = [];
   const skipped = input.skipImageKeys ?? new Set<string>();
 
   let processedCandidates = 0;
@@ -857,29 +865,29 @@ const validateCandidatePool = async (input: {
       elapsedMs
     });
 
-    return {
-      deliverableImage: {
-        source: candidate.source,
-        title: candidate.title,
-        link: candidate.link,
-        pageUrl: candidate.pageUrl,
-        imageUrl,
-        thumbnailUrl: candidate.thumbnailUrl,
-        imageBase64: normalized.buffer.toString("base64"),
-        mimeType: normalized.mimeType,
-        attribution: candidate.attribution,
-        providerConfidence: candidate.providerConfidence,
-        licenseInfo: candidate.licenseInfo,
-        byteLength: normalized.byteLength,
-        candidateIndex
-      },
-      candidateDiagnostics: diagnostics,
-      triedImageKeys
-    };
+    deliverableCandidates.push({
+      source: candidate.source,
+      title: candidate.title,
+      link: candidate.link,
+      pageUrl: candidate.pageUrl,
+      imageUrl,
+      thumbnailUrl: candidate.thumbnailUrl,
+      imageBase64: normalized.buffer.toString("base64"),
+      mimeType: normalized.mimeType,
+      attribution: candidate.attribution,
+      providerConfidence: candidate.providerConfidence,
+      licenseInfo: candidate.licenseInfo,
+      byteLength: normalized.byteLength,
+      candidateIndex
+    });
+
+    if (deliverableCandidates.length >= input.maxDeliverables) {
+      break;
+    }
   }
 
   return {
-    deliverableImage: undefined,
+    deliverableCandidates,
     candidateDiagnostics: diagnostics,
     triedImageKeys
   };
@@ -897,6 +905,74 @@ const sanitizeProviderError = (error: unknown): string => {
   if (!(error instanceof Error)) return "unknown_error";
   const text = error.message.replace(/\s+/g, " ").trim();
   return text || "unknown_error";
+};
+
+type RecentDeliveryRecord = {
+  imageKey: string;
+  source?: string;
+  domain?: string;
+  deliveredAt: number;
+};
+
+const normalizeQueryCacheKey = (value: string): string => value.replace(/\s+/g, " ").trim().toLowerCase();
+
+const getCandidateDomain = (candidate: { pageUrl?: string; link?: string; imageUrl: string }): string | undefined =>
+  getHost(candidate.pageUrl || candidate.link || candidate.imageUrl) ?? getHost(candidate.imageUrl);
+
+const weightedRandomIndex = (weights: number[]): number => {
+  const safe = weights.map((weight) => (Number.isFinite(weight) && weight > 0 ? weight : 0));
+  const total = safe.reduce((sum, value) => sum + value, 0);
+  if (total <= 0) return 0;
+  const random = Math.random() * total;
+  let cursor = 0;
+  for (let i = 0; i < safe.length; i += 1) {
+    cursor += safe[i] ?? 0;
+    if (random <= cursor) return i;
+  }
+  return Math.max(0, safe.length - 1);
+};
+
+const chooseDeliverableCandidate = (input: {
+  candidates: ValidatedDeliverableCandidate[];
+  variabilityPoolSize: number;
+  recent?: RecentDeliveryRecord;
+}): ValidatedDeliverableCandidate => {
+  if (input.candidates.length <= 1) return input.candidates[0] as ValidatedDeliverableCandidate;
+
+  const pool = input.candidates.slice(0, input.variabilityPoolSize);
+  const recent = input.recent;
+  const nonRepeated = recent ? pool.filter((candidate) => canonicalImageUrl(candidate.imageUrl) !== recent.imageKey) : pool;
+  const activePool = nonRepeated.length > 0 ? nonRepeated : pool;
+
+  const topSource = activePool[0]?.source;
+  const hasSourceDiversity = new Set(activePool.map((candidate) => candidate.source)).size > 1;
+  const hasDomainDiversity = new Set(activePool.map((candidate) => getCandidateDomain(candidate) ?? "")).size > 1;
+
+  const weights = activePool.map((candidate, index) => {
+    const rankWeight = Math.max(0.22, 1 - index * 0.18);
+    let weight = rankWeight;
+
+    const candidateKey = canonicalImageUrl(candidate.imageUrl);
+    const candidateDomain = getCandidateDomain(candidate);
+
+    if (recent) {
+      if (candidateKey === recent.imageKey) weight *= 0.32;
+      if (candidate.source && recent.source && candidate.source !== recent.source) weight *= 1.22;
+      if (candidateDomain && recent.domain && candidateDomain !== recent.domain) weight *= 1.16;
+    }
+
+    if (hasSourceDiversity && topSource && candidate.source !== topSource) {
+      weight *= 1.08;
+    }
+    if (hasDomainDiversity && recent?.domain && candidateDomain && candidateDomain !== recent.domain) {
+      weight *= 1.06;
+    }
+
+    return weight;
+  });
+
+  const selectedIndex = weightedRandomIndex(weights);
+  return activePool[selectedIndex] ?? activePool[0] ?? (input.candidates[0] as ValidatedDeliverableCandidate);
 };
 
 export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageSearchPort => {
@@ -918,6 +994,56 @@ export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageS
     maxDimension: clampInt(input.mediaNormalizationMaxDimension ?? DEFAULT_MEDIA_NORMALIZATION_MAX_DIMENSION, 256, 4_096),
     jpegQuality: clampInt(input.mediaNormalizationJpegQuality ?? DEFAULT_MEDIA_NORMALIZATION_JPEG_QUALITY, 45, 95),
     triggerBytes: clampInt(input.mediaNormalizationTriggerBytes ?? DEFAULT_MEDIA_NORMALIZATION_TRIGGER_BYTES, 64_000, mediaValidationMaxBytes)
+  };
+  const variabilityPoolSize = clampInt(input.variabilityPoolSize ?? DEFAULT_VARIABILITY_POOL_SIZE, 1, 8);
+  const maxValidatedDeliverables = clampInt(
+    input.maxValidatedDeliverables ?? Math.max(DEFAULT_MAX_VALIDATED_DELIVERABLES, variabilityPoolSize),
+    1,
+    12
+  );
+  const recentDeliveryTtlMs = clampInt(input.recentDeliveryTtlMs ?? DEFAULT_RECENT_DELIVERY_TTL_MS, 30_000, 86_400_000);
+  const recentDeliveryCache = new Map<string, RecentDeliveryRecord>();
+
+  const buildRecentDeliveryKey = (query: string, tenantId?: string): string => `${tenantId ?? "global"}::${normalizeQueryCacheKey(query)}`;
+
+  const pruneRecentDeliveries = (): void => {
+    const now = Date.now();
+    for (const [key, value] of recentDeliveryCache) {
+      if (now - value.deliveredAt > recentDeliveryTtlMs) {
+        recentDeliveryCache.delete(key);
+      }
+    }
+
+    if (recentDeliveryCache.size <= 2048) return;
+    const keys = [...recentDeliveryCache.entries()]
+      .sort((left, right) => left[1].deliveredAt - right[1].deliveredAt)
+      .slice(0, recentDeliveryCache.size - 2048)
+      .map((entry) => entry[0]);
+    for (const key of keys) {
+      recentDeliveryCache.delete(key);
+    }
+  };
+
+  const readRecentDelivery = (query: string, tenantId?: string): RecentDeliveryRecord | undefined => {
+    pruneRecentDeliveries();
+    const key = buildRecentDeliveryKey(query, tenantId);
+    const cached = recentDeliveryCache.get(key);
+    if (!cached) return undefined;
+    if (Date.now() - cached.deliveredAt > recentDeliveryTtlMs) {
+      recentDeliveryCache.delete(key);
+      return undefined;
+    }
+    return cached;
+  };
+
+  const writeRecentDelivery = (query: string, tenantId: string | undefined, candidate: ValidatedDeliverableCandidate): void => {
+    const key = buildRecentDeliveryKey(query, tenantId);
+    recentDeliveryCache.set(key, {
+      imageKey: canonicalImageUrl(candidate.imageUrl),
+      source: candidate.source,
+      domain: getCandidateDomain(candidate),
+      deliveredAt: Date.now()
+    });
   };
 
   const googleEngineId = resolveGoogleEngineId({
@@ -985,7 +1111,7 @@ export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageS
   };
 
   return {
-    search: async ({ query, limit, locale }) => {
+    search: async ({ tenantId, query, limit, locale }) => {
       const requestedLimit = clampInt(limit, 1, 8);
       const providerLimit = Math.max(requestedLimit + 2, mediaValidationCandidates, 4);
 
@@ -1007,16 +1133,24 @@ export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageS
         minBytes: mediaValidationMinBytes,
         maxCandidates: Math.max(requestedLimit, mediaValidationCandidates),
         logger: input.logger,
-        normalization: mediaNormalizationConfig
+        normalization: mediaNormalizationConfig,
+        maxDeliverables: maxValidatedDeliverables
       });
 
-      if (nativeValidation.deliverableImage) {
+      if (nativeValidation.deliverableCandidates.length > 0) {
+        const chosen = chooseDeliverableCandidate({
+          candidates: nativeValidation.deliverableCandidates,
+          variabilityPoolSize,
+          recent: readRecentDelivery(query, tenantId)
+        });
+        writeRecentDelivery(query, tenantId, chosen);
+
         return {
-          provider: nativeValidation.deliverableImage.source,
+          provider: chosen.source,
           requestedProvider: preferredProvider,
           fallbackUsed: false,
           results: rankedNative,
-          deliverableImage: nativeValidation.deliverableImage,
+          deliverableImage: chosen,
           candidateDiagnostics: nativeValidation.candidateDiagnostics
         };
       }
@@ -1060,20 +1194,28 @@ export const createImageSearchAdapter = (input: ImageSearchAdapterInput): ImageS
             maxCandidates: Math.max(requestedLimit, mediaValidationCandidates),
             logger: input.logger,
             normalization: mediaNormalizationConfig,
+            maxDeliverables: maxValidatedDeliverables,
             skipImageKeys: nativeValidation.triedImageKeys
           });
 
           diagnostics.push(...googleValidation.candidateDiagnostics);
 
-          if (googleValidation.deliverableImage) {
+          if (googleValidation.deliverableCandidates.length > 0) {
+            const chosen = chooseDeliverableCandidate({
+              candidates: googleValidation.deliverableCandidates,
+              variabilityPoolSize,
+              recent: readRecentDelivery(query, tenantId)
+            });
+            writeRecentDelivery(query, tenantId, chosen);
+
             return {
-              provider: googleValidation.deliverableImage.source,
+              provider: chosen.source,
               requestedProvider: preferredProvider,
               fallbackUsed,
               fallbackReason,
               correctedQuery,
               results: mergedResults,
-              deliverableImage: googleValidation.deliverableImage,
+              deliverableImage: chosen,
               candidateDiagnostics: diagnostics
             };
           }

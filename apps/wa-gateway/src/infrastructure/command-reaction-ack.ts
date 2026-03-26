@@ -25,7 +25,15 @@ type MessageLike = {
 };
 
 const registryCache = new Map<string, ReturnType<typeof createCommandRegistry>>();
-const LEGACY_PROGRESS_ACK_COMMANDS = new Set(["img", "search", "google", "search-ai", "tts", "transcribe", "dl"]);
+const LEGACY_PROGRESS_ACK_COMMANDS = new Set(["img", "search", "google", "search-ai", "tts", "transcribe", "tss", "trl", "dl"]);
+
+const extractCommandToken = (text: string, commandPrefix: string): string | undefined => {
+  const trimmed = text.trim();
+  if (!trimmed || !trimmed.startsWith(commandPrefix)) return undefined;
+  const body = trimmed.slice(commandPrefix.length).trim().toLowerCase();
+  if (!body) return undefined;
+  return body.split(/\s+/)[0];
+};
 
 const getRegistry = (prefix: string) => {
   const cached = registryCache.get(prefix);
@@ -42,12 +50,25 @@ const resolveCommandAckMetadata = (input: {
   const trimmed = input.text.trim();
   if (!trimmed) return null;
   const match = getRegistry(input.commandPrefix).resolve(trimmed);
-  if (!match) return null;
-  const progressAckEnabled = Boolean((match.command as any)?.progressAck) || LEGACY_PROGRESS_ACK_COMMANDS.has(match.command.name);
-  if (!progressAckEnabled) return null;
+  if (match) {
+    const progressAckEnabled = Boolean((match.command as any)?.progressAck) || LEGACY_PROGRESS_ACK_COMMANDS.has(match.command.name);
+    if (!progressAckEnabled) return null;
+    return {
+      commandName: match.command.name,
+      matchedAlias: match.matchedAlias
+    };
+  }
+
+  const token = extractCommandToken(trimmed, input.commandPrefix);
+  if (!token) return null;
+  const aliasFallback: Record<string, string> = {
+    tss: "transcribe"
+  };
+  const normalized = aliasFallback[token] ?? token;
+  if (!LEGACY_PROGRESS_ACK_COMMANDS.has(normalized)) return null;
   return {
-    commandName: match.command.name,
-    matchedAlias: match.matchedAlias
+    commandName: normalized,
+    matchedAlias: normalized === token ? undefined : token
   };
 };
 

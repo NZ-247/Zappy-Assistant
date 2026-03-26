@@ -5,9 +5,15 @@ export interface OpenAiTranslationAdapterInput {
   apiKey?: string;
   model: string;
   timeoutMs?: number;
+  client?: {
+    responses: {
+      create: (input: unknown) => Promise<unknown>;
+    };
+  };
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
+const LANGUAGE_TAG_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i;
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
@@ -43,17 +49,105 @@ const extractOutputText = (response: any): string => {
   return "";
 };
 
+const normalizeLanguageTag = (value?: string | null): string | undefined => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) return undefined;
+  return LANGUAGE_TAG_PATTERN.test(normalized) ? normalized : undefined;
+};
+
+const parseJsonObject = (value: string): Record<string, unknown> | null => {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      const parsed = JSON.parse(trimmed.slice(start, end + 1));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+};
+
+const readTextField = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized || undefined;
+};
+
+const parseTranslationPayload = (raw: string): {
+  translatedText: string;
+  detectedSourceLanguage?: string;
+  transliteration?: string;
+  pronunciation?: string;
+} => {
+  const asJson = parseJsonObject(raw);
+
+  if (!asJson) {
+    const translatedText = raw.trim();
+    if (!translatedText) throw new Error("translation_empty_output");
+    return { translatedText };
+  }
+
+  const translatedText = readTextField(asJson.translatedText ?? asJson.translation);
+  if (!translatedText) throw new Error("translation_empty_output");
+
+  return {
+    translatedText,
+    detectedSourceLanguage: normalizeLanguageTag(readTextField(asJson.detectedSourceLanguage ?? asJson.sourceLanguage)),
+    transliteration: readTextField(asJson.transliteration),
+    pronunciation: readTextField(asJson.pronunciation)
+  };
+};
+
 export const createOpenAiTranslationAdapter = (input: OpenAiTranslationAdapterInput): TextTranslationPort | undefined => {
-  const client = input.apiKey ? new OpenAI({ apiKey: input.apiKey }) : null;
+  const client = input.client ?? (input.apiKey ? new OpenAI({ apiKey: input.apiKey }) : null);
   if (!client) return undefined;
 
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   return {
-    translate: async (request: Parameters<TextTranslationPort["translate"]>[0]) => {
-      const sourceLanguage = request.sourceLanguage?.trim() || "auto";
-      const targetLanguage = request.targetLanguage.trim();
+    detectLanguage: async (request) => {
       const model = input.model;
+      const response = await withTimeout(
+        (client as any).responses.create({
+          model,
+          input: [
+            {
+              role: "system",
+              content:
+                "You detect the dominant source language. Respond with only one lowercase BCP-47 language tag like pt, pt-br, en, es, fr, de, zh-cn, ja. No extra text."
+            },
+            {
+              role: "user",
+              content: request.text
+            }
+          ]
+        }),
+        request.timeoutMs ?? timeoutMs
+      );
+
+      const output = extractOutputText(response);
+      const language = normalizeLanguageTag(output) ?? "und";
+
+      return {
+        language,
+        provider: "openai",
+        model
+      };
+    },
+
+    translate: async (request) => {
+      const sourceLanguage = normalizeLanguageTag(request.sourceLanguage) ?? "auto";
+      const targetLanguage = normalizeLanguageTag(request.targetLanguage) ?? request.targetLanguage.trim().toLowerCase();
+      const model = input.model;
+      const mode = request.mode === "full" ? "full" : "basic";
 
       const response = await withTimeout(
         (client as any).responses.create({
@@ -62,28 +156,34 @@ export const createOpenAiTranslationAdapter = (input: OpenAiTranslationAdapterIn
             {
               role: "system",
               content:
-                "You are a precise translation engine. Translate the user text preserving meaning and tone. Return only the translated text, without quotes or extra notes."
+                "You are a precise translation engine. Return strict JSON only with keys translatedText, detectedSourceLanguage, transliteration, pronunciation. translatedText is required; other keys can be empty strings when unavailable. No markdown, no commentary."
             },
             {
               role: "user",
-              content: `Source language: ${sourceLanguage}\nTarget language: ${targetLanguage}\nText:\n${request.text}`
+              content:
+                `Mode: ${mode}\n` +
+                `Source language hint: ${sourceLanguage}\n` +
+                `Target language: ${targetLanguage}\n` +
+                "Text:\n" +
+                request.text
             }
           ]
         }),
         request.timeoutMs ?? timeoutMs
       );
 
-      const translatedText = extractOutputText(response);
-      if (!translatedText) {
-        throw new Error("translation_empty_output");
-      }
+      const raw = extractOutputText(response);
+      const parsed = parseTranslationPayload(raw);
 
       return {
-        translatedText,
+        translatedText: parsed.translatedText,
         provider: "openai",
         model,
         sourceLanguage: sourceLanguage === "auto" ? undefined : sourceLanguage,
-        targetLanguage
+        detectedSourceLanguage: parsed.detectedSourceLanguage,
+        targetLanguage,
+        transliteration: mode === "full" ? parsed.transliteration : undefined,
+        pronunciation: mode === "full" ? parsed.pronunciation : undefined
       };
     }
   };

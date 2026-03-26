@@ -1,5 +1,5 @@
 import type { ResponseAction } from "../../../../pipeline/actions.js";
-import type { ImageLicenseInfo, LoggerPort } from "../../../../pipeline/ports.js";
+import type { LoggerPort } from "../../../../pipeline/ports.js";
 import type { ImageSearchPort } from "../../ports.js";
 import { isValidImageQuery, normalizeImageQuery } from "../../domain/image-search-query.js";
 
@@ -21,85 +21,31 @@ const normalizeInlineText = (value: string): string => value.replace(/\s+/g, " "
 
 const resolvePageUrl = (item: { pageUrl?: string; link?: string }): string => item.pageUrl?.trim() || item.link?.trim() || "";
 
-const SOURCE_LABELS: Record<string, string> = {
-  wikimedia: "Wikimedia Commons",
-  openverse: "Openverse",
-  pixabay: "Pixabay",
-  pexels: "Pexels",
-  unsplash: "Unsplash",
-  google_cse: "Google CSE"
+const isUsefulTitle = (value?: string): boolean => {
+  const normalized = normalizeInlineText(value ?? "");
+  if (!normalized) return false;
+  const lower = normalized.toLowerCase();
+  if (["imagem", "image", "foto", "photo"].includes(lower)) return false;
+  return normalized.length >= 3;
 };
 
-const formatSourceLabel = (source?: string): string => {
-  if (!source) return "fonte desconhecida";
-  const normalized = source.trim().toLowerCase();
-  if (!normalized) return "fonte desconhecida";
-  return SOURCE_LABELS[normalized] ?? normalized;
+const buildConciseCaption = (input: { title?: string; link: string }): string => {
+  const title = isUsefulTitle(input.title) ? shorten(normalizeInlineText(input.title ?? ""), 96) : "Imagem encontrada";
+  return `${title}. Fonte: ${input.link}`;
 };
 
-const formatLicense = (license?: ImageLicenseInfo): string | null => {
-  if (!license) return null;
-  const name = normalizeInlineText(license.name ?? "");
-  const code = normalizeInlineText(license.code ?? "");
-  const version = normalizeInlineText(license.version ?? "");
-  const url = normalizeInlineText(license.url ?? "");
-
-  const base = [name || code, version].filter(Boolean).join(" ");
-  if (base && url) return `${base} (${url})`;
-  if (base) return base;
-  if (url) return url;
-  return null;
-};
-
-const buildStructuredLinksFallback = (input: {
-  query: string;
+const buildConciseLinkReply = (input: {
+  title?: string;
+  link: string;
   correctedQuery?: string;
-  results: Array<{
-    source?: string;
-    title: string;
-    link: string;
-    pageUrl?: string;
-    attribution?: string;
-    licenseInfo?: ImageLicenseInfo;
-  }>;
-}) => {
-  const candidates = input.results
-    .map((item) => ({
-      ...item,
-      page: resolvePageUrl(item)
-    }))
-    .filter((item) => Boolean(item.page))
-    .slice(0, 3);
-
-  if (candidates.length === 0) {
-    return IMAGE_FALLBACK_TEXT;
-  }
-
-  const lines = [
-    `Nao consegui enviar a imagem agora. Aqui vao 3 fontes uteis para: ${input.query}`,
-    ""
-  ];
-
-  candidates.forEach((item, index) => {
-    lines.push(`${index + 1}. ${shorten(item.title, 90)}`);
-    lines.push(item.page);
-    const details = [`Fonte: ${formatSourceLabel(item.source)}`];
-    if (item.attribution?.trim()) {
-      details.push(`Creditos: ${shorten(item.attribution.trim(), 70)}`);
-    }
-    const licenseLabel = formatLicense(item.licenseInfo);
-    if (licenseLabel) {
-      details.push(`Licenca: ${shorten(licenseLabel, 90)}`);
-    }
-    lines.push(details.join(" | "));
-    lines.push("");
-  });
-
-  if (input.correctedQuery && input.correctedQuery.toLowerCase() !== input.query.toLowerCase()) {
-    lines.push(`Consulta ajustada: ${input.correctedQuery}`);
-  }
-
-  return lines.join("\n").trim();
+  query: string;
+}): string => {
+  const base = buildConciseCaption({ title: input.title, link: input.link });
+  const corrected =
+    input.correctedQuery && input.correctedQuery.toLowerCase() !== input.query.toLowerCase()
+      ? `\nConsulta ajustada: ${input.correctedQuery}`
+      : "";
+  return `${base}${corrected}`;
 };
 
 const sanitizeErrorMessage = (error: unknown): string => {
@@ -109,7 +55,7 @@ const sanitizeErrorMessage = (error: unknown): string => {
   return message.length <= 140 ? message : `${message.slice(0, 137)}...`;
 };
 
-const IMAGE_FALLBACK_TEXT = "Encontrei resultados, mas não consegui baixar uma imagem válida agora. Tente outro termo em instantes.";
+const IMAGE_FALLBACK_TEXT = "Encontrei resultados, mas nao consegui baixar uma imagem valida agora. Tente outro termo em instantes.";
 
 const logImageSearch = (
   logger: LoggerPort | undefined,
@@ -194,6 +140,7 @@ const logCandidateDiagnostics = (
 };
 
 export const executeImageSearch = async (input: {
+  tenantId?: string;
   query: string;
   imageSearch?: ImageSearchPort;
   config: ImageSearchUseCaseConfig;
@@ -204,11 +151,11 @@ export const executeImageSearch = async (input: {
   const replyText = (text: string): ResponseAction[] => [{ kind: "reply_text", text: input.stylizeReply ? input.stylizeReply(text) : text }];
 
   if (!input.config.enabled) {
-    return replyText("Busca por imagens está desativada neste ambiente.");
+    return replyText("Busca por imagens esta desativada neste ambiente.");
   }
 
   if (!input.imageSearch) {
-    return replyText("Busca por imagens não está configurada no runtime atual.");
+    return replyText("Busca por imagens nao esta configurada no runtime atual.");
   }
 
   const normalizedQuery = normalizeImageQuery(input.query);
@@ -222,6 +169,7 @@ export const executeImageSearch = async (input: {
 
   try {
     const result = await input.imageSearch.search({
+      tenantId: input.tenantId,
       query: normalizedQuery,
       limit,
       mode: allowLinkFallback ? "link_fallback" : "media",
@@ -254,25 +202,11 @@ export const executeImageSearch = async (input: {
     const deliverable = result.deliverableImage;
 
     if (deliverable?.imageBase64) {
-      const secondary = selected.filter((item) => item.imageUrl !== deliverable.imageUrl).slice(0, 2);
-      const deliverablePageUrl = resolvePageUrl(deliverable);
-      const captionLines = [
-        `${shorten(deliverable.title, 90)}`,
-        `Fonte (${formatSourceLabel(deliverable.source)}): ${deliverablePageUrl || deliverable.link}`
-      ];
-      if (deliverable.attribution?.trim()) {
-        captionLines.push(`Creditos: ${shorten(deliverable.attribution.trim(), 80)}`);
-      }
-      const licenseLabel = formatLicense(deliverable.licenseInfo);
-      if (licenseLabel) {
-        captionLines.push(`Licenca: ${shorten(licenseLabel, 90)}`);
-      }
-      if (secondary.length > 0) {
-        captionLines.push("Mais resultados:");
-        captionLines.push(
-          ...secondary.map((item, index) => `${index + 2}. ${shorten(item.title, 70)}\n${resolvePageUrl(item) || item.link}`)
-        );
-      }
+      const sourceLink = resolvePageUrl(deliverable);
+      const caption = buildConciseCaption({
+        title: deliverable.title,
+        link: sourceLink || deliverable.link || deliverable.imageUrl
+      });
 
       logImageSearch(input.logger, {
         action: "image_search",
@@ -297,7 +231,7 @@ export const executeImageSearch = async (input: {
           imageUrl: deliverable.imageUrl,
           imageBase64: deliverable.imageBase64,
           mimeType: deliverable.mimeType,
-          caption: captionLines.join("\n"),
+          caption,
           fallbackText: IMAGE_FALLBACK_TEXT
         }
       ];
@@ -323,11 +257,17 @@ export const executeImageSearch = async (input: {
     }
 
     if (allowLinkFallback) {
+      const firstWithLink = selected.find((item) => Boolean(resolvePageUrl(item) || item.link));
+      if (!firstWithLink) {
+        return replyText(IMAGE_FALLBACK_TEXT);
+      }
+
       return replyText(
-        buildStructuredLinksFallback({
-          query: normalizedQuery,
+        buildConciseLinkReply({
+          title: firstWithLink.title,
+          link: resolvePageUrl(firstWithLink) || firstWithLink.link,
           correctedQuery: result.correctedQuery,
-          results: selected
+          query: normalizedQuery
         })
       );
     }
