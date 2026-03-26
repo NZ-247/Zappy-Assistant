@@ -6,7 +6,6 @@ export interface HidetagReplyContextInput {
   quotedMessageType?: string;
   quotedText?: string;
   quotedHasMedia?: boolean;
-  quotedAudioPtt?: boolean;
 }
 
 export type HidetagInputResolutionFailureReason = "missing_input" | "incompatible_reply" | "unsupported_reply_media";
@@ -17,9 +16,9 @@ export type HidetagInputResolution =
 
 const normalizeText = (value?: string): string => (value ?? "").replace(/\s+/g, " ").trim();
 
-const mediaTypeMap: Record<string, Exclude<HidetagContentPayload["kind"], "reply_audio">> = {
+const mediaTypeMap: Record<string, Exclude<HidetagContentPayload["kind"], "text" | "reply_text">> = {
   imagemessage: "reply_image",
-  audiomessage: "reply_ptt",
+  audiomessage: "reply_audio",
   stickermessage: "reply_sticker",
   videomessage: "reply_video",
   documentmessage: "reply_document"
@@ -45,12 +44,10 @@ export const resolveHidetagInput = (input: {
     const normalizedType = normalizeMessageType(replyContext.quotedMessageType);
     const mediaKind = mediaTypeMap[normalizedType];
     if (mediaKind) {
-      const resolvedKind: HidetagContentPayload["kind"] =
-        normalizedType === "audiomessage" && !replyContext.quotedAudioPtt ? "reply_audio" : mediaKind;
       return {
         ok: true,
         payload: {
-          kind: resolvedKind
+          kind: mediaKind
         }
       };
     }

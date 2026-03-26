@@ -8,16 +8,18 @@ import type {
   MediaDownloadPort
 } from "@zappy/core";
 import type { DownloadProviderAdapter, DownloadResolveResult } from "./types.js";
-import { createYoutubeDownloadProvider } from "./providers/youtube-provider.js";
+import { createYoutubeDownloadProvider, type YoutubeProviderInput } from "./providers/youtube-provider.js";
 import { createInstagramDownloadProvider, type InstagramProviderInput } from "./providers/instagram-provider.js";
-import { createFacebookDownloadProvider } from "./providers/facebook-provider.js";
+import { createFacebookDownloadProvider, type FacebookProviderInput } from "./providers/facebook-provider.js";
 import { createDirectDownloadProvider, type DirectDownloadProviderInput } from "./providers/direct-provider.js";
 
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface MediaDownloadRouterInput {
+  youtube?: YoutubeProviderInput;
   direct?: DirectDownloadProviderInput;
   instagram?: InstagramProviderInput;
+  facebook?: FacebookProviderInput;
   logger?: LoggerPort;
   maxBytes?: number;
   providers?: DownloadProviderAdapter[];
@@ -118,12 +120,18 @@ export const createMediaDownloadRouter = (input?: MediaDownloadRouterInput): Med
   const providers =
     input?.providers ??
     [
-      createYoutubeDownloadProvider(),
+      createYoutubeDownloadProvider({
+        ...input?.youtube,
+        logger: input?.youtube?.logger ?? input?.logger
+      }),
       createInstagramDownloadProvider({
         ...input?.instagram,
         logger: input?.instagram?.logger ?? input?.logger
       }),
-      createFacebookDownloadProvider(),
+      createFacebookDownloadProvider({
+        ...input?.facebook,
+        logger: input?.facebook?.logger ?? input?.logger
+      }),
       createDirectDownloadProvider(input?.direct)
     ];
   const maxBytes = input?.maxBytes ?? DEFAULT_MAX_BYTES;

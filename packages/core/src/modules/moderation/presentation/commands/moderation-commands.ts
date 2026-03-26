@@ -95,8 +95,7 @@ export const handleModerationCommand = (
         quotedWaMessageId: ctx.event.quotedWaMessageId,
         quotedMessageType: ctx.event.quotedMessageType,
         quotedText: ctx.event.quotedText,
-        quotedHasMedia: ctx.event.quotedHasMedia,
-        quotedAudioPtt: ctx.event.quotedAudioPtt
+        quotedHasMedia: ctx.event.quotedHasMedia
       }
     });
     if (!resolved.ok) {

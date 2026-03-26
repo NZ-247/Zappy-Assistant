@@ -6,7 +6,6 @@ type HidetagContentKind =
   | "text"
   | "reply_text"
   | "reply_image"
-  | "reply_ptt"
   | "reply_audio"
   | "reply_sticker"
   | "reply_video"
@@ -38,7 +37,7 @@ const resolveHidetagContentKind = (action: any): HidetagContentKind => {
   const fromPayload = normalizeMessageType(action?.hidetagContent?.kind);
   if (fromPayload === "reply_text") return "reply_text";
   if (fromPayload === "reply_image") return "reply_image";
-  if (fromPayload === "reply_ptt") return "reply_ptt";
+  if (fromPayload === "reply_ptt") return "reply_audio";
   if (fromPayload === "reply_audio") return "reply_audio";
   if (fromPayload === "reply_sticker") return "reply_sticker";
   if (fromPayload === "reply_video") return "reply_video";
@@ -173,7 +172,7 @@ export const handleModerationOutboundAction = async (input: {
           replyText = "Responda uma imagem válida para usar hidetag com mídia.";
           success = false;
           resultLabel = "hidetag_image_missing";
-        } else if ((hidetagKind === "reply_audio" || hidetagKind === "reply_ptt") && quotedType !== "audiomessage") {
+        } else if (hidetagKind === "reply_audio" && quotedType !== "audiomessage") {
           replyText = "Responda um áudio válido para usar hidetag com mídia.";
           success = false;
           resultLabel = "hidetag_audio_missing";
@@ -199,48 +198,36 @@ export const handleModerationOutboundAction = async (input: {
               contextInfo: hiddenContext
             };
             persistedText = actionText || quotedCaption || "[hidetag imagem]";
-          } else if (hidetagKind === "reply_audio" || hidetagKind === "reply_ptt") {
+          } else if (hidetagKind === "reply_audio") {
             const mimeType = quotedMessage?.audioMessage?.mimetype || "audio/ogg; codecs=opus";
-            const shouldSendAsPtt = hidetagKind === "reply_ptt";
             runtime.logger.info?.(
               runtime.withCategory("WA-OUT", {
                 action: "hidetag",
-                status: "hidetag_audio_kind_detected",
+                status: "hidetag_audio_prepare_started",
                 responseActionId,
                 waGroupId: runtime.event.waGroupId,
                 quotedAudioPtt: quotedMessage?.audioMessage?.ptt === true,
                 requestedHidetagKind: hidetagKind,
-                requestedPtt: shouldSendAsPtt
+                requestedPtt: true
               }),
-              "hidetag audio kind detected"
+              "hidetag audio preparation started"
             );
-
-            if (shouldSendAsPtt) {
-              runtime.logger.info?.(
-                runtime.withCategory("WA-OUT", {
-                  action: "hidetag",
-                  status: "hidetag_ptt_transcode_started",
-                  responseActionId,
-                  waGroupId: runtime.event.waGroupId,
-                  requestedMimeType: mimeType
-                }),
-                "hidetag ptt normalization started"
-              );
-            }
 
             const preparedAudio = await prepareWhatsAppAudioForSend({
               audioBuffer: mediaBuffer,
               mimeType,
-              requestPtt: shouldSendAsPtt
+              requestPtt: true
             });
 
-            if (shouldSendAsPtt && preparedAudio.ptt) {
+            if (preparedAudio.ptt) {
               runtime.logger.info?.(
                 runtime.withCategory("WA-OUT", {
-                  action: "hidetag",
-                  status: "hidetag_ptt_transcode_success",
+                  action: "send_ptt",
+                  status: "success",
                   responseActionId,
                   waGroupId: runtime.event.waGroupId,
+                  requestedPtt: true,
+                  finalPtt: true,
                   requestedMimeType: mimeType,
                   finalMimeType: preparedAudio.mimeType,
                   transcodedToPtt: preparedAudio.transcodedToPtt,
@@ -249,32 +236,36 @@ export const handleModerationOutboundAction = async (input: {
                   outputContainer: preparedAudio.outputProbe.container,
                   outputCodecGuess: preparedAudio.outputProbe.codecGuess
                 }),
-                "hidetag ptt normalization succeeded"
+                "hidetag voice note sent"
               );
-            } else if (shouldSendAsPtt && !preparedAudio.ptt) {
+              content = {
+                audio: preparedAudio.audioBuffer,
+                mimetype: preparedAudio.mimeType,
+                ptt: true,
+                contextInfo: hiddenContext
+              };
+              persistedText = actionText || "[hidetag voz]";
+            } else {
               runtime.logger.warn?.(
                 runtime.withCategory("WA-OUT", {
-                  action: "hidetag",
-                  status: "hidetag_ptt_transcode_fallback",
+                  action: "send_ptt",
+                  status: "failure",
                   responseActionId,
                   waGroupId: runtime.event.waGroupId,
+                  requestedPtt: true,
+                  finalPtt: false,
                   requestedMimeType: mimeType,
                   finalMimeType: preparedAudio.mimeType,
                   reason: preparedAudio.transcodeReason ?? "ptt_transcode_failed",
                   inputContainer: preparedAudio.inputProbe.container,
                   inputCodecGuess: preparedAudio.inputProbe.codecGuess
                 }),
-                "hidetag ptt normalization failed; fallback to regular audio"
+                "hidetag voice note preparation failed"
               );
+              replyText = "Nao consegui converter esse audio para voz agora. Tente novamente.";
+              success = false;
+              resultLabel = "hidetag_audio_ptt_failed";
             }
-
-            content = {
-              audio: preparedAudio.audioBuffer,
-              mimetype: preparedAudio.mimeType,
-              ptt: preparedAudio.ptt,
-              contextInfo: hiddenContext
-            };
-            persistedText = actionText || (preparedAudio.ptt ? "[hidetag voz]" : "[hidetag audio]");
           } else if (hidetagKind === "reply_sticker") {
             content = {
               sticker: mediaBuffer,

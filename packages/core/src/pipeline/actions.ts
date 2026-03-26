@@ -123,7 +123,6 @@ export type HidetagContentKind =
   | "text"
   | "reply_text"
   | "reply_image"
-  | "reply_ptt"
   | "reply_audio"
   | "reply_sticker"
   | "reply_video"

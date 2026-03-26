@@ -54,12 +54,11 @@ test("hidetag resolver resolves replied media kinds", () => {
   const ptt = resolveHidetagInput({
     replyContext: {
       quotedWaMessageId: "msg-4-ptt",
-      quotedMessageType: "audioMessage",
-      quotedAudioPtt: true
+      quotedMessageType: "audioMessage"
     }
   });
   assert.equal(ptt.ok, true);
-  if (ptt.ok) assert.equal(ptt.payload.kind, "reply_ptt");
+  if (ptt.ok) assert.equal(ptt.payload.kind, "reply_audio");
 });
 
 test("hidetag resolver rejects unsupported replied media", () => {

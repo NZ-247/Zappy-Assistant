@@ -132,7 +132,7 @@ test("hidetag replied sticker is resent as bot-originated sticker with hidden me
   assert.deepEqual(sentPayloads[0]?.contextInfo?.mentionedJid, ["111@s.whatsapp.net", "222@s.whatsapp.net"]);
 });
 
-test("hidetag replied ptt audio is resent as bot-originated voice note with hidden mentions", async () => {
+test("hidetag replied audio is resent as bot-originated voice note with hidden mentions", async () => {
   const sentPayloads: any[] = [];
   const downloadCalls: any[] = [];
 
@@ -141,7 +141,7 @@ test("hidetag replied ptt audio is resent as bot-originated voice note with hidd
       kind: "moderation_action",
       action: "hidetag",
       waGroupId: "120363012345678@g.us",
-      hidetagContent: { kind: "reply_ptt" }
+      hidetagContent: { kind: "reply_audio" }
     },
     quotedMessage: {
       audioMessage: {
@@ -164,7 +164,7 @@ test("hidetag replied ptt audio is resent as bot-originated voice note with hidd
   assert.deepEqual(sentPayloads[0]?.contextInfo?.mentionedJid, ["111@s.whatsapp.net", "222@s.whatsapp.net"]);
 });
 
-test("hidetag replied ptt falls back to regular audio when ptt normalization fails", async () => {
+test("hidetag replied audio sends concise failure when voice-note preparation fails", async () => {
   const sentPayloads: any[] = [];
   const downloadCalls: any[] = [];
   const logs: Array<{ level: "info" | "warn" | "debug"; payload: any; message?: string }> = [];
@@ -174,7 +174,7 @@ test("hidetag replied ptt falls back to regular audio when ptt normalization fai
       kind: "moderation_action",
       action: "hidetag",
       waGroupId: "120363012345678@g.us",
-      hidetagContent: { kind: "reply_ptt" }
+      hidetagContent: { kind: "reply_audio" }
     },
     quotedMessage: {
       audioMessage: {
@@ -191,17 +191,16 @@ test("hidetag replied ptt falls back to regular audio when ptt normalization fai
 
   assert.equal(downloadCalls.length, 1);
   assert.equal(sentPayloads.length, 1);
-  assert.ok(Buffer.isBuffer(sentPayloads[0]?.audio));
-  assert.equal(sentPayloads[0]?.ptt, false);
-  assert.equal(sentPayloads[0]?.mimetype, "audio/mpeg");
+  assert.equal(typeof sentPayloads[0]?.text, "string");
+  assert.match(sentPayloads[0]?.text, /converter esse audio para voz/i);
   assert.ok(
     logs.some(
-      (entry) => entry.level === "warn" && entry.payload?.status === "hidetag_ptt_transcode_fallback"
+      (entry) => entry.level === "warn" && entry.payload?.action === "send_ptt" && entry.payload?.status === "failure"
     )
   );
 });
 
-test("hidetag replied generic audio is resent as standard audio with hidden mentions", async () => {
+test("hidetag replied generic audio is resent as voice note with hidden mentions", async () => {
   const sentPayloads: any[] = [];
   const downloadCalls: any[] = [];
 
@@ -214,11 +213,13 @@ test("hidetag replied generic audio is resent as standard audio with hidden ment
     },
     quotedMessage: {
       audioMessage: {
-        mimetype: "audio/mpeg"
+        mimetype: "audio/ogg; codecs=opus",
+        ptt: false
       }
     },
     sentPayloads,
-    downloadCalls
+    downloadCalls,
+    downloadedMediaBuffer: Buffer.concat([Buffer.from("OggS"), Buffer.alloc(512, 2)])
   });
 
   await executeOutboundActions(runtime);
@@ -226,7 +227,7 @@ test("hidetag replied generic audio is resent as standard audio with hidden ment
   assert.equal(downloadCalls.length, 1);
   assert.equal(sentPayloads.length, 1);
   assert.ok(Buffer.isBuffer(sentPayloads[0]?.audio));
-  assert.equal(sentPayloads[0]?.ptt, false);
-  assert.equal(sentPayloads[0]?.mimetype, "audio/mpeg");
+  assert.equal(sentPayloads[0]?.ptt, true);
+  assert.equal(sentPayloads[0]?.mimetype, "audio/ogg; codecs=opus");
   assert.deepEqual(sentPayloads[0]?.contextInfo?.mentionedJid, ["111@s.whatsapp.net", "222@s.whatsapp.net"]);
 });

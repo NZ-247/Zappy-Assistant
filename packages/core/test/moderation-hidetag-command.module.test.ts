@@ -61,28 +61,6 @@ test("hidetag replying audio maps to media payload", () => {
         waGroupId: "123@g.us",
         quotedWaMessageId: "msg-2",
         quotedMessageType: "audioMessage",
-        quotedAudioPtt: false
-      }
-    } as any,
-    deps: buildDeps()
-  });
-
-  assert.equal(actions?.[0]?.kind, "moderation_action");
-  const action = actions?.[0] as { action: string; hidetagContent?: { kind: string } };
-  assert.equal(action.action, "hidetag");
-  assert.equal(action.hidetagContent?.kind, "reply_audio");
-});
-
-test("hidetag replying ptt maps to voice payload kind", () => {
-  const actions = handleModerationCommand({
-    commandKey: "hidetag",
-    lower: "hidetag",
-    cmd: "hidetag",
-    ctx: {
-      event: {
-        waGroupId: "123@g.us",
-        quotedWaMessageId: "msg-2-ptt",
-        quotedMessageType: "audioMessage",
         quotedAudioPtt: true
       }
     } as any,
@@ -92,7 +70,7 @@ test("hidetag replying ptt maps to voice payload kind", () => {
   assert.equal(actions?.[0]?.kind, "moderation_action");
   const action = actions?.[0] as { action: string; hidetagContent?: { kind: string } };
   assert.equal(action.action, "hidetag");
-  assert.equal(action.hidetagContent?.kind, "reply_ptt");
+  assert.equal(action.hidetagContent?.kind, "reply_audio");
 });
 
 test("hidetag replying unsupported media returns friendly usage", () => {
