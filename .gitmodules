@@ -1,0 +1,6 @@
+[submodule "infra/external-services/youtube-resolver"]
+	path = infra/external-services/youtube-resolver
+	url = https://github.com/zararashraf/youtube-video-downloader-api.git
+[submodule "infra/external-services/facebook-resolver"]
+	path = infra/external-services/facebook-resolver
+	url = https://github.com/sh13y/Facebook-Video-Download-API.git
