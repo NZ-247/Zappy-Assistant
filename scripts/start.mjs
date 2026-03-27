@@ -51,13 +51,27 @@ if (!VALID_MODES.has(requestedMode)) {
   process.exit(1);
 }
 const modeArgs = process.argv.slice(3);
-const validModeFlags = new Set(["--build"]);
+const validModeFlags = new Set([
+  "--build",
+  "--with-external-services",
+  "--with-yt-resolver",
+  "--with-fb-resolver",
+  "--skip-resolver-healthcheck"
+]);
 const unknownModeFlags = modeArgs.filter((arg) => arg.startsWith("--") && !validModeFlags.has(arg));
 if (unknownModeFlags.length > 0) {
-  console.error(`[start:${requestedMode}] unknown flag(s): ${unknownModeFlags.join(", ")}. Supported: --build`);
+  console.error(
+    `[start:${requestedMode}] unknown flag(s): ${unknownModeFlags.join(
+      ", "
+    )}. Supported: --build --with-external-services --with-yt-resolver --with-fb-resolver --skip-resolver-healthcheck`
+  );
   process.exit(1);
 }
 const prodBuildRequested = modeArgs.includes("--build");
+const withExternalServices = modeArgs.includes("--with-external-services");
+const withYoutubeResolver = modeArgs.includes("--with-yt-resolver");
+const withFacebookResolver = modeArgs.includes("--with-fb-resolver");
+const skipResolverHealthcheck = modeArgs.includes("--skip-resolver-healthcheck");
 
 const modeProfile = MODE_PROFILES[requestedMode];
 const serviceScript = modeProfile.serviceScript;
@@ -103,6 +117,32 @@ const services = [
   { name: "worker", workspace: "@zappy/worker" },
   { name: "admin-ui", workspace: "@zappy/admin-ui" }
 ];
+const auxiliaryResolverDefinitions = [
+  {
+    key: "yt",
+    provider: "yt",
+    serviceName: "youtube-resolver",
+    enabledEnv: "YT_RESOLVER_ENABLED",
+    baseUrlEnv: "YT_RESOLVER_BASE_URL",
+    tokenEnv: "YT_RESOLVER_TOKEN",
+    defaultBaseUrl: "http://localhost:3401",
+    workingDir: path.join(rootDir, "infra", "external-services", "youtube-resolver"),
+    runScriptPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", "scripts", "run.sh")
+  },
+  {
+    key: "fb",
+    provider: "fb",
+    serviceName: "facebook-resolver",
+    enabledEnv: "FB_RESOLVER_ENABLED",
+    baseUrlEnv: "FB_RESOLVER_BASE_URL",
+    tokenEnv: "FB_RESOLVER_TOKEN",
+    defaultBaseUrl: "http://localhost:3402",
+    workingDir: path.join(rootDir, "infra", "external-services", "facebook-resolver"),
+    runScriptPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", "scripts", "run.sh")
+  }
+];
+const prefixedServiceNames = [...services.map((item) => item.name), ...auxiliaryResolverDefinitions.map((item) => item.serviceName)];
+const prefixedServiceWidth = Math.max(...prefixedServiceNames.map((name) => name.length));
 
 const ANSI = {
   reset: "\u001B[0m",
@@ -127,6 +167,9 @@ const servicePrefixColor = (name) => {
       return ANSI.colors.cyan;
     case "admin-ui":
       return ANSI.colors.magenta;
+    case "youtube-resolver":
+    case "facebook-resolver":
+      return ANSI.colors.yellow;
     default:
       return ANSI.colors.cyan;
   }
@@ -140,6 +183,40 @@ const parseColorEnv = (value) => {
   if (/^\d+$/.test(normalized)) return Number(normalized) > 0;
   return undefined;
 };
+
+const parseToggleEnv = (value, defaultValue = false) => {
+  const parsed = parseColorEnv(value);
+  return parsed ?? defaultValue;
+};
+
+const parseBaseUrlSafe = (input) => {
+  try {
+    return new URL(input);
+  } catch {
+    return null;
+  }
+};
+
+const isLoopbackHost = (rawHost) => {
+  const normalized = (rawHost ?? "").trim().toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "0.0.0.0" || normalized === "::1";
+};
+
+const resolveAuxiliaryTargets = (env) =>
+  auxiliaryResolverDefinitions.map((definition) => {
+    const enabled = parseToggleEnv(env[definition.enabledEnv], false);
+    const baseUrl = env[definition.baseUrlEnv] || definition.defaultBaseUrl;
+    const parsedBaseUrl = parseBaseUrlSafe(baseUrl);
+    const token = (env[definition.tokenEnv] || "").trim() || undefined;
+    return {
+      ...definition,
+      enabled,
+      baseUrl,
+      token,
+      parsedBaseUrl,
+      localBaseUrl: Boolean(parsedBaseUrl && isLoopbackHost(parsedBaseUrl.hostname))
+    };
+  });
 
 const noColorRaw = process.env.NO_COLOR;
 const noColor = parseColorEnv(noColorRaw);
@@ -266,6 +343,112 @@ const dependencyLog = (phase, fields = {}) => {
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(" ");
   log(`[deps] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+};
+
+const resolverLog = (phase, fields = {}) => {
+  const suffix = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  log(`[resolver] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+};
+
+const requestResolverHealth = async (input) => {
+  const endpoint = `${input.baseUrl.replace(/\/+$/, "")}/health`;
+  const timeoutMs = Math.max(1200, Math.min(input.timeoutMs ?? 5000, 15000));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        ...(input.token ? { Authorization: `Bearer ${input.token}` } : {})
+      }
+    });
+
+    const raw = await response.text().catch(() => "");
+    let payload;
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch {
+      payload = raw ? { raw: raw.slice(0, 180) } : {};
+    }
+
+    return {
+      ok: response.ok,
+      endpoint,
+      httpStatus: response.status,
+      payload,
+      reason: response.ok ? "ok" : `http_${response.status}`
+    };
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === "AbortError";
+    return {
+      ok: false,
+      endpoint,
+      payload: {},
+      reason: timedOut ? "timeout" : "network_error",
+      error
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const runResolverHealthChecks = async (targets, phase, options = {}) => {
+  if (skipResolverHealthcheck) {
+    resolverLog(`${phase}-skip`, { reason: "flag_disabled" });
+    return;
+  }
+
+  const onlyEnabled = options.onlyEnabled !== false;
+  const candidates = targets.filter((item) => (onlyEnabled ? item.enabled : true));
+  if (!candidates.length) {
+    resolverLog(`${phase}-skip`, { reason: "no_candidates" });
+    return;
+  }
+
+  for (const target of candidates) {
+    const startedAt = Date.now();
+    const result = await requestResolverHealth({
+      baseUrl: target.baseUrl,
+      token: target.token,
+      timeoutMs: 6000
+    });
+    resolverLog(`${phase}-check`, {
+      provider: target.provider,
+      service: target.serviceName,
+      enabled: target.enabled ? "yes" : "no",
+      status: result.ok ? "ok" : "fail",
+      endpoint: result.endpoint,
+      reason: result.reason,
+      latencyMs: Date.now() - startedAt
+    });
+    if (!result.ok) {
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} health=fail endpoint=${result.endpoint} reason=${result.reason} (non-fatal)`
+      );
+    }
+  }
+};
+
+const waitForResolverHealthy = async (target, timeoutMs = 20_000) => {
+  const deadline = Date.now() + timeoutMs;
+  let latestResult = null;
+
+  while (Date.now() <= deadline) {
+    latestResult = await requestResolverHealth({
+      baseUrl: target.baseUrl,
+      token: target.token,
+      timeoutMs: 3500
+    });
+    if (latestResult.ok) return latestResult;
+    await delay(750);
+  }
+
+  return latestResult;
 };
 
 const inspectContainerState = (containerId) => {
@@ -553,8 +736,7 @@ const ensurePorts = async () => {
 };
 
 const prefixWriter = (name, stream, isErr) => {
-  const width = Math.max(...services.map((s) => s.name.length));
-  const rawPrefix = `[${name.padEnd(width)}]`;
+  const rawPrefix = `[${name.padEnd(prefixedServiceWidth)}]`;
   const prefix = colorizedPrefixes ? `${servicePrefixColor(name)}${rawPrefix}${ANSI.reset}` : rawPrefix;
   const rl = createInterface({ input: stream });
   rl.on("line", (line) => {
@@ -623,6 +805,107 @@ const assertNoRunningStack = () => {
   }
 };
 
+const shouldStartAuxiliaryResolver = (target) => {
+  if (target.key === "yt" && withYoutubeResolver) return true;
+  if (target.key === "fb" && withFacebookResolver) return true;
+  if (withExternalServices && target.enabled) return true;
+  return false;
+};
+
+const startAuxiliaryResolvers = async (env) => {
+  const targets = resolveAuxiliaryTargets(env);
+  const selected = targets.filter((target) => shouldStartAuxiliaryResolver(target));
+
+  if (!selected.length) {
+    resolverLog("autostart-skip", { reason: "no_selected_services" });
+    return targets;
+  }
+
+  resolverLog("autostart-start", {
+    selected: selected.map((target) => target.serviceName).join(","),
+    requestedByFlags: [withExternalServices ? "all" : null, withYoutubeResolver ? "yt" : null, withFacebookResolver ? "fb" : null]
+      .filter(Boolean)
+      .join(",")
+  });
+
+  for (const target of selected) {
+    if (!fs.existsSync(target.workingDir)) {
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} workingDir missing (${path.relative(
+          rootDir,
+          target.workingDir
+        )}). Skipping autostart.`
+      );
+      continue;
+    }
+
+    if (!target.localBaseUrl) {
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} baseUrl=${target.baseUrl} is not local. Skipping autostart.`
+      );
+      continue;
+    }
+
+    if (!fs.existsSync(target.runScriptPath)) {
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} run script missing (${path.relative(
+          rootDir,
+          target.runScriptPath
+        )}). Skipping autostart.`
+      );
+      continue;
+    }
+
+    const child = spawn("bash", [target.runScriptPath], {
+      cwd: target.workingDir,
+      env: {
+        ...env,
+        PYTHONUNBUFFERED: "1"
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    childProcs.push({
+      name: target.serviceName,
+      workspace: path.relative(rootDir, target.workingDir),
+      pid: child.pid,
+      proc: child,
+      script: "external",
+      kind: "auxiliary",
+      critical: false
+    });
+    prefixWriter(target.serviceName, child.stdout, false);
+    prefixWriter(target.serviceName, child.stderr, true);
+
+    child.on("exit", (code, signal) => {
+      if (shuttingDown) return;
+      warn(
+        `${target.serviceName} exited (${signal ?? code}). Continuing without this auxiliary service (non-fatal).`
+      );
+    });
+    child.on("error", (error) => {
+      if (shuttingDown) return;
+      warn(`${target.serviceName} process error (${error.message}). Continuing without this auxiliary service (non-fatal).`);
+    });
+
+    const health = await waitForResolverHealthy(target);
+    if (!health?.ok) {
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} failed to become healthy at ${target.baseUrl} (reason=${health?.reason ?? "unknown"})`
+      );
+      continue;
+    }
+
+    resolverLog("autostart-ready", {
+      provider: target.provider,
+      service: target.serviceName,
+      endpoint: health.endpoint
+    });
+  }
+
+  return targets;
+};
+
 const startServices = (env) => {
   services.forEach((svc) => {
     const child = spawn("npm", ["run", serviceScript, "-w", svc.workspace], {
@@ -631,7 +914,15 @@ const startServices = (env) => {
       stdio: ["ignore", "pipe", "pipe"]
     });
 
-    childProcs.push({ name: svc.name, workspace: svc.workspace, pid: child.pid, proc: child });
+    childProcs.push({
+      name: svc.name,
+      workspace: svc.workspace,
+      pid: child.pid,
+      proc: child,
+      script: serviceScript,
+      kind: "workspace",
+      critical: true
+    });
     prefixWriter(svc.name, child.stdout, false);
     prefixWriter(svc.name, child.stderr, true);
 
@@ -646,7 +937,7 @@ const startServices = (env) => {
     mode: requestedMode,
     supervisorPid: process.pid,
     startedAt: new Date().toISOString(),
-    services: childProcs.map(({ name, pid, workspace }) => ({ name, pid, workspace, script: serviceScript })),
+    services: childProcs.map(({ name, pid, workspace, script, kind }) => ({ name, pid, workspace, script, kind })),
     infra: { compose: composeCmd.join(" "), composeFile, requiredInfra }
   });
 
@@ -660,6 +951,8 @@ const main = async () => {
   assertNoRunningStack();
   await ensureInfra();
   await ensurePorts().catch((err) => fail(err.message));
+  const auxiliaryTargets = await startAuxiliaryResolvers(runtimeEnv);
+  await runResolverHealthChecks(auxiliaryTargets, "pre-app-start", { onlyEnabled: true });
 
   if (isDev) {
     printDevBanner();
@@ -678,6 +971,7 @@ const main = async () => {
   }
 
   startServices(runtimeEnv);
+  void runResolverHealthChecks(auxiliaryTargets, "post-app-start", { onlyEnabled: true });
 };
 
 process.on("SIGINT", () => cleanup("SIGINT"));

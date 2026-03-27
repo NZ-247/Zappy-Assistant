@@ -13,15 +13,30 @@ if (!VALID_MODES.has(mode)) {
 }
 
 const extraArgs = process.argv.slice(3);
-const validFlags = new Set(["--with-infra", "--build"]);
+const validFlags = new Set([
+  "--with-infra",
+  "--build",
+  "--with-external-services",
+  "--with-yt-resolver",
+  "--with-fb-resolver",
+  "--skip-resolver-healthcheck"
+]);
 const unknownFlags = extraArgs.filter((item) => item.startsWith("--") && !validFlags.has(item));
 if (unknownFlags.length > 0) {
-  console.error(`[restart:${mode}] unknown flag(s): ${unknownFlags.join(", ")}. Supported: --with-infra --build`);
+  console.error(
+    `[restart:${mode}] unknown flag(s): ${unknownFlags.join(
+      ", "
+    )}. Supported: --with-infra --build --with-external-services --with-yt-resolver --with-fb-resolver --skip-resolver-healthcheck`
+  );
   process.exit(1);
 }
 
 const withInfra = extraArgs.includes("--with-infra");
 const withBuild = extraArgs.includes("--build");
+const withExternalServices = extraArgs.includes("--with-external-services");
+const withYoutubeResolver = extraArgs.includes("--with-yt-resolver");
+const withFacebookResolver = extraArgs.includes("--with-fb-resolver");
+const skipResolverHealthcheck = extraArgs.includes("--skip-resolver-healthcheck");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -41,7 +56,14 @@ if ((stopResult.status ?? 1) !== 0) {
   process.exit(stopResult.status ?? 1);
 }
 
-const startArgs = [mode, ...(withBuild ? ["--build"] : [])];
+const startArgs = [
+  mode,
+  ...(withBuild ? ["--build"] : []),
+  ...(withExternalServices ? ["--with-external-services"] : []),
+  ...(withYoutubeResolver ? ["--with-yt-resolver"] : []),
+  ...(withFacebookResolver ? ["--with-fb-resolver"] : []),
+  ...(skipResolverHealthcheck ? ["--skip-resolver-healthcheck"] : [])
+];
 const startResult = run(startScript, startArgs);
 if ((startResult.status ?? 1) !== 0) {
   console.error(`[restart:${mode}] start step failed.`);

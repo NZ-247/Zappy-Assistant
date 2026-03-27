@@ -16,8 +16,9 @@ Evolve `/dl` from provider-specific placeholder handling into a modular flow wit
 - Command parsing and routing already exist in `packages/core/src/modules/downloads`.
 - Runtime adapter router exists in `packages/adapters/src/downloads` and is hosted by `apps/media-resolver-api`.
 - `ig` supports public permalink probe/download with graceful fallback for private/login-required links.
-- `yt` uses official metadata probe (`oEmbed` / Data API when configured) and explicit `preview_only` fallback.
-- `fb` supports shared-link normalization + staged resolution/download when accessible, with explicit `private`/`login_required` fallback.
+- `yt` and `fb` can run via internal bridge services (`yt-resolver-service`, `fb-resolver-service`) with strict response normalization inside `media-resolver-api`.
+- vendored auxiliary wrappers live under `infra/external-services/*` (`youtube-resolver`, `facebook-resolver`) and expose `GET /health` + `POST /resolve` for bridge compatibility.
+- optional legacy staged fallback remains available when bridge flags are disabled.
 - `direct` supports safe URL probing/download normalization for media-like URLs.
 - Resolver runtime manages Redis job TTL and temp-file cleanup.
 
@@ -45,14 +46,14 @@ These contracts are preparation-only and do not force immediate provider impleme
 
 - **YouTube provider**
   - robust URL normalization (`youtube.com`, `youtu.be`, shorts)
-  - metadata/probe before media fetch
+  - bridge call (`provider call started/success/failed`) with local normalization logs (`provider_normalize_success/failed`)
   - policy-aware status (`blocked`/`unsupported`) when required
 - **Instagram provider**
   - permalink normalization and content-type detection (post/reel/story when allowed)
   - metadata extraction + policy gate before download
 - **Facebook provider**
   - URL normalization and availability checks
-  - metadata/probe before controlled fetch
+  - bridge call + response normalization to Zappy `resultKind/status`
 - **Direct provider**
   - safe content-type and size probing
   - optional direct passthrough when media is already downloadable

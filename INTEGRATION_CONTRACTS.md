@@ -563,5 +563,22 @@ Relevant env vars
 - `MEDIA_RESOLVER_JOB_TTL_SECONDS` (Redis job metadata TTL)
 - `MEDIA_RESOLVER_CLEANUP_INTERVAL_MS` (temp cleanup cadence)
 - `MEDIA_RESOLVER_TEMP_DIR` (temp storage directory)
-- `YOUTUBE_API_KEY` (optional official metadata probe)
-- `FACEBOOK_ACCESS_TOKEN` + `FACEBOOK_GRAPH_API_VERSION` (optional official metadata probe)
+- `MEDIA_RESOLVER_TEMP_RETENTION_SECONDS` (temp files retention window)
+- `DOWNLOADS_MAX_BYTES` + `DOWNLOADS_DIRECT_TIMEOUT_MS` (resolver/runtime limits)
+- `DOWNLOADS_PROVIDER_YT_ENABLED` + `DOWNLOADS_PROVIDER_IG_ENABLED` + `DOWNLOADS_PROVIDER_FB_ENABLED` + `DOWNLOADS_PROVIDER_DIRECT_ENABLED` (provider toggles)
+- `YT_RESOLVER_ENABLED` + `YT_RESOLVER_BASE_URL` + `YT_RESOLVER_TOKEN` + `YT_RESOLVER_TIMEOUT_MS` + `YT_RESOLVER_MAX_BYTES` (YouTube bridge to internal service)
+- `FB_RESOLVER_ENABLED` + `FB_RESOLVER_BASE_URL` + `FB_RESOLVER_TOKEN` + `FB_RESOLVER_TIMEOUT_MS` + `FB_RESOLVER_MAX_BYTES` (Facebook bridge to internal service)
+- `YOUTUBE_API_KEY` (optional official metadata enrichment for probe)
+- `FACEBOOK_ACCESS_TOKEN` + `FACEBOOK_GRAPH_API_VERSION` (optional official metadata enrichment for probe)
+
+Auxiliary internal bridge services (vendored)
+
+- Location: `infra/external-services/youtube-resolver` and `infra/external-services/facebook-resolver`
+- Local contract expected by bridge providers:
+  - `GET /health`
+  - `POST /resolve`
+- Wrapper scripts:
+  - `infra/external-services/youtube-resolver/scripts/bootstrap.sh`
+  - `infra/external-services/youtube-resolver/scripts/run.sh`
+  - `infra/external-services/facebook-resolver/scripts/bootstrap.sh`
+  - `infra/external-services/facebook-resolver/scripts/run.sh`

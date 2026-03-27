@@ -697,6 +697,10 @@ export { createGeminiSearchAiAdapter } from "./search/gemini-search-ai-adapter.j
 export { createImageSearchAdapter } from "./search/image-search-adapter.js";
 export { createMediaDownloadRouter } from "./downloads/router.js";
 export { createInternalMediaResolverClient } from "./downloads/internal-resolver-client.js";
+export { createDirectDownloadProvider } from "./downloads/providers/direct-provider.js";
+export { createInstagramDownloadProvider } from "./downloads/providers/instagram-provider.js";
+export { createYoutubeDownloadProvider } from "./downloads/providers/youtube-provider.js";
+export { createFacebookDownloadProvider } from "./downloads/providers/facebook-provider.js";
 
 export { markGatewayHeartbeat, getGatewayHeartbeat, markWorkerHeartbeat, getWorkerHeartbeat };
 

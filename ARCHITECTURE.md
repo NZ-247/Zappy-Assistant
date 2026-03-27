@@ -50,6 +50,17 @@ Responsável por jobs assíncronos, lembretes, timers e processamento em backgro
 ### `apps/media-resolver-api`
 Serviço interno dedicado para `/dl` com pipeline staged por provider (`detect -> probe -> resolveAsset -> download -> normalizeForWhatsApp`), TTL de jobs e cleanup de arquivos temporários em Redis.
 
+### `infra/external-services/*`
+Serviços auxiliares internos (não-Node, fora de workspaces npm) usados pelos bridges `yt`/`fb` do `media-resolver-api`.
+
+- `infra/external-services/youtube-resolver`
+- `infra/external-services/facebook-resolver`
+
+Regras:
+- wrappers finos expõem contrato mínimo (`GET /health`, `POST /resolve`)
+- payload cru de serviço externo não sobe para `wa-gateway`
+- falhas desses auxiliares não devem derrubar runtimes não relacionados
+
 ### `apps/admin-ui`
 Consome apenas `assistant-api`, sem lógica de domínio embarcada.
 
@@ -179,8 +190,10 @@ Capabilities entregues neste padrão:
 - `packages/core/src/modules/downloads` com camada comum de parsing/validação e delegação para resolver interno, mantendo `wa-gateway` leve
 - `apps/media-resolver-api` centraliza resolução/download/normalização por provider e remove lógica pesada de `/dl` do gateway
 - provider `ig` reaproveita o pipeline staged já estável (`/p/`, `/reel/`, `/tv/`) com fallback seguro para privado/login-required
-- provider `yt` usa APIs oficiais para metadata/probe e fallback explícito `preview_only` quando não há asset oficial direto
-- provider `fb` aplica pipeline staged com normalização de shared links, tentativa de asset real quando acessível e fallback claro para `private`/`login_required`
+- providers `yt` e `fb` podem operar por bridges internas (`yt-resolver-service` e `fb-resolver-service`) para wrappers externos (ex.: projetos Python), mantendo a normalização oficial no `media-resolver-api`
+- wrappers auxiliares vivem em `infra/external-services/*` com bootstrap isolado por `venv` e sem entrar no grafo de dependências Node
+- contratos públicos internos continuam estáveis (`detect -> probe -> resolveAsset -> download -> normalizeForWhatsApp`), sem expor payloads crus de serviços auxiliares
+- chaves oficiais (`YOUTUBE_API_KEY`, `FACEBOOK_ACCESS_TOKEN`) permanecem opcionais para enriquecimento de metadata/probe, sem depender delas para asset direto
 - evolução incremental do módulo de downloads documentada em `docs/downloads-module-evolution.md`
 
 Referência detalhada:

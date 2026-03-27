@@ -27,6 +27,7 @@ export interface MediaResolverServiceInput {
   redis: RedisLike;
   logger?: LoggerLike;
   tempDir: string;
+  tempRetentionSeconds?: number;
   jobTtlSeconds: number;
   maxRetryAttempts?: number;
 }
@@ -126,6 +127,7 @@ const parseJsonSafe = <T>(raw: string | null): T | null => {
 
 export const createMediaResolverService = async (input: MediaResolverServiceInput): Promise<MediaResolverService> => {
   const jobTtlSeconds = Math.max(60, input.jobTtlSeconds);
+  const tempRetentionSeconds = Math.max(60, input.tempRetentionSeconds ?? jobTtlSeconds);
   const maxRetryAttempts = Math.max(1, input.maxRetryAttempts ?? 2);
   const tempDir = path.resolve(input.tempDir);
 
@@ -201,7 +203,7 @@ export const createMediaResolverService = async (input: MediaResolverServiceInpu
 
     await writeFile(tempPath, buffer);
 
-    const expiresAtMs = Date.now() + jobTtlSeconds * 1000;
+    const expiresAtMs = Date.now() + tempRetentionSeconds * 1000;
     await input.redis.zadd(TMP_FILES_ZSET_KEY, expiresAtMs, tempPath);
     return [tempPath];
   };

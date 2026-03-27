@@ -24,7 +24,10 @@ npm run prisma:generate
 - AI-assisted web search is controlled by `SEARCH_AI_ENABLED`, `SEARCH_AI_PROVIDER`, `SEARCH_AI_MODEL`, `SEARCH_AI_TIMEOUT_MS`, `SEARCH_AI_MAX_SOURCES`, `GEMINI_API_KEY`, `GEMINI_SEARCH_AI_MODEL`, `GEMINI_SEARCH_GROUNDING_ENABLED`.
 - Image search is controlled by `IMAGE_SEARCH_ENABLED`, `IMAGE_SEARCH_PROVIDER`, `IMAGE_SEARCH_MAX_RESULTS`, provider credentials (`PIXABAY_API_KEY`, `PEXELS_API_KEY`, `UNSPLASH_ACCESS_KEY`), optional `OPENVERSE_API_BASE_URL`, and normalization knobs (`IMAGE_SEARCH_MEDIA_NORMALIZE_*`).
 - Downloads module is controlled by `DOWNLOADS_MODULE_ENABLED` and delegated to the internal resolver API via `MEDIA_RESOLVER_API_BASE_URL` + `MEDIA_RESOLVER_API_TOKEN`.
-- Media resolver runtime knobs: `MEDIA_RESOLVER_API_PORT`, `MEDIA_RESOLVER_JOB_TTL_SECONDS`, `MEDIA_RESOLVER_CLEANUP_INTERVAL_MS`, `MEDIA_RESOLVER_TEMP_DIR`, plus provider metadata/auth options `YOUTUBE_API_KEY`, `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_GRAPH_API_VERSION`.
+- Media resolver runtime knobs: `MEDIA_RESOLVER_API_PORT`, `MEDIA_RESOLVER_JOB_TTL_SECONDS`, `MEDIA_RESOLVER_CLEANUP_INTERVAL_MS`, `MEDIA_RESOLVER_TEMP_DIR`, `MEDIA_RESOLVER_TEMP_RETENTION_SECONDS`.
+- Downloads provider/router knobs: `DOWNLOADS_MAX_BYTES`, `DOWNLOADS_PROVIDER_YT_ENABLED`, `DOWNLOADS_PROVIDER_IG_ENABLED`, `DOWNLOADS_PROVIDER_FB_ENABLED`, `DOWNLOADS_PROVIDER_DIRECT_ENABLED`, `DOWNLOADS_DIRECT_TIMEOUT_MS`.
+- External bridge knobs (internal auxiliary services): `YT_RESOLVER_ENABLED`, `YT_RESOLVER_BASE_URL`, `YT_RESOLVER_TOKEN`, `YT_RESOLVER_TIMEOUT_MS`, `YT_RESOLVER_MAX_BYTES`, `FB_RESOLVER_ENABLED`, `FB_RESOLVER_BASE_URL`, `FB_RESOLVER_TOKEN`, `FB_RESOLVER_TIMEOUT_MS`, `FB_RESOLVER_MAX_BYTES`.
+- Optional official metadata/auth hints (probe enrichment only): `YOUTUBE_API_KEY`, `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_GRAPH_API_VERSION`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
@@ -36,11 +39,20 @@ Preferred flow for local development:
 npm run start:dev
 ```
 
+With auxiliary resolver wrappers (for `yt`/`fb` bridge mode):
+
+```bash
+npm run start:dev -- --with-external-services
+# shortcut:
+npm run start:dev:resolvers
+```
+
 What `start:dev` does:
 - checks Docker/Compose availability
 - validates infra dependencies (`postgres`, `redis`) with deterministic checks: container state + Docker health + TCP port
 - if a required dependency is down/unhealthy, runs `docker compose up -d <service>` automatically and revalidates before boot
 - emits structured dependency logs (`[deps] phase=...`) including failing service, attempted action, and final diagnostic
+- optionally starts auxiliary resolver services from `infra/external-services/*` (`--with-external-services` or per-service flags) and performs non-fatal YT/FB bridge health checks
 - prints a compact cfonts banner (mode/environment/timezone/LLM model/WA session path)
 - starts `assistant-api`, `media-resolver-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
 - writes state to `.zappy-dev/dev-stack.json` so the stop script can cleanly shut things down
@@ -114,6 +126,12 @@ npm run restart:dev
 ```
 
 ```bash
+npm run restart:dev -- --with-external-services
+# shortcut:
+npm run restart:dev:resolvers
+```
+
+```bash
 npm run restart:prod -- --build
 ```
 
@@ -127,7 +145,27 @@ Manual steps that remain:
 - keep `.env` up to date and run `npm run prisma:migrate` when schema changes
 - WhatsApp pairing (see below) still requires manual code entry
 
-Version note: current release line is `v1.5.0`.
+### External Resolver Aux Services (YT/FB)
+
+- Source location: `infra/external-services/youtube-resolver` and `infra/external-services/facebook-resolver`.
+- Initialize vendored sources (if needed): `git submodule update --init --recursive infra/external-services/youtube-resolver infra/external-services/facebook-resolver`.
+- Bootstrap Python envs:
+  - `./infra/external-services/youtube-resolver/scripts/bootstrap.sh`
+  - `./infra/external-services/facebook-resolver/scripts/bootstrap.sh`
+- Start wrappers manually:
+  - `./infra/external-services/youtube-resolver/scripts/run.sh`
+  - `./infra/external-services/facebook-resolver/scripts/run.sh`
+- Start via supervisor:
+  - all enabled bridges: `npm run start:dev -- --with-external-services`
+  - only YouTube wrapper: `npm run start:dev -- --with-yt-resolver`
+  - only Facebook wrapper: `npm run start:dev -- --with-fb-resolver`
+- Health endpoints:
+  - YouTube: `GET http://localhost:3401/health`
+  - Facebook: `GET http://localhost:3402/health`
+- Required host dependency for Facebook resolver flows: `ffmpeg`.
+- Full runbook: `docs/external-resolver-services.md`.
+
+Version note: current release line is `v1.7.0`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -193,8 +231,9 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - `wa-gateway` apenas delega resolução de mídia e envia o outbound normalizado.
   - Pipeline por provider: `detect -> probe -> resolveAsset -> download -> normalizeForWhatsApp`.
   - `ig` reutiliza o fluxo staged já estável para links públicos.
-  - `yt` usa APIs oficiais para metadata/probe e retorna fallback explícito `preview_only` quando não há asset direto oficial.
-  - `fb` suporta normalização de shared links, tenta resolver asset real quando acessível e retorna fallback claro para `private`/`login_required`.
+  - `yt` e `fb` podem operar via bridges HTTP internas (`yt-resolver-service` / `fb-resolver-service`) com normalização local para contratos Zappy (`resultKind`, `status`, `asset`).
+  - payload bruto dos serviços externos não é exposto para o gateway: toda tradução fica no `media-resolver-api`.
+  - com bridge desativada (`YT_RESOLVER_ENABLED=false` / `FB_RESOLVER_ENABLED=false`), o runtime usa fallback staged legado.
   - O resolver mantém retries internos, job TTL em Redis e cleanup periódico de arquivos temporários.
 - Reminders:
   - `/reminder in <duration> <message>` where duration accepts `1`, `10m`, `1h40m30s`, `2d`.
