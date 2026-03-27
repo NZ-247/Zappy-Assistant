@@ -41,12 +41,14 @@ interface InstagramResolvedAssetCandidate {
   sizeBytesHint?: number;
 }
 
+type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
 export interface InstagramProviderInput {
   timeoutMs?: number;
   maxBytes?: number;
   maxHtmlBytes?: number;
   cacheTtlMs?: number;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   userAgent?: string;
   logger?: LoggerPort;
 }
@@ -319,9 +321,34 @@ const resolveProbeReason = (input: {
   return "image_post";
 };
 
+const resultKindFromProbeKind = (probeKind: InstagramProbeKind): "preview_only" | "image_post" | "video_post" | "reel_video" => {
+  if (probeKind === "preview_only") return "preview_only";
+  if (probeKind === "image_post") return "image_post";
+  if (probeKind === "video_post") return "video_post";
+  return "reel_video";
+};
+
+const resultKindFromExecution = (input: {
+  status: DownloadExecutionResult["status"];
+  reason?: string;
+  fallbackProbeKind?: InstagramProbeKind;
+  assetKind?: InstagramMediaKind;
+}): "preview_only" | "image_post" | "video_post" | "reel_video" | "blocked" | "private" | "login_required" | "unsupported" => {
+  const reason = (input.reason ?? "").toLowerCase();
+  if (input.assetKind === "image") return "image_post";
+  if (input.assetKind === "video" && input.fallbackProbeKind === "reel_video") return "reel_video";
+  if (input.assetKind === "video") return "video_post";
+  if (reason.includes("preview_only")) return "preview_only";
+  if (reason.includes("private")) return "private";
+  if (reason.includes("login")) return "login_required";
+  if (input.status === "blocked") return "blocked";
+  return "unsupported";
+};
+
 const mapProbeToExecution = (probe: DownloadProbeResult): DownloadExecutionResult => ({
   provider: "ig",
   status: probe.status,
+  resultKind: probe.resultKind,
   sourceUrl: probe.sourceUrl,
   canonicalUrl: probe.canonicalUrl,
   title: probe.title,
@@ -479,6 +506,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "invalid",
+        resultKind: "unsupported",
         sourceUrl: request.url,
         reason: "invalid_instagram_url"
       };
@@ -495,6 +523,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "unsupported",
+        resultKind: "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl: permalink.normalizedUrl,
         reason: "unsupported_instagram_path"
@@ -525,6 +554,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "error",
+        resultKind: "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl: permalink.normalizedUrl,
         reason
@@ -546,6 +576,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: resolveProbeStatusFromResponse(response.status),
+        resultKind: response.status === 401 || response.status === 403 ? "login_required" : "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl: response.url || permalink.normalizedUrl,
         reason: `http_${response.status}`
@@ -566,6 +597,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "unsupported",
+        resultKind: "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl: response.url || permalink.normalizedUrl,
         reason: "unexpected_content_type",
@@ -590,6 +622,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "error",
+        resultKind: "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl: response.url || permalink.normalizedUrl,
         reason: "html_payload_too_large"
@@ -611,6 +644,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "error",
+        resultKind: "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl: response.url || permalink.normalizedUrl,
         reason: "html_payload_too_large"
@@ -660,6 +694,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
         const probe: DownloadProbeResult = {
           provider: "ig",
           status: "blocked",
+          resultKind: "private",
           sourceUrl: permalink.sourceUrl,
           canonicalUrl,
           reason: "private_or_login_required"
@@ -678,6 +713,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
         const probe: DownloadProbeResult = {
           provider: "ig",
           status: "invalid",
+          resultKind: "unsupported",
           sourceUrl: permalink.sourceUrl,
           canonicalUrl,
           reason: "content_unavailable"
@@ -696,6 +732,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "unsupported",
+        resultKind: "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl,
         reason: "media_not_resolved"
@@ -717,6 +754,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "unsupported",
+        resultKind: "preview_only",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl,
         title: resolvedTitle || undefined,
@@ -744,6 +782,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       const probe: DownloadProbeResult = {
         provider: "ig",
         status: "unsupported",
+        resultKind: "unsupported",
         sourceUrl: permalink.sourceUrl,
         canonicalUrl,
         title: resolvedTitle || undefined,
@@ -780,6 +819,7 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
     const probe: DownloadProbeResult = {
       provider: "ig",
       status: "ready",
+      resultKind: resultKindFromProbeKind(page.probeKind),
       sourceUrl: permalink.sourceUrl,
       canonicalUrl,
       title: page.title,
@@ -1169,6 +1209,11 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       return {
         provider: "ig",
         status: resolvedAsset.status,
+        resultKind: resultKindFromExecution({
+          status: resolvedAsset.status,
+          reason: resolvedAsset.reason,
+          fallbackProbeKind: inputValue.page.probeKind
+        }),
         sourceUrl: inputValue.page.sourceUrl,
         canonicalUrl: inputValue.page.canonicalUrl,
         title: inputValue.page.title,
@@ -1177,11 +1222,22 @@ export const createInstagramDownloadProvider = (input?: InstagramProviderInput):
       };
     }
 
-    return downloadResolvedAsset({
+    const execution = await downloadResolvedAsset({
       page: inputValue.page,
       asset: resolvedAsset.asset,
       request: inputValue.request
     });
+    return {
+      ...execution,
+      resultKind:
+        execution.resultKind ??
+        resultKindFromExecution({
+          status: execution.status,
+          reason: execution.reason,
+          fallbackProbeKind: inputValue.page.probeKind,
+          assetKind: resolvedAsset.asset.kind
+        })
+    };
   };
 
   return {

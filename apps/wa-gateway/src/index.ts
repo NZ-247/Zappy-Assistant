@@ -33,7 +33,7 @@ import {
   createOpenAiSearchAiAdapter,
   createGeminiSearchAiAdapter,
   createImageSearchAdapter,
-  createMediaDownloadRouter,
+  createInternalMediaResolverClient,
   createConversationStateAdapter,
   conversationMemoryRepository,
   consentRepository,
@@ -150,11 +150,11 @@ const imageSearchAdapter = env.IMAGE_SEARCH_ENABLED
     })
   : undefined;
 const mediaDownloadAdapter = env.DOWNLOADS_MODULE_ENABLED
-  ? createMediaDownloadRouter({
-      direct: {
-        timeoutMs: env.DOWNLOADS_DIRECT_TIMEOUT_MS
-      },
-      logger
+  ? createInternalMediaResolverClient({
+      baseUrl: env.MEDIA_RESOLVER_API_BASE_URL,
+      token: env.MEDIA_RESOLVER_API_TOKEN,
+      logger,
+      timeoutMs: 30_000
     })
   : undefined;
 const audioCommandAllowlist = env.AUDIO_COMMAND_ALLOWLIST.split(",")
@@ -193,6 +193,7 @@ printStartupBanner(logger, {
   workerStatus: "PENDING",
   extras: {
     internalDispatchPort: env.WA_GATEWAY_INTERNAL_PORT,
+    mediaResolverBaseUrl: env.MEDIA_RESOLVER_API_BASE_URL,
     inboundClaimTtlSeconds: INBOUND_MESSAGE_CLAIM_TTL_SECONDS,
     inboundStartupSession: INBOUND_STARTUP_SESSION_ID
   }

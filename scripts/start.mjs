@@ -98,6 +98,7 @@ const dependencyValidationTimeoutMs = 45_000;
 const dependencyValidationIntervalMs = 1_250;
 const services = [
   { name: "assistant-api", workspace: "@zappy/assistant-api" },
+  { name: "media-resolver-api", workspace: "@zappy/media-resolver-api" },
   { name: "wa-gateway", workspace: "@zappy/wa-gateway" },
   { name: "worker", workspace: "@zappy/worker" },
   { name: "admin-ui", workspace: "@zappy/admin-ui" }
@@ -122,6 +123,8 @@ const servicePrefixColor = (name) => {
       return ANSI.colors.yellow;
     case "assistant-api":
       return ANSI.colors.blue;
+    case "media-resolver-api":
+      return ANSI.colors.cyan;
     case "admin-ui":
       return ANSI.colors.magenta;
     default:

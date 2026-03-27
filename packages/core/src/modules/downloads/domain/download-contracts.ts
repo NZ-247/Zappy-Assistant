@@ -1,6 +1,15 @@
 import type { DownloadProviderKey } from "./download-provider.js";
 
 export type DownloadProviderFamily = "youtube" | "instagram" | "facebook" | "direct";
+export type DownloadProviderResultKind =
+  | "preview_only"
+  | "image_post"
+  | "video_post"
+  | "reel_video"
+  | "blocked"
+  | "private"
+  | "login_required"
+  | "unsupported";
 
 export interface DownloadProviderDetection {
   provider: DownloadProviderKey;
@@ -24,6 +33,7 @@ export interface DownloadAssetMetadata {
 export interface DownloadProbeResult {
   provider: DownloadProviderKey;
   status: DownloadProbeStatus;
+  resultKind?: DownloadProviderResultKind;
   sourceUrl: string;
   canonicalUrl?: string;
   title?: string;
@@ -49,6 +59,7 @@ export interface DownloadOutputAsset {
 export interface DownloadExecutionResult {
   provider: DownloadProviderKey;
   status: "ready" | "unsupported" | "blocked" | "invalid" | "error";
+  resultKind?: DownloadProviderResultKind;
   sourceUrl: string;
   canonicalUrl?: string;
   title?: string;

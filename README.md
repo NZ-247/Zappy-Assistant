@@ -23,7 +23,8 @@ npm run prisma:generate
 - Web search is controlled by `SEARCH_ENABLED`, `SEARCH_PROVIDER`, `SEARCH_MAX_RESULTS`, `SEARCH_TIMEOUT_MS`, `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_ENGINE_ID` (`GOOGLE_SEARCH_CX` remains supported for backward compatibility).
 - AI-assisted web search is controlled by `SEARCH_AI_ENABLED`, `SEARCH_AI_PROVIDER`, `SEARCH_AI_MODEL`, `SEARCH_AI_TIMEOUT_MS`, `SEARCH_AI_MAX_SOURCES`, `GEMINI_API_KEY`, `GEMINI_SEARCH_AI_MODEL`, `GEMINI_SEARCH_GROUNDING_ENABLED`.
 - Image search is controlled by `IMAGE_SEARCH_ENABLED`, `IMAGE_SEARCH_PROVIDER`, `IMAGE_SEARCH_MAX_RESULTS`, provider credentials (`PIXABAY_API_KEY`, `PEXELS_API_KEY`, `UNSPLASH_ACCESS_KEY`), optional `OPENVERSE_API_BASE_URL`, and normalization knobs (`IMAGE_SEARCH_MEDIA_NORMALIZE_*`).
-- Downloads module is controlled by `DOWNLOADS_MODULE_ENABLED`, `DOWNLOADS_DIRECT_TIMEOUT_MS`.
+- Downloads module is controlled by `DOWNLOADS_MODULE_ENABLED` and delegated to the internal resolver API via `MEDIA_RESOLVER_API_BASE_URL` + `MEDIA_RESOLVER_API_TOKEN`.
+- Media resolver runtime knobs: `MEDIA_RESOLVER_API_PORT`, `MEDIA_RESOLVER_JOB_TTL_SECONDS`, `MEDIA_RESOLVER_CLEANUP_INTERVAL_MS`, `MEDIA_RESOLVER_TEMP_DIR`, plus provider metadata/auth options `YOUTUBE_API_KEY`, `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_GRAPH_API_VERSION`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 
@@ -41,7 +42,7 @@ What `start:dev` does:
 - if a required dependency is down/unhealthy, runs `docker compose up -d <service>` automatically and revalidates before boot
 - emits structured dependency logs (`[deps] phase=...`) including failing service, attempted action, and final diagnostic
 - prints a compact cfonts banner (mode/environment/timezone/LLM model/WA session path)
-- starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
+- starts `assistant-api`, `media-resolver-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
 - writes state to `.zappy-dev/dev-stack.json` so the stop script can cleanly shut things down
 
 Production flow (no watch mode, stable bootstrap):
@@ -60,7 +61,7 @@ What it does in `prod`:
 - runs the same dependency validation/auto-recovery flow used in dev (state + health + port)
 - skips build by default (faster boot)
 - runs `npm run build` only when `--build` is passed
-- starts `assistant-api`, `wa-gateway`, `worker`, `admin-ui` with `npm run start -w ...`
+- starts `assistant-api`, `media-resolver-api`, `wa-gateway`, `worker`, `admin-ui` with `npm run start -w ...`
 - writes state to `.zappy-dev/prod-stack.json`
 - prints runtime header with `build=executed|skipped`
 - forces runtime log defaults: `LOG_FORMAT=pretty`, `LOG_PRETTY_MODE=prod`, `LOG_COLORIZE=true`, `LOG_LEVEL=info`, `LOG_VERBOSE_FIELDS=false` (can still be overridden via env)
@@ -188,12 +189,13 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Estratégia nativa-first: Wikimedia Commons -> Openverse -> Pixabay -> Pexels -> Unsplash; Google CSE entra apenas como fallback de descoberta.
   - Política de qualidade de domínio: prioriza fontes confiáveis e exclui Pinterest/Behance/Dribbble/ArtStation/DeviantArt do pipeline `/img`.
   - O adapter valida e normaliza mídia (resize/re-encode JPEG/PNG quando necessário) para melhorar entregabilidade no WhatsApp.
-- Downloads module (provider router):
-  - `/dl <link>` tenta detectar provider automaticamente e enviar mídia de forma compacta.
-  - `/dl ig <link instagram público>` suporta `instagram.com/p/...`, `.../reel/...` e `.../tv/...` com fallback seguro para privado/login-required.
-  - `/dl direct <link>` mantém validação de link direto (http/https), tipo de mídia e metadados básicos.
-  - `/dl yt|fb <link>` continua com resposta explícita de bloqueio por compliance/permissão.
-  - Parsing, validação, roteamento e tratamento de erro padronizados em módulo dedicado.
+- Downloads module (`/dl`) via internal `media-resolver-api`:
+  - `wa-gateway` apenas delega resolução de mídia e envia o outbound normalizado.
+  - Pipeline por provider: `detect -> probe -> resolveAsset -> download -> normalizeForWhatsApp`.
+  - `ig` reutiliza o fluxo staged já estável para links públicos.
+  - `yt` usa APIs oficiais para metadata/probe e retorna fallback explícito `preview_only` quando não há asset direto oficial.
+  - `fb` suporta normalização de shared links, tenta resolver asset real quando acessível e retorna fallback claro para `private`/`login_required`.
+  - O resolver mantém retries internos, job TTL em Redis e cleanup periódico de arquivos temporários.
 - Reminders:
   - `/reminder in <duration> <message>` where duration accepts `1`, `10m`, `1h40m30s`, `2d`.
   - `/reminder at <DD-MM[-YYYY]> [HH:MM] <message>` uses `BOT_TIMEZONE` and defaults time to `08:00`.

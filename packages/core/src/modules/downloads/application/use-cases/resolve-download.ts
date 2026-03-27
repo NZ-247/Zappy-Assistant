@@ -13,10 +13,17 @@ const trimCaption = (value?: string): string | undefined => {
   return `${normalized.slice(0, 93)}...`;
 };
 
-const statusMessage = (status: string, reason?: string): string => {
+const statusMessage = (status: string, reason?: string, resultKind?: string): string => {
   const detail = (reason ?? "").trim();
-  if (detail === "preview_only") {
+  const kind = (resultKind ?? "").trim().toLowerCase();
+  if (kind === "preview_only" || detail === "preview_only") {
     return "Esse link só mostra prévia pública; não encontrei vídeo para baixar.";
+  }
+  if (kind === "private" || detail === "private") {
+    return "Esse link está privado.";
+  }
+  if (kind === "login_required" || detail === "login_required") {
+    return "Esse link exige login para acesso.";
   }
   if (status === "unsupported") {
     return "Esse link ainda não é suportado pelo /dl.";
@@ -74,7 +81,7 @@ export const resolveMediaDownload = async (input: {
     });
 
     if (result.status !== "ready") {
-      return replyText(statusMessage(result.status, result.reason));
+      return replyText(statusMessage(result.status, result.reason, result.resultKind));
     }
 
     const asset = result.asset;

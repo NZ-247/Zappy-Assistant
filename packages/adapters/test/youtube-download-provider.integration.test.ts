@@ -33,7 +33,25 @@ test("integration: youtube probe stays blocked by default compliance mode", asyn
 
 test("integration: youtube staged flow reaches resolveAsset in prepare-only mode", async () => {
   const provider = createYoutubeDownloadProvider({
-    complianceMode: "prepare_only"
+    complianceMode: "prepare_only",
+    fetchImpl: async (input) => {
+      const url = String(input);
+      if (url.includes("/oembed")) {
+        return new Response(
+          JSON.stringify({
+            title: "Never Gonna Give You Up",
+            thumbnail_url: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+      return new Response("", { status: 404 });
+    }
   });
   const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
@@ -47,6 +65,7 @@ test("integration: youtube staged flow reaches resolveAsset in prepare-only mode
 
   assert.equal(execution.provider, "yt");
   assert.equal(execution.status, "unsupported");
-  assert.equal(execution.reason, "youtube_resolve_asset_not_implemented");
+  assert.equal(execution.resultKind, "preview_only");
+  assert.equal(execution.reason, "preview_only");
   assert.equal(execution.assets.length, 0);
 });

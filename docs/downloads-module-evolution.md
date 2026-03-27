@@ -1,6 +1,6 @@
-# Downloads Module Evolution (Next Sprint)
+# Downloads Module Evolution
 
-Status: in progress. First real provider enabled for Instagram public permalinks (`/p/`, `/reel/`, `/tv/`).
+Status: staged resolver architecture active. `/dl` now delegates to internal `media-resolver-api`.
 
 ## Goal
 
@@ -14,10 +14,12 @@ Evolve `/dl` from provider-specific placeholder handling into a modular flow wit
 ## Current baseline
 
 - Command parsing and routing already exist in `packages/core/src/modules/downloads`.
-- Runtime adapter router exists in `packages/adapters/src/downloads`.
-- `ig` now supports public permalink probe/download with graceful fallback for private/login-required links.
-- `yt/fb` remain intentionally blocked for compliance.
+- Runtime adapter router exists in `packages/adapters/src/downloads` and is hosted by `apps/media-resolver-api`.
+- `ig` supports public permalink probe/download with graceful fallback for private/login-required links.
+- `yt` uses official metadata probe (`oEmbed` / Data API when configured) and explicit `preview_only` fallback.
+- `fb` supports shared-link normalization + staged resolution/download when accessible, with explicit `private`/`login_required` fallback.
 - `direct` supports safe URL probing/download normalization for media-like URLs.
+- Resolver runtime manages Redis job TTL and temp-file cleanup.
 
 ## New domain/port contracts introduced
 
@@ -31,12 +33,13 @@ Evolve `/dl` from provider-specific placeholder handling into a modular flow wit
 
 These contracts are preparation-only and do not force immediate provider implementation.
 
-## Target runtime flow (next sprint)
+## Runtime flow
 
 1. `detect(url)` selects the best provider (`yt`, `ig`, `fb`, `direct`) with confidence/reason.
 2. `probe(url)` validates URL, gathers metadata, and checks policy/compliance before heavy work.
-3. `download(url, options)` runs only when probe is acceptable and limits are respected.
-4. Result is normalized into assets (`audio|video|image|document`) for outbound mapping.
+3. `resolveAsset(url, options)` selects concrete candidate asset URL(s) when available.
+4. `download(url, options)` runs only when probe/asset checks are acceptable and limits are respected.
+5. `normalizeForWhatsApp` returns normalized assets (`audio|video|image|document`) for outbound mapping.
 
 ## Provider responsibilities
 
@@ -61,9 +64,8 @@ These contracts are preparation-only and do not force immediate provider impleme
 - Use probe-first to avoid unnecessary heavy downloads on constrained hosts.
 - Preserve explicit audit/metrics for provider decisions (`ready`, `blocked`, `invalid`, `error`).
 
-## Suggested implementation order
+## Next hardening steps
 
-1. Finish router orchestrator using new contracts (`detect -> probe -> download`).
-2. Harden `direct` provider with richer metadata and limits.
-3. Implement one social provider end-to-end behind feature flag.
-4. Expand remaining providers with contract tests and compliance checks.
+1. Add provider-level contract tests for `yt/fb` staged outcomes (`preview_only`, `private`, `login_required`).
+2. Add operational metrics for resolver retries/cleanup cadence and job TTL expirations.
+3. Add optional persistent cache layer for metadata probe hits to reduce external calls.

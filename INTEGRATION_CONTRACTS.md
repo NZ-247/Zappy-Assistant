@@ -461,3 +461,107 @@ Relevant env vars
 - `WA_GATEWAY_INTERNAL_PORT` (gateway listener port)
 - `WA_GATEWAY_INTERNAL_BASE_URL` (worker target base URL)
 - `WA_GATEWAY_INTERNAL_TOKEN` (shared bearer token)
+
+## 12. Internal `/dl` media resolver contract
+
+Purpose
+
+`wa-gateway` delegates `/dl` resolution to `media-resolver-api` so provider-specific detection/probe/download/normalization stays outside gateway runtime.
+
+Route
+
+`POST /internal/media/resolve`
+
+Auth
+
+`Authorization: Bearer <MEDIA_RESOLVER_API_TOKEN>`
+
+Request shape
+
+```json
+{
+  "provider": "ig",
+  "url": "https://www.instagram.com/reel/...",
+  "tenantId": "tenant_1",
+  "waUserId": "556699064658@s.whatsapp.net",
+  "waGroupId": "1203...@g.us",
+  "quality": "best",
+  "maxBytes": 16777216,
+  "idempotencyKey": "dl-<hash>"
+}
+```
+
+`provider` is optional and supports:
+
+- `yt`
+- `ig`
+- `fb`
+- `direct`
+
+Success response
+
+```json
+{
+  "ok": true,
+  "result": {
+    "provider": "ig",
+    "detectedProvider": "ig",
+    "status": "ready",
+    "resultKind": "reel_video",
+    "reason": "download_ready",
+    "title": "Example title",
+    "canonicalUrl": "https://www.instagram.com/reel/...",
+    "url": "https://cdn.example/media.mp4",
+    "mimeType": "video/mp4",
+    "sizeBytes": 1048576,
+    "asset": {
+      "kind": "video",
+      "mimeType": "video/mp4",
+      "fileName": "ig-abc123.mp4",
+      "directUrl": "https://cdn.example/media.mp4",
+      "bufferBase64": "<optional-inline-media>"
+    },
+    "jobId": "8f0f2f1a-..."
+  }
+}
+```
+
+`status` values:
+
+- `ready`
+- `unsupported`
+- `blocked`
+- `invalid`
+- `error`
+
+`resultKind` values:
+
+- `preview_only`
+- `image_post`
+- `video_post`
+- `reel_video`
+- `blocked`
+- `private`
+- `login_required`
+- `unsupported`
+
+Failure response (minimal)
+
+```json
+{
+  "ok": false,
+  "error": "Resolve failed",
+  "code": "RESOLVE_FAILED"
+}
+```
+
+Relevant env vars
+
+- `MEDIA_RESOLVER_API_PORT` (resolver listener port)
+- `MEDIA_RESOLVER_API_BASE_URL` (gateway target base URL)
+- `MEDIA_RESOLVER_API_TOKEN` (shared bearer token)
+- `MEDIA_RESOLVER_JOB_TTL_SECONDS` (Redis job metadata TTL)
+- `MEDIA_RESOLVER_CLEANUP_INTERVAL_MS` (temp cleanup cadence)
+- `MEDIA_RESOLVER_TEMP_DIR` (temp storage directory)
+- `YOUTUBE_API_KEY` (optional official metadata probe)
+- `FACEBOOK_ACCESS_TOKEN` + `FACEBOOK_GRAPH_API_VERSION` (optional official metadata probe)

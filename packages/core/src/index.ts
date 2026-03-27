@@ -120,6 +120,7 @@ import type {
   MediaDownloadAssetKind,
   MediaDownloadResolvedAsset,
   MediaDownloadProvider,
+  MediaDownloadResultKind,
   WebSearchResultItem,
   SearchAiSourceItem,
   ImageLicenseInfo,
@@ -226,6 +227,7 @@ export type {
   MediaDownloadAssetKind,
   MediaDownloadResolvedAsset,
   MediaDownloadProvider,
+  MediaDownloadResultKind,
   WebSearchResultItem,
   SearchAiSourceItem,
   ImageLicenseInfo,
@@ -246,6 +248,7 @@ export type { AudioModuleConfigPort, SpeechToTextPort } from "./modules/tools/au
 export type { DownloadProviderKey } from "./modules/downloads/domain/download-provider.js";
 export type {
   DownloadProviderFamily,
+  DownloadProviderResultKind,
   DownloadProviderDetection,
   DownloadProbeStatus,
   DownloadAssetMetadata,

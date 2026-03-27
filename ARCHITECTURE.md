@@ -47,6 +47,9 @@ Responsável por endpoints administrativos, status, métricas, filas e auditoria
 ### `apps/worker`
 Responsável por jobs assíncronos, lembretes, timers e processamento em background.
 
+### `apps/media-resolver-api`
+Serviço interno dedicado para `/dl` com pipeline staged por provider (`detect -> probe -> resolveAsset -> download -> normalizeForWhatsApp`), TTL de jobs e cleanup de arquivos temporários em Redis.
+
 ### `apps/admin-ui`
 Consome apenas `assistant-api`, sem lógica de domínio embarcada.
 
@@ -173,9 +176,11 @@ Capabilities entregues neste padrão:
 - `packages/core/src/modules/web-search` com provider configurável, ranking/deduplicação e resposta textual legível (título/resumo/link)
 - `packages/core/src/modules/search-ai` dedicado à busca assistida por IA com internet e resposta resumida com fontes
 - `packages/core/src/modules/image-search` separado da busca textual, com estratégia native-first (Wikimedia/Openverse/Pixabay/Pexels/Unsplash), fallback Google CSE apenas para descoberta e suporte a `/imglink` para fallback estruturado em links
-- `packages/core/src/modules/downloads` com camada comum de parsing/validação/roteamento e providers isolados por origem (`yt`, `ig`, `fb`, `direct`)
-- provider `ig` habilitado para links públicos (`/p/`, `/reel/`, `/tv/`) com fluxo `detect -> probe -> download` e fallback seguro para privado/login-required
-- providers `yt/fb` ainda com bloqueio explícito por compliance, mantendo evolução segura sem acoplamento frágil
+- `packages/core/src/modules/downloads` com camada comum de parsing/validação e delegação para resolver interno, mantendo `wa-gateway` leve
+- `apps/media-resolver-api` centraliza resolução/download/normalização por provider e remove lógica pesada de `/dl` do gateway
+- provider `ig` reaproveita o pipeline staged já estável (`/p/`, `/reel/`, `/tv/`) com fallback seguro para privado/login-required
+- provider `yt` usa APIs oficiais para metadata/probe e fallback explícito `preview_only` quando não há asset oficial direto
+- provider `fb` aplica pipeline staged com normalização de shared links, tentativa de asset real quando acessível e fallback claro para `private`/`login_required`
 - evolução incremental do módulo de downloads documentada em `docs/downloads-module-evolution.md`
 
 Referência detalhada:

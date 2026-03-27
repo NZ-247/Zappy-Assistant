@@ -696,6 +696,7 @@ export { createOpenAiSearchAiAdapter } from "./search/openai-search-ai-adapter.j
 export { createGeminiSearchAiAdapter } from "./search/gemini-search-ai-adapter.js";
 export { createImageSearchAdapter } from "./search/image-search-adapter.js";
 export { createMediaDownloadRouter } from "./downloads/router.js";
+export { createInternalMediaResolverClient } from "./downloads/internal-resolver-client.js";
 
 export { markGatewayHeartbeat, getGatewayHeartbeat, markWorkerHeartbeat, getWorkerHeartbeat };
 

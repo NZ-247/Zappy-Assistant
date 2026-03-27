@@ -32,6 +32,7 @@ const mapProbeToLegacyResult = (input: {
   provider: input.probe.provider,
   detectedProvider: input.detectedProvider,
   status: input.probe.status,
+  resultKind: input.probe.resultKind,
   reason: input.probe.reason,
   title: input.probe.title,
   canonicalUrl: input.probe.canonicalUrl,
@@ -49,6 +50,7 @@ const mapExecutionToLegacyResult = (input: {
     provider: input.execution.provider,
     detectedProvider: input.detectedProvider,
     status: input.execution.status,
+    resultKind: input.execution.resultKind,
     reason: input.execution.reason,
     title: input.execution.title,
     canonicalUrl: input.execution.canonicalUrl,
@@ -150,6 +152,7 @@ export const createMediaDownloadRouter = (input?: MediaDownloadRouterInput): Med
             provider: request.provider ?? "direct",
             detectedProvider: selection.detection?.provider,
             status: "invalid",
+            resultKind: "unsupported",
             url: request.url,
             reason: "download_provider_not_configured"
           };
@@ -194,6 +197,7 @@ export const createMediaDownloadRouter = (input?: MediaDownloadRouterInput): Med
         return {
           provider: request.provider ?? "direct",
           status: "error",
+          resultKind: "unsupported",
           url: request.url,
           reason: error instanceof Error ? error.message : "download_router_failed"
         };

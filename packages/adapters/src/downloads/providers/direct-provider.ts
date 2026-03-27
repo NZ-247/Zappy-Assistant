@@ -10,7 +10,7 @@ import type { DownloadProviderAdapter } from "../types.js";
 export interface DirectDownloadProviderInput {
   timeoutMs?: number;
   maxBytes?: number;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: (input: string | URL, init?: RequestInit) => Promise<Response>;
 }
 
 const DEFAULT_TIMEOUT_MS = 12_000;
@@ -44,6 +44,12 @@ const resolveAssetKind = (mimeType: string): "audio" | "video" | "image" | "docu
   return "document";
 };
 
+const resultKindFromAssetKind = (kind: "audio" | "video" | "image" | "document"): "image_post" | "video_post" | "unsupported" => {
+  if (kind === "image") return "image_post";
+  if (kind === "video") return "video_post";
+  return "unsupported";
+};
+
 const parseHttpUrl = (value: string): URL | null => {
   try {
     const parsed = new URL(value);
@@ -55,7 +61,7 @@ const parseHttpUrl = (value: string): URL | null => {
 };
 
 const resolveByMethod = async (input: {
-  fetchImpl: typeof fetch;
+  fetchImpl: (input: string | URL, init?: RequestInit) => Promise<Response>;
   url: string;
   method: "HEAD" | "GET";
   timeoutMs: number;
@@ -78,7 +84,7 @@ const resolveByMethod = async (input: {
 
 const resolveProbe = async (input: {
   request: DownloadProviderProbeInput;
-  fetchImpl: typeof fetch;
+  fetchImpl: (input: string | URL, init?: RequestInit) => Promise<Response>;
   timeoutMs: number;
 }): Promise<DownloadProbeResult> => {
   const parsed = parseHttpUrl(input.request.url);
@@ -86,6 +92,7 @@ const resolveProbe = async (input: {
     return {
       provider: "direct",
       status: "invalid",
+      resultKind: "unsupported",
       sourceUrl: input.request.url,
       reason: "invalid_url"
     };
@@ -111,6 +118,7 @@ const resolveProbe = async (input: {
     return {
       provider: "direct",
       status: "error",
+      resultKind: "unsupported",
       sourceUrl: parsed.toString(),
       reason: error instanceof Error ? error.message : "network_error"
     };
@@ -120,6 +128,7 @@ const resolveProbe = async (input: {
     return {
       provider: "direct",
       status: "invalid",
+      resultKind: "unsupported",
       sourceUrl: parsed.toString(),
       canonicalUrl: response.url || parsed.toString(),
       reason: `http_${response.status}`
@@ -131,6 +140,7 @@ const resolveProbe = async (input: {
     return {
       provider: "direct",
       status: "unsupported",
+      resultKind: "unsupported",
       sourceUrl: parsed.toString(),
       canonicalUrl: response.url || parsed.toString(),
       reason: "unsupported_content_type",
@@ -146,6 +156,7 @@ const resolveProbe = async (input: {
   return {
     provider: "direct",
     status: "ready",
+    resultKind: resultKindFromAssetKind(resolveAssetKind(mimeType)),
     sourceUrl: parsed.toString(),
     canonicalUrl: response.url || parsed.toString(),
     metadata: {
@@ -191,6 +202,7 @@ export const createDirectDownloadProvider = (input?: DirectDownloadProviderInput
         return {
           provider: "direct",
           status: probe.status,
+          resultKind: probe.resultKind,
           sourceUrl: probe.sourceUrl,
           canonicalUrl: probe.canonicalUrl,
           title: probe.title,
@@ -206,6 +218,7 @@ export const createDirectDownloadProvider = (input?: DirectDownloadProviderInput
         return {
           provider: "direct",
           status: "blocked",
+          resultKind: "blocked",
           sourceUrl: probe.sourceUrl,
           canonicalUrl: probe.canonicalUrl,
           reason: "max_bytes_exceeded",
@@ -216,6 +229,7 @@ export const createDirectDownloadProvider = (input?: DirectDownloadProviderInput
       return {
         provider: "direct",
         status: "ready",
+        resultKind: resultKindFromAssetKind(resolveAssetKind(assetMimeType)),
         sourceUrl: probe.sourceUrl,
         canonicalUrl: probe.canonicalUrl,
         title: probe.title,

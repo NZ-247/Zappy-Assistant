@@ -93,3 +93,30 @@ test("/dl instagram preview-only result returns short text instead of fake media
   assert.equal(actions?.[0]?.kind, "reply_text");
   assert.match((actions?.[0] as any).text, /prévia|preview|video/i);
 });
+
+test("/dl login-required result returns concise login message", async () => {
+  const actions = await handleDownloadCommand({
+    commandKey: "dl",
+    cmd: "dl fb https://www.facebook.com/watch/?v=1234567890",
+    ctx: {
+      event: {
+        tenantId: "tenant_test",
+        waUserId: "556699999999@s.whatsapp.net"
+      }
+    } as any,
+    deps: {
+      config: { enabled: true },
+      mediaDownload: {
+        resolve: async () => ({
+          provider: "fb",
+          status: "blocked",
+          resultKind: "login_required",
+          reason: "login_required"
+        })
+      }
+    }
+  });
+
+  assert.equal(actions?.[0]?.kind, "reply_text");
+  assert.match((actions?.[0] as any).text, /login|acesso/i);
+});

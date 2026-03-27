@@ -327,6 +327,15 @@ export interface SearchAiPort {
 }
 
 export type MediaDownloadProvider = "yt" | "ig" | "fb" | "direct";
+export type MediaDownloadResultKind =
+  | "preview_only"
+  | "image_post"
+  | "video_post"
+  | "reel_video"
+  | "blocked"
+  | "private"
+  | "login_required"
+  | "unsupported";
 
 export type MediaDownloadAssetKind = "audio" | "video" | "image" | "document";
 
@@ -356,6 +365,7 @@ export interface MediaDownloadPort {
     provider: MediaDownloadProvider;
     detectedProvider?: MediaDownloadProvider;
     status: "ready" | "unsupported" | "blocked" | "invalid" | "error";
+    resultKind?: MediaDownloadResultKind;
     reason?: string;
     title?: string;
     canonicalUrl?: string;
