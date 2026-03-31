@@ -138,6 +138,7 @@ const withYoutubeResolver = modeArgs.includes("--with-yt-resolver");
 const withFacebookResolver = modeArgs.includes("--with-fb-resolver");
 const skipResolverHealthcheck = modeArgs.includes("--skip-resolver-healthcheck");
 const scriptSmokeMode = process.env.ZAPPY_SCRIPT_SMOKE_MODE === "1";
+const scriptSmokeIncludeAppPrecheck = process.env.ZAPPY_SCRIPT_SMOKE_INCLUDE_APP_PRECHECK === "1";
 
 const modeProfile = MODE_PROFILES[requestedMode];
 const serviceScript = modeProfile.serviceScript;
@@ -161,6 +162,7 @@ if (!scriptSmokeMode && !fs.existsSync(composeFile)) {
 
 const dependencyValidationTimeoutMs = 45_000;
 const dependencyValidationIntervalMs = 1_250;
+const recommendedRedisVersion = "6.2.0";
 
 const dependencyDefinitions = [
   {
@@ -186,12 +188,41 @@ const dependencyDefinitions = [
 ];
 
 const services = [
-  { name: "assistant-api", workspace: "@zappy/assistant-api" },
-  { name: "media-resolver-api", workspace: "@zappy/media-resolver-api" },
-  { name: "wa-gateway", workspace: "@zappy/wa-gateway" },
+  {
+    name: "assistant-api",
+    workspace: "@zappy/assistant-api",
+    appPort: {
+      envVar: "ADMIN_API_PORT",
+      defaultPort: 3333
+    }
+  },
+  {
+    name: "media-resolver-api",
+    workspace: "@zappy/media-resolver-api",
+    appPort: {
+      envVar: "MEDIA_RESOLVER_API_PORT",
+      defaultPort: 3335
+    }
+  },
+  {
+    name: "wa-gateway",
+    workspace: "@zappy/wa-gateway",
+    appPort: {
+      envVar: "WA_GATEWAY_INTERNAL_PORT",
+      defaultPort: 3334
+    }
+  },
   { name: "worker", workspace: "@zappy/worker" },
-  { name: "admin-ui", workspace: "@zappy/admin-ui" }
+  {
+    name: "admin-ui",
+    workspace: "@zappy/admin-ui",
+    appPort: {
+      envVar: "ADMIN_UI_PORT",
+      defaultPort: 8080
+    }
+  }
 ];
+const rootAppPortServices = services.filter((item) => Boolean(item.appPort));
 
 const auxiliaryResolverDefinitions = [
   {
@@ -373,6 +404,31 @@ const fail = (msg) => {
   process.exit(1);
 };
 
+let scriptSmokeDependencyOverridesCache;
+const getScriptSmokeDependencyOverrides = () => {
+  if (!scriptSmokeMode) return null;
+  if (scriptSmokeDependencyOverridesCache !== undefined) return scriptSmokeDependencyOverridesCache;
+
+  const raw = String(process.env.ZAPPY_SCRIPT_SMOKE_DEPENDENCIES_JSON ?? "").trim();
+  if (!raw) {
+    scriptSmokeDependencyOverridesCache = null;
+    return scriptSmokeDependencyOverridesCache;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      fail("ZAPPY_SCRIPT_SMOKE_DEPENDENCIES_JSON must be a JSON object keyed by dependency service.");
+    }
+    scriptSmokeDependencyOverridesCache = parsed;
+    return scriptSmokeDependencyOverridesCache;
+  } catch (error) {
+    fail(
+      `Could not parse ZAPPY_SCRIPT_SMOKE_DEPENDENCIES_JSON: ${error instanceof Error ? error.message : "invalid_json"}`
+    );
+  }
+};
+
 const dependencyLog = (phase, fields = {}) => {
   const suffix = Object.entries(fields)
     .map(([key, value]) => `${key}=${String(value)}`)
@@ -385,6 +441,13 @@ const resolverLog = (phase, fields = {}) => {
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(" ");
   log(`[resolver] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+};
+
+const stateLog = (fields = {}) => {
+  const suffix = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  log(`[state]${suffix ? ` ${suffix}` : ""}`);
 };
 
 const pidAlive = (pid) => {
@@ -428,6 +491,129 @@ const runCommand = (command, args, options = {}) => {
     stdout: (result.stdout ?? "").trim(),
     stderr: (result.stderr ?? "").trim()
   };
+};
+
+let lsofAvailableCache;
+const isLsofAvailable = () => {
+  if (lsofAvailableCache !== undefined) return lsofAvailableCache;
+  lsofAvailableCache = runCommand("lsof", ["-v"], { stdio: "ignore" }).status === 0;
+  return lsofAvailableCache;
+};
+
+let ssAvailableCache;
+const isSsAvailable = () => {
+  if (ssAvailableCache !== undefined) return ssAvailableCache;
+  ssAvailableCache = runCommand("ss", ["-h"], { stdio: "ignore" }).status === 0;
+  return ssAvailableCache;
+};
+
+const parsePidLines = (output) =>
+  output
+    .split(/\r?\n/)
+    .map((line) => Number(line.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0);
+
+const getListeningPidsFromLsof = (port) => {
+  if (!isLsofAvailable()) return [];
+  const result = runCommand("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
+  if (result.status !== 0 && !result.stdout) return [];
+  return parsePidLines(result.stdout);
+};
+
+const getListeningPidsFromSs = (port) => {
+  if (!isSsAvailable()) return [];
+  const result = runCommand("ss", ["-ltnp", `sport = :${port}`]);
+  if (result.status !== 0 || !result.stdout) return [];
+
+  const matches = result.stdout.matchAll(/pid=(\d+)/g);
+  const pids = [];
+  for (const match of matches) {
+    const parsed = Number(match[1]);
+    if (Number.isInteger(parsed) && parsed > 0) pids.push(parsed);
+  }
+  return pids;
+};
+
+const listListeningPidsByPort = (port) => {
+  const pids = new Set();
+  for (const pid of getListeningPidsFromLsof(port)) pids.add(pid);
+  for (const pid of getListeningPidsFromSs(port)) pids.add(pid);
+  return Array.from(pids);
+};
+
+const getProcessCommandLine = (pid) => {
+  const result = runCommand("ps", ["-o", "args=", "-p", String(pid)]);
+  if (result.status !== 0) return "";
+  return result.stdout.trim();
+};
+
+const getPortOwnerProcesses = (port) =>
+  listListeningPidsByPort(port).map((pid) => ({
+    pid,
+    commandLine: getProcessCommandLine(pid)
+  }));
+
+const resolveServicePort = (service, env) => {
+  if (!service.appPort) return null;
+  const rawValue = String(env[service.appPort.envVar] ?? "").trim();
+  if (!rawValue) return service.appPort.defaultPort;
+  const parsed = Number(rawValue);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    fail(`[app-precheck] service=${service.name} has invalid ${service.appPort.envVar}="${rawValue}"`);
+  }
+  return parsed;
+};
+
+const serviceIdentityMarkers = (service) =>
+  [service.workspace, `apps/${service.name}`, `@zappy/${service.name}`].map((item) => String(item).toLowerCase());
+
+const isLikelySameServiceProcess = (service, commandLine) => {
+  const normalized = String(commandLine || "").toLowerCase();
+  if (!normalized) return false;
+  return serviceIdentityMarkers(service).some((marker) => normalized.includes(marker));
+};
+
+const shouldRunAppPrecheck = () => !scriptSmokeMode || scriptSmokeIncludeAppPrecheck;
+
+const precheckRootAppPorts = async (env) => {
+  if (!shouldRunAppPrecheck()) {
+    stateLog({
+      mode: requestedMode,
+      appPrecheck: "skipped",
+      reason: "script_smoke_mode"
+    });
+    return [];
+  }
+
+  const results = [];
+  for (const service of rootAppPortServices) {
+    const port = resolveServicePort(service, env);
+    const owners = getPortOwnerProcesses(port);
+    const probe = owners.length > 0 ? { open: true, reason: "owner_detected" } : await probeTcpPort("127.0.0.1", port, 900);
+    const portBusy = owners.length > 0 || probe.open;
+
+    const matchingOwner = owners.find((owner) => isLikelySameServiceProcess(service, owner.commandLine));
+    const status = !portBusy
+      ? "ready_to_start"
+      : matchingOwner
+        ? "already_running_same_service"
+        : "port_conflict_unknown_process";
+
+    log(`[app-precheck] service=${service.name} port=${port} status=${status}`);
+
+    if (status === "already_running_same_service") {
+      log(`[app-start-skip] service=${service.name} reason=already_running_same_service`);
+    }
+
+    results.push({
+      service: service.name,
+      port,
+      status,
+      owners
+    });
+  }
+
+  return results;
 };
 
 let composeCmdCache;
@@ -541,6 +727,39 @@ const loadRedisCtor = async () => {
   return redisCtorPromise;
 };
 
+const parseSemverTriplet = (value) => {
+  const match = String(value || "").trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+};
+
+const compareSemver = (left, right) => {
+  if (!left || !right) return 0;
+  if (left.major !== right.major) return left.major - right.major;
+  if (left.minor !== right.minor) return left.minor - right.minor;
+  return left.patch - right.patch;
+};
+
+const recommendedRedisVersionParsed = parseSemverTriplet(recommendedRedisVersion);
+
+const parseRedisVersionFromInfo = (infoText) => {
+  const lines = String(infoText || "").split(/\r?\n/);
+  const line = lines.find((item) => item.startsWith("redis_version:"));
+  if (!line) return null;
+  const [, version] = line.split(":");
+  return version ? version.trim() : null;
+};
+
+const isRedisVersionRecommended = (version) => {
+  const parsed = parseSemverTriplet(version);
+  if (!parsed || !recommendedRedisVersionParsed) return null;
+  return compareSemver(parsed, recommendedRedisVersionParsed) >= 0;
+};
+
 const checkRedisPing = async (connectionUrl, timeoutMs = 3200) => {
   let client;
   try {
@@ -554,14 +773,26 @@ const checkRedisPing = async (connectionUrl, timeoutMs = 3200) => {
 
     await withTimeout(client.connect(), timeoutMs, "connect_timeout");
     const pong = await withTimeout(client.ping(), timeoutMs, "ping_timeout");
+    let redisVersion = null;
+    try {
+      const serverInfo = await withTimeout(client.info("server"), timeoutMs, "info_timeout");
+      redisVersion = parseRedisVersionFromInfo(serverInfo);
+    } catch {
+      redisVersion = null;
+    }
+
     return {
       ok: typeof pong === "string" && pong.toUpperCase() === "PONG",
-      reason: typeof pong === "string" ? `ping_${pong.toLowerCase()}` : "ping_unexpected"
+      reason: typeof pong === "string" ? `ping_${pong.toLowerCase()}` : "ping_unexpected",
+      version: redisVersion,
+      minVersionRecommended: isRedisVersionRecommended(redisVersion)
     };
   } catch (error) {
     return {
       ok: false,
-      reason: error instanceof Error ? error.message : "redis_ping_failed"
+      reason: error instanceof Error ? error.message : "redis_ping_failed",
+      version: null,
+      minVersionRecommended: null
     };
   } finally {
     if (!client) return;
@@ -841,6 +1072,70 @@ const classifyDependencySource = ({ dependency, tcpOpen, serviceOk, composeState
 };
 
 const discoverDependency = async (dependency, phase = "discover") => {
+  const scriptSmokeOverrides = getScriptSmokeDependencyOverrides();
+  const scripted = scriptSmokeOverrides?.[dependency.service] ?? scriptSmokeOverrides?.[dependency.key];
+  if (scripted && typeof scripted === "object") {
+    const composeState = {
+      available: false,
+      exists: false,
+      running: false,
+      containerId: null,
+      containerName: null,
+      status: "smoke_stub",
+      health: "unknown",
+      composeProject: null,
+      error: null,
+      ...(scripted.compose && typeof scripted.compose === "object" ? scripted.compose : {})
+    };
+    const source = typeof scripted.source === "string" ? scripted.source : "external_host";
+    const usable = scripted.usable !== undefined ? Boolean(scripted.usable) : true;
+    const tcpOpen = scripted.tcpOpen !== undefined ? Boolean(scripted.tcpOpen) : usable;
+    const serviceCheckOk = scripted.serviceCheckOk !== undefined ? Boolean(scripted.serviceCheckOk) : usable;
+    const serviceCheckReason = String(scripted.serviceCheckReason || (serviceCheckOk ? "smoke_ok" : "smoke_fail"));
+    const redisVersion = dependency.kind === "redis" ? (scripted.redisVersion ? String(scripted.redisVersion) : null) : null;
+    const redisMinVersionRecommended =
+      dependency.kind === "redis"
+        ? scripted.redisMinVersionRecommended !== undefined
+          ? Boolean(scripted.redisMinVersionRecommended)
+          : isRedisVersionRecommended(redisVersion)
+        : null;
+
+    dependencyLog(`${phase}-start`, {
+      service: dependency.service,
+      endpoint: dependency.endpoint,
+      mode: infraMode,
+      scripted: "yes"
+    });
+    dependencyLog(`${phase}-result`, {
+      service: dependency.service,
+      source,
+      tcpOpen: tcpOpen ? "yes" : "no",
+      serviceOk: serviceCheckOk ? "yes" : "no",
+      usable: usable ? "yes" : "no",
+      composeStatus: composeState.status,
+      composeHealth: composeState.health,
+      owner: "none",
+      check: serviceCheckReason,
+      redisVersion: dependency.kind === "redis" ? redisVersion || "unknown" : "n/a",
+      redisVersionRecommended:
+        dependency.kind === "redis" ? (redisMinVersionRecommended === false ? "no" : "yes_or_unknown") : "n/a"
+    });
+
+    return {
+      ...dependency,
+      source,
+      usable,
+      tcpOpen,
+      tcpReason: String(scripted.tcpReason || (tcpOpen ? "connected" : "smoke_closed")),
+      serviceCheckOk,
+      serviceCheckReason,
+      redisVersion,
+      redisMinVersionRecommended,
+      compose: composeState,
+      portOwner: null
+    };
+  }
+
   dependencyLog(`${phase}-start`, {
     service: dependency.service,
     endpoint: dependency.endpoint,
@@ -883,7 +1178,10 @@ const discoverDependency = async (dependency, phase = "discover") => {
     composeStatus: composeState.status,
     composeHealth: composeState.health,
     owner: portOwner?.containerName || "none",
-    check: serviceCheck.reason
+    check: serviceCheck.reason,
+    redisVersion: dependency.kind === "redis" ? serviceCheck.version || "unknown" : "n/a",
+    redisVersionRecommended:
+      dependency.kind === "redis" ? (serviceCheck.minVersionRecommended === false ? "no" : "yes_or_unknown") : "n/a"
   });
 
   return {
@@ -894,6 +1192,8 @@ const discoverDependency = async (dependency, phase = "discover") => {
     tcpReason: tcpProbe.reason,
     serviceCheckOk: serviceCheck.ok,
     serviceCheckReason: serviceCheck.reason,
+    redisVersion: dependency.kind === "redis" ? serviceCheck.version || null : null,
+    redisMinVersionRecommended: dependency.kind === "redis" ? serviceCheck.minVersionRecommended ?? null : null,
     compose: composeState,
     portOwner
   };
@@ -951,6 +1251,8 @@ const sanitizeDependencyForState = (snapshot, action) => ({
   tcpReason: snapshot.tcpReason,
   serviceCheckOk: snapshot.serviceCheckOk,
   serviceCheckReason: snapshot.serviceCheckReason,
+  redisVersion: snapshot.redisVersion ?? null,
+  redisMinVersionRecommended: snapshot.redisMinVersionRecommended ?? null,
   action,
   compose: {
     available: snapshot.compose.available,
@@ -973,6 +1275,18 @@ const sanitizeDependencyForState = (snapshot, action) => ({
     : null
 });
 
+const logRedisStrategySelection = (snapshot, details = {}) => {
+  if (snapshot?.service !== "redis") return;
+  const warningTag =
+    snapshot.redisMinVersionRecommended === false
+      ? ` warning=min_version_recommended recommended_min_version=${recommendedRedisVersion}`
+      : "";
+  const version = snapshot.redisVersion || "unknown";
+  const selectedBy = details.selectedBy ? ` selected_by=${details.selectedBy}` : "";
+  const reason = details.reason ? ` reason=${details.reason}` : "";
+  log(`[deps] service=redis source=${snapshot.source} version=${version}${selectedBy}${warningTag}${reason}`);
+};
+
 const ensureInfra = async (dependencies) => {
   dependencyLog("strategy", {
     mode: infraMode,
@@ -994,6 +1308,10 @@ const ensureInfra = async (dependencies) => {
         );
       }
 
+      logRedisStrategySelection(snapshot, {
+        selectedBy: "external_mode",
+        reason: "validated_configured_endpoint"
+      });
       finalized.push(sanitizeDependencyForState(snapshot, "validated_external"));
       continue;
     }
@@ -1015,6 +1333,10 @@ const ensureInfra = async (dependencies) => {
           });
         }
 
+        logRedisStrategySelection(snapshot, {
+          selectedBy: "auto_mode",
+          reason: snapshot.source === "compose_managed" ? "reuse_compose_managed_usable" : "reuse_external_usable"
+        });
         finalized.push(sanitizeDependencyForState(snapshot, "reuse_existing"));
         continue;
       }
@@ -1047,6 +1369,10 @@ const ensureInfra = async (dependencies) => {
         );
       }
 
+      logRedisStrategySelection(snapshot, {
+        selectedBy: "auto_mode",
+        reason: "compose_started_after_unavailable_dependency"
+      });
       finalized.push(sanitizeDependencyForState(snapshot, "compose_started"));
       continue;
     }
@@ -1062,6 +1388,10 @@ const ensureInfra = async (dependencies) => {
       dependencyLog("managed-decision", {
         service: dependency.service,
         decision: "reuse_compose_managed"
+      });
+      logRedisStrategySelection(snapshot, {
+        selectedBy: "managed_mode",
+        reason: "reuse_compose_managed"
       });
       finalized.push(sanitizeDependencyForState(snapshot, "reuse_managed"));
       continue;
@@ -1094,6 +1424,10 @@ const ensureInfra = async (dependencies) => {
       );
     }
 
+    logRedisStrategySelection(snapshot, {
+      selectedBy: "managed_mode",
+      reason: "compose_started_by_managed_mode"
+    });
     finalized.push(sanitizeDependencyForState(snapshot, "compose_started"));
   }
 
@@ -1630,25 +1964,82 @@ const cleanup = async (reason = "shutdown", exitCode = 0) => {
   process.exit(exitCode);
 };
 
-const assertNoRunningStack = () => {
+const inspectModeStateFiles = () => {
+  let activeRequestedModeState = null;
+
   for (const mode of Object.keys(modeStateFiles)) {
     const targetFile = modeStateFiles[mode];
+    if (!fs.existsSync(targetFile)) {
+      if (mode === requestedMode) {
+        stateLog({
+          mode,
+          status: "missing",
+          file: path.relative(rootDir, targetFile)
+        });
+      }
+      continue;
+    }
+
     const state = readState(targetFile);
-    if (!state) continue;
-    const alive = isStateAlive(state);
-    if (!alive) {
+    if (!state) {
+      stateLog({
+        mode,
+        status: "stale_unreadable_cleared",
+        file: path.relative(rootDir, targetFile)
+      });
       clearState(targetFile);
       continue;
     }
-    if (mode === requestedMode) {
-      fail(`${requestedMode} stack already running (see ${path.relative(rootDir, targetFile)}). Run npm run stop:${requestedMode} first.`);
+
+    const alive = isStateAlive(state);
+    if (!alive) {
+      stateLog({
+        mode,
+        status: "stale_pid_state_cleared",
+        file: path.relative(rootDir, targetFile)
+      });
+      clearState(targetFile);
+      continue;
     }
-    fail(`another stack mode is running (${path.basename(targetFile)}). Stop it before starting mode=${requestedMode}.`);
+
+    if (mode !== requestedMode) {
+      fail(`another stack mode is running (${path.basename(targetFile)}). Stop it before starting mode=${requestedMode}.`);
+    }
+
+    activeRequestedModeState = {
+      mode,
+      file: targetFile,
+      state
+    };
+    stateLog({
+      mode,
+      status: "active",
+      file: path.relative(rootDir, targetFile),
+      supervisorPid: state.supervisorPid || "none",
+      trackedServices: Array.isArray(state.services) ? state.services.length : 0
+    });
   }
+
+  return activeRequestedModeState;
 };
 
-const startServices = (env, runtimeStateInfra) => {
-  services.forEach((svc) => {
+const assertPrecheckNoUnknownPortConflicts = (precheckResults) => {
+  const conflict = precheckResults.find((item) => item.status === "port_conflict_unknown_process");
+  if (!conflict) return;
+  fail(
+    `[app-precheck] service=${conflict.service} port=${conflict.port} status=port_conflict_unknown_process. ` +
+      "Resolve the conflicting process or change the service port env before retrying."
+  );
+};
+
+const selectServicesToStartFromPrecheck = (precheckResults) => {
+  if (!precheckResults.length) return services;
+  const precheckStatusByService = new Map(precheckResults.map((item) => [item.service, item.status]));
+  return services.filter((service) => precheckStatusByService.get(service.name) !== "already_running_same_service");
+};
+
+const startServices = (env, runtimeStateInfra, targetServices = services) => {
+  targetServices.forEach((svc) => {
     const stdoutLines = [];
     const stderrLines = [];
 
@@ -1696,16 +2087,46 @@ const startServices = (env, runtimeStateInfra) => {
 
   log(`mode=${requestedMode}`);
   log(`infraMode=${infraMode}`);
-  log(`${requestedMode} services started. Tracking state at ${path.relative(rootDir, stateFile)}.`);
+  log(
+    `${requestedMode} services started (${targetServices.map((item) => item.name).join(",") || "none"}). Tracking state at ${path.relative(rootDir, stateFile)}.`
+  );
   log(`To stop services, run: npm run stop:${requestedMode}`);
 };
 
 const main = async () => {
   const runtimeEnv = buildRuntimeEnv();
-  assertNoRunningStack();
+  const activeRequestedModeState = inspectModeStateFiles();
+  const appPrecheckResults = await precheckRootAppPorts(runtimeEnv);
 
-  const dependencies = scriptSmokeMode ? [] : resolveDependencyTargets(runtimeEnv);
-  const infraState = scriptSmokeMode
+  if (activeRequestedModeState) {
+    stateLog({
+      mode: requestedMode,
+      status: "already_running_skip_start",
+      file: path.relative(rootDir, activeRequestedModeState.file)
+    });
+    log("Requested mode already has active runtime-owned services. Startup skipped to avoid duplicates.");
+    return;
+  }
+
+  assertPrecheckNoUnknownPortConflicts(appPrecheckResults);
+
+  const allRootAppsAlreadyRunning =
+    appPrecheckResults.length > 0 && appPrecheckResults.every((item) => item.status === "already_running_same_service");
+  if (allRootAppsAlreadyRunning) {
+    stateLog({
+      mode: requestedMode,
+      status: "untracked_runtime_detected_skip_start",
+      reason: "all_root_app_ports_match_running_service_identities"
+    });
+    log("All root app ports already map to running Zappy services. Startup skipped to avoid duplicate runtime.");
+    return;
+  }
+
+  const servicesToStart = selectServicesToStartFromPrecheck(appPrecheckResults);
+
+  const smokeDependencyOverrides = getScriptSmokeDependencyOverrides();
+  const dependencies = scriptSmokeMode && !smokeDependencyOverrides ? [] : resolveDependencyTargets(runtimeEnv);
+  const infraState = scriptSmokeMode && !smokeDependencyOverrides
     ? {
         mode: infraMode,
         dependencies: [],
@@ -1743,6 +2164,7 @@ const main = async () => {
         mode: infraMode,
         dependencies: infraState.dependencies,
         managedServicesStarted: infraState.managedServicesStarted,
+        appPrecheck: appPrecheckResults,
         resolvers: resolverRuntime.state,
         compose: null,
         composeFile
@@ -1752,12 +2174,23 @@ const main = async () => {
     return;
   }
 
+  if (!servicesToStart.length) {
+    stateLog({
+      mode: requestedMode,
+      status: "no_targets_to_start",
+      reason: "all_selected_services_already_running"
+    });
+    log("No app services selected for startup after precheck reconciliation.");
+    return;
+  }
+
   startServices(runtimeEnv, {
     mode: infraMode,
     dependencies: infraState.dependencies,
     managedServicesStarted: infraState.managedServicesStarted,
+    appPrecheck: appPrecheckResults,
     resolvers: resolverRuntime.state
-  });
+  }, servicesToStart);
 
 };
 

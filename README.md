@@ -83,6 +83,12 @@ Preferred local command:
 npm run start:dev -- --infra=auto
 ```
 
+Root app startup behavior now includes pre-start reconciliation for `admin-ui` (`8080`), `assistant-api` (`3333`), `wa-gateway` (`3334`), and `media-resolver-api` (`3335`):
+
+- `[app-precheck] ... status=ready_to_start` -> service spawn continues.
+- `[app-precheck] ... status=already_running_same_service` -> duplicate spawn is skipped (`[app-start-skip] ...`).
+- `[app-precheck] ... status=port_conflict_unknown_process` -> startup fails clearly (no duplicate spawn).
+
 Production:
 
 ```bash
@@ -161,6 +167,10 @@ Ownership-aware stop rules with `--infra`:
 - only `compose_managed` dependencies started by current runtime are candidates for stop.
 - resolver stop is delegated only when state marks module as `runtime_delegated` and module provides `scripts/stop.sh`.
 - if `scripts/stop.sh` is missing, stop logs `missing_stop_script` and reports manual/non-delegated module stop.
+- after PID-based stop, root ports `8080/3333/3334/3335` are reconciled with `[stop-reconcile]` statuses:
+  - `stopped_by_pid`
+  - `already_stopped`
+  - `port_still_busy_unknown_process` (reported only; unknown processes are not force-killed)
 
 ### Restart
 
@@ -220,10 +230,20 @@ Manual steps that remain:
 
 ### Runtime Troubleshooting
 
+Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-guide.md`.
+
 - `disabled_by_env`:
   - resolver was requested by `--with-external-services` but `YT_RESOLVER_ENABLED`/`FB_RESOLVER_ENABLED` is `false`.
 - `EADDRINUSE`:
-  - app port conflict. Free the conflicting port or change the service port env (`ADMIN_API_PORT`, `ADMIN_UI_PORT`, `WA_GATEWAY_INTERNAL_PORT`, `MEDIA_RESOLVER_API_PORT`, resolver base URL ports `3401/3402`).
+  - app port conflict. Check `[app-precheck]` status first.
+  - `already_running_same_service`: duplicate spawn is skipped automatically.
+  - `port_conflict_unknown_process`: free the conflicting port or change service port env (`ADMIN_API_PORT`, `ADMIN_UI_PORT`, `WA_GATEWAY_INTERNAL_PORT`, `MEDIA_RESOLVER_API_PORT`, resolver base URL ports `3401/3402`).
+- stale/missing state file (`.zappy-dev/<mode>-stack.json`):
+  - startup/stop logs explicit `[state] status=missing|stale_*|active` diagnostics.
+  - stale state is cleared automatically before continuing.
+- external Redis warning (`min_version_recommended`):
+  - check `[deps] service=redis source=... version=...`.
+  - recommendation: use compose-managed Redis 7, or upgrade host Redis to `>= 6.2.0`.
 - missing exports / package errors:
   - startup logs `category=package_export_error`; check recent package changes and run `npm install` + `npm run build`/`npm run prisma:generate` as needed.
 - resolver health fails after delegation:

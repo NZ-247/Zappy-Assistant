@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -148,6 +149,83 @@ const waitForHealth = async (endpoint, timeoutMs = 3000) => {
     await new Promise((resolve) => setTimeout(resolve, 80));
   }
   return false;
+};
+
+const probeTcpPort = (port, timeoutMs = 600) =>
+  new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const done = (open) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(open);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => done(true));
+    socket.on("timeout", () => done(false));
+    socket.on("error", () => done(false));
+  });
+
+const waitForTcpPort = async (port, timeoutMs = 3500) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (await probeTcpPort(port, 250)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 70));
+  }
+  return false;
+};
+
+const startDetachedPortServer = async ({ port, marker = "smoke-marker" }) => {
+  const serverScript =
+    'const net=require("node:net"); const port=Number(process.argv[1]); const marker=String(process.argv[2]||"marker"); const s=net.createServer(); s.listen(port,"127.0.0.1"); process.on("SIGTERM",()=>s.close(()=>process.exit(0))); setInterval(()=>{ if (!marker) process.stdout.write(""); }, 1000);';
+  const child = spawn(process.execPath, ["-e", serverScript, String(port), marker], {
+    stdio: "ignore",
+    detached: true
+  });
+  child.unref();
+
+  const ready = await waitForTcpPort(port, 3000);
+  if (!ready) {
+    try {
+      process.kill(child.pid, "SIGTERM");
+    } catch {
+      /* ignore */
+    }
+    throw new Error("detached_tcp_server_not_ready");
+  }
+
+  return {
+    pid: child.pid,
+    stop: () => {
+      try {
+        process.kill(child.pid, "SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+};
+
+const allocateRootServicePorts = async () => {
+  const adminUiPort = await getFreePort();
+  const assistantApiPort = await getFreePort();
+  const waGatewayPort = await getFreePort();
+  const mediaResolverPort = await getFreePort();
+
+  return {
+    ADMIN_UI_PORT: String(adminUiPort),
+    ADMIN_API_PORT: String(assistantApiPort),
+    WA_GATEWAY_INTERNAL_PORT: String(waGatewayPort),
+    MEDIA_RESOLVER_API_PORT: String(mediaResolverPort),
+    values: {
+      adminUiPort,
+      assistantApiPort,
+      waGatewayPort,
+      mediaResolverPort
+    }
+  };
 };
 
 const startDetachedHealthServer = async () => {
@@ -401,6 +479,232 @@ test("stop reports missing_stop_script as manual/non-delegated", () => {
 
   assert.equal(result.status, 0, toOutput(result));
   assert.match(toOutput(result), /phase=module-stop .*reason=missing_stop_script .*manual=required/);
+});
+
+test("start precheck marks already_running_same_service and skips duplicate root spawn", async (t) => {
+  const project = createTempProject();
+  const ports = await allocateRootServicePorts();
+  const holder = await startDetachedPortServer({
+    port: ports.values.adminUiPort,
+    marker: "@zappy/admin-ui"
+  });
+  t.after(() => holder.stop());
+
+  const result = runNodeScript(startScript, ["dev"], {
+    projectRoot: project.rootDir,
+    env: {
+      ZAPPY_SCRIPT_SMOKE_MODE: "1",
+      ZAPPY_SCRIPT_SMOKE_INCLUDE_APP_PRECHECK: "1",
+      ADMIN_UI_PORT: ports.ADMIN_UI_PORT,
+      ADMIN_API_PORT: ports.ADMIN_API_PORT,
+      WA_GATEWAY_INTERNAL_PORT: ports.WA_GATEWAY_INTERNAL_PORT,
+      MEDIA_RESOLVER_API_PORT: ports.MEDIA_RESOLVER_API_PORT
+    }
+  });
+
+  assert.equal(result.status, 0, toOutput(result));
+  const output = toOutput(result);
+  assert.match(
+    output,
+    new RegExp(`\\[app-precheck\\] service=admin-ui port=${ports.values.adminUiPort} status=already_running_same_service`)
+  );
+  assert.match(output, /\[app-start-skip\] service=admin-ui reason=already_running_same_service/);
+});
+
+test("start precheck fails on unknown process occupying a root app port", async (t) => {
+  const project = createTempProject();
+  const ports = await allocateRootServicePorts();
+  const holder = await startDetachedPortServer({
+    port: ports.values.assistantApiPort,
+    marker: "unrelated-process"
+  });
+  t.after(() => holder.stop());
+
+  const result = runNodeScript(startScript, ["dev"], {
+    projectRoot: project.rootDir,
+    env: {
+      ZAPPY_SCRIPT_SMOKE_MODE: "1",
+      ZAPPY_SCRIPT_SMOKE_INCLUDE_APP_PRECHECK: "1",
+      ADMIN_UI_PORT: ports.ADMIN_UI_PORT,
+      ADMIN_API_PORT: ports.ADMIN_API_PORT,
+      WA_GATEWAY_INTERNAL_PORT: ports.WA_GATEWAY_INTERNAL_PORT,
+      MEDIA_RESOLVER_API_PORT: ports.MEDIA_RESOLVER_API_PORT
+    }
+  });
+
+  assert.notEqual(result.status, 0, toOutput(result));
+  assert.match(
+    toOutput(result),
+    new RegExp(`\\[app-precheck\\] service=assistant-api port=${ports.values.assistantApiPort} status=port_conflict_unknown_process`)
+  );
+});
+
+test("stop reconciles root app ports with already_stopped vs still_busy_unknown_process statuses", async (t) => {
+  const project = createTempProject();
+  const ports = await allocateRootServicePorts();
+  const holder = await startDetachedPortServer({
+    port: ports.values.assistantApiPort,
+    marker: "unknown-holder"
+  });
+  t.after(() => holder.stop());
+
+  const stateFile = path.join(project.rootDir, ".zappy-dev", "dev-stack.json");
+  fs.writeFileSync(
+    stateFile,
+    JSON.stringify(
+      {
+        mode: "dev",
+        supervisorPid: 999999,
+        startedAt: new Date().toISOString(),
+        services: []
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const result = runNodeScript(stopScript, ["dev"], {
+    projectRoot: project.rootDir,
+    env: {
+      ADMIN_UI_PORT: ports.ADMIN_UI_PORT,
+      ADMIN_API_PORT: ports.ADMIN_API_PORT,
+      WA_GATEWAY_INTERNAL_PORT: ports.WA_GATEWAY_INTERNAL_PORT,
+      MEDIA_RESOLVER_API_PORT: ports.MEDIA_RESOLVER_API_PORT
+    }
+  });
+
+  assert.equal(result.status, 0, toOutput(result));
+  const output = toOutput(result);
+  assert.match(
+    output,
+    new RegExp(
+      `\\[stop-reconcile\\] service=assistant-api port=${ports.values.assistantApiPort} status=port_still_busy_unknown_process`
+    )
+  );
+  assert.match(output, new RegExp(`\\[stop-reconcile\\] service=admin-ui port=${ports.values.adminUiPort} status=already_stopped`));
+});
+
+test("start clears stale state and still runs port precheck reconciliation", async () => {
+  const project = createTempProject();
+  const ports = await allocateRootServicePorts();
+  const stateFile = path.join(project.rootDir, ".zappy-dev", "dev-stack.json");
+  fs.writeFileSync(
+    stateFile,
+    JSON.stringify(
+      {
+        mode: "dev",
+        supervisorPid: 999999,
+        startedAt: new Date().toISOString(),
+        services: [{ name: "assistant-api", pid: 999999 }]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const result = runNodeScript(startScript, ["dev"], {
+    projectRoot: project.rootDir,
+    env: {
+      ZAPPY_SCRIPT_SMOKE_MODE: "1",
+      ZAPPY_SCRIPT_SMOKE_INCLUDE_APP_PRECHECK: "1",
+      ADMIN_UI_PORT: ports.ADMIN_UI_PORT,
+      ADMIN_API_PORT: ports.ADMIN_API_PORT,
+      WA_GATEWAY_INTERNAL_PORT: ports.WA_GATEWAY_INTERNAL_PORT,
+      MEDIA_RESOLVER_API_PORT: ports.MEDIA_RESOLVER_API_PORT
+    }
+  });
+
+  assert.equal(result.status, 0, toOutput(result));
+  const output = toOutput(result);
+  assert.match(output, /\[state\] mode=dev status=stale_pid_state_cleared/);
+  assert.match(
+    output,
+    new RegExp(`\\[app-precheck\\] service=assistant-api port=${ports.values.assistantApiPort} status=ready_to_start`)
+  );
+});
+
+test("redis source selection logs are explicit in auto/external/managed flows", () => {
+  const runWithInfra = (infraMode, dependencyOverrides) => {
+    const project = createTempProject();
+    return runNodeScript(startScript, ["dev", `--infra=${infraMode}`], {
+      projectRoot: project.rootDir,
+      env: {
+        ZAPPY_SCRIPT_SMOKE_MODE: "1",
+        ZAPPY_SCRIPT_SMOKE_DEPENDENCIES_JSON: JSON.stringify(dependencyOverrides)
+      }
+    });
+  };
+
+  const autoResult = runWithInfra("auto", {
+    postgres: {
+      source: "external_host",
+      usable: true,
+      tcpOpen: true,
+      serviceCheckOk: true,
+      serviceCheckReason: "select_1_ok"
+    },
+    redis: {
+      source: "external_host",
+      usable: true,
+      tcpOpen: true,
+      serviceCheckOk: true,
+      serviceCheckReason: "ping_pong",
+      redisVersion: "6.0.16",
+      redisMinVersionRecommended: false
+    }
+  });
+  assert.equal(autoResult.status, 0, toOutput(autoResult));
+  assert.match(
+    toOutput(autoResult),
+    /\[deps\] service=redis source=external_host version=6\.0\.16 selected_by=auto_mode warning=min_version_recommended/
+  );
+
+  const externalResult = runWithInfra("external", {
+    postgres: {
+      source: "external_host",
+      usable: true,
+      tcpOpen: true,
+      serviceCheckOk: true,
+      serviceCheckReason: "select_1_ok"
+    },
+    redis: {
+      source: "external_host",
+      usable: true,
+      tcpOpen: true,
+      serviceCheckOk: true,
+      serviceCheckReason: "ping_pong",
+      redisVersion: "6.0.16",
+      redisMinVersionRecommended: false
+    }
+  });
+  assert.equal(externalResult.status, 0, toOutput(externalResult));
+  assert.match(
+    toOutput(externalResult),
+    /\[deps\] service=redis source=external_host version=6\.0\.16 selected_by=external_mode warning=min_version_recommended/
+  );
+
+  const managedResult = runWithInfra("managed", {
+    postgres: {
+      source: "compose_managed",
+      usable: true,
+      tcpOpen: true,
+      serviceCheckOk: true,
+      serviceCheckReason: "select_1_ok"
+    },
+    redis: {
+      source: "compose_managed",
+      usable: true,
+      tcpOpen: true,
+      serviceCheckOk: true,
+      serviceCheckReason: "ping_pong",
+      redisVersion: "7.2.4",
+      redisMinVersionRecommended: true
+    }
+  });
+  assert.equal(managedResult.status, 0, toOutput(managedResult));
+  assert.match(toOutput(managedResult), /\[deps\] service=redis source=compose_managed version=7\.2\.4 selected_by=managed_mode/);
 });
 
 test("root bootstrap/start scripts no longer contain Python dependency handling", () => {

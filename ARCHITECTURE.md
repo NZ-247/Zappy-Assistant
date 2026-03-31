@@ -62,7 +62,10 @@ Regras:
 - falhas desses auxiliares não devem derrubar runtimes não relacionados
 - orquestração raiz (`scripts/bootstrap.mjs`, `scripts/start.mjs`, `scripts/stop.mjs`) apenas delega entrypoints de módulo com `cwd` do resolver
 - `start` adota fluxo health-first (`already_running` quando `/health` está OK; delegação para `scripts/run.sh` apenas quando necessário)
+- `start` dos apps root aplica precheck por porta (`ready_to_start`, `already_running_same_service`, `port_conflict_unknown_process`) antes de spawn; evita duplicar processos quando a mesma service já está ativa
 - `stop` delega para `scripts/stop.sh` somente quando o módulo disponibiliza esse entrypoint; caso contrário, a ação é manual e explicitamente logada
+- `stop` faz reconciliação final das portas root (`8080`, `3333`, `3334`, `3335`) com status explícito (`stopped_by_pid`, `already_stopped`, `port_still_busy_unknown_process`) sem matar processos desconhecidos
+- estratégia Redis em runtime permanece `external|managed|auto`, com logging explícito de source/version (`external_host`, `compose_managed`, etc.) para decisão operacional auditável
 - setup/runtime Python pertence ao módulo externo (`scripts/bootstrap.sh`, `scripts/run.sh`), não ao root
 
 ### `apps/admin-ui`

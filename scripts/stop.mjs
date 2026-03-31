@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 
 const VALID_MODES = new Set(["dev", "prod", "debug"]);
 const INFRA_MODES = new Set(["auto", "external", "managed"]);
@@ -76,6 +78,38 @@ const rootDir = process.env.ZAPPY_PROJECT_ROOT
   : path.resolve(__dirname, "..");
 const stateFile = path.join(rootDir, ".zappy-dev", `${requestedMode}-stack.json`);
 const composeFile = path.join(rootDir, "infra", "docker-compose.yml");
+dotenv.config({ path: path.join(rootDir, ".env") });
+
+const rootAppPortServices = [
+  {
+    name: "admin-ui",
+    port: {
+      envVar: "ADMIN_UI_PORT",
+      defaultPort: 8080
+    }
+  },
+  {
+    name: "assistant-api",
+    port: {
+      envVar: "ADMIN_API_PORT",
+      defaultPort: 3333
+    }
+  },
+  {
+    name: "wa-gateway",
+    port: {
+      envVar: "WA_GATEWAY_INTERNAL_PORT",
+      defaultPort: 3334
+    }
+  },
+  {
+    name: "media-resolver-api",
+    port: {
+      envVar: "MEDIA_RESOLVER_API_PORT",
+      defaultPort: 3335
+    }
+  }
+];
 
 const log = (msg) => console.log(`[stop:${requestedMode}] ${msg}`);
 const warn = (msg) => console.warn(`[stop:${requestedMode}] ${msg}`);
@@ -92,6 +126,13 @@ const resolverLog = (phase, fields = {}) => {
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(" ");
   log(`[resolver-stop] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+};
+
+const stateLog = (fields = {}) => {
+  const suffix = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  log(`[state]${suffix ? ` ${suffix}` : ""}`);
 };
 
 const pidAlive = (pid) => {
@@ -138,6 +179,123 @@ const runCommand = (command, commandArgs, options = {}) => {
   };
 };
 
+const isStateAlive = (state) =>
+  Boolean(state) && (pidAlive(state.supervisorPid) || (state.services || []).some((svc) => svc.pid && pidAlive(svc.pid)));
+
+let lsofAvailableCache;
+const isLsofAvailable = () => {
+  if (lsofAvailableCache !== undefined) return lsofAvailableCache;
+  lsofAvailableCache = runCommand("lsof", ["-v"], { stdio: "ignore" }).status === 0;
+  return lsofAvailableCache;
+};
+
+let ssAvailableCache;
+const isSsAvailable = () => {
+  if (ssAvailableCache !== undefined) return ssAvailableCache;
+  ssAvailableCache = runCommand("ss", ["-h"], { stdio: "ignore" }).status === 0;
+  return ssAvailableCache;
+};
+
+const parsePidLines = (output) =>
+  output
+    .split(/\r?\n/)
+    .map((line) => Number(line.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0);
+
+const getListeningPidsFromLsof = (port) => {
+  if (!isLsofAvailable()) return [];
+  const result = runCommand("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
+  if (result.status !== 0 && !result.stdout) return [];
+  return parsePidLines(result.stdout);
+};
+
+const getListeningPidsFromSs = (port) => {
+  if (!isSsAvailable()) return [];
+  const result = runCommand("ss", ["-ltnp", `sport = :${port}`]);
+  if (result.status !== 0 || !result.stdout) return [];
+
+  const matches = result.stdout.matchAll(/pid=(\d+)/g);
+  const pids = [];
+  for (const match of matches) {
+    const parsed = Number(match[1]);
+    if (Number.isInteger(parsed) && parsed > 0) pids.push(parsed);
+  }
+  return pids;
+};
+
+const listListeningPidsByPort = (port) => {
+  const pids = new Set();
+  for (const pid of getListeningPidsFromLsof(port)) pids.add(pid);
+  for (const pid of getListeningPidsFromSs(port)) pids.add(pid);
+  return Array.from(pids);
+};
+
+const getProcessCommandLine = (pid) => {
+  const result = runCommand("ps", ["-o", "args=", "-p", String(pid)]);
+  if (result.status !== 0) return "";
+  return result.stdout.trim();
+};
+
+const getPortOwnerProcesses = (port) =>
+  listListeningPidsByPort(port).map((pid) => ({
+    pid,
+    commandLine: getProcessCommandLine(pid)
+  }));
+
+const probeTcpPort = (host, port, timeoutMs = 1100) =>
+  new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const done = (open, reason) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ open, reason });
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => done(true, "connected"));
+    socket.on("timeout", () => done(false, "timeout"));
+    socket.on("error", (error) => done(false, error.code || "connect_error"));
+  });
+
+const resolveServicePort = (service) => {
+  const raw = String(process.env[service.port.envVar] ?? "").trim();
+  if (!raw) return service.port.defaultPort;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    warn(
+      `[stop-reconcile] service=${service.name} invalid ${service.port.envVar}="${raw}". Falling back to ${service.port.defaultPort}.`
+    );
+    return service.port.defaultPort;
+  }
+  return parsed;
+};
+
+const reconcileRootAppPorts = async (serviceStopResultsByName = new Map()) => {
+  for (const service of rootAppPortServices) {
+    const port = resolveServicePort(service);
+    const owners = getPortOwnerProcesses(port);
+    const probe = owners.length > 0 ? { open: true, reason: "owner_detected" } : await probeTcpPort("127.0.0.1", port, 900);
+    const busy = owners.length > 0 || probe.open;
+
+    const stopResult = serviceStopResultsByName.get(service.name);
+    const trackedPid = stopResult?.trackedPid || null;
+    const trackedPidOwnsPort = trackedPid ? owners.some((owner) => owner.pid === trackedPid) : false;
+
+    const status = busy ? "port_still_busy_unknown_process" : stopResult?.stoppedByPid ? "stopped_by_pid" : "already_stopped";
+    const occupancy = busy
+      ? trackedPidOwnsPort
+        ? "tracked_runtime_owned_process"
+        : owners.length
+          ? "untracked_process"
+          : "untracked_process_unresolved"
+      : "none";
+
+    log(`[stop-reconcile] service=${service.name} port=${port} status=${status} occupancy=${occupancy}`);
+  }
+};
+
 const detectComposeCmd = () => {
   if (runCommand("docker", ["compose", "version"], { stdio: "ignore" }).status === 0) return ["docker", "compose"];
   if (runCommand("docker-compose", ["version"], { stdio: "ignore" }).status === 0) return ["docker-compose"];
@@ -151,30 +309,48 @@ const runCompose = (composeCmd, composeArgs) =>
   });
 
 const stopService = async (svc) => {
-  if (!svc.pid || !pidAlive(svc.pid)) {
+  const trackedPid = Number(svc.pid);
+  if (!Number.isInteger(trackedPid) || trackedPid <= 0 || !pidAlive(trackedPid)) {
     log(`${svc.name}: already stopped.`);
-    return;
+    return {
+      name: svc.name,
+      trackedPid: Number.isInteger(trackedPid) && trackedPid > 0 ? trackedPid : null,
+      stoppedByPid: false,
+      alreadyStopped: true
+    };
   }
-  log(`${svc.name}: sending SIGINT (pid ${svc.pid})...`);
+  log(`${svc.name}: sending SIGINT (pid ${trackedPid})...`);
   try {
-    process.kill(svc.pid, "SIGINT");
+    process.kill(trackedPid, "SIGINT");
   } catch {
     /* ignore */
   }
-  let exited = await waitForExit(svc.pid, 4000);
-  if (!exited && pidAlive(svc.pid)) {
+  let exited = await waitForExit(trackedPid, 4000);
+  if (!exited && pidAlive(trackedPid)) {
     log(`${svc.name}: escalating to SIGTERM...`);
     try {
-      process.kill(svc.pid, "SIGTERM");
+      process.kill(trackedPid, "SIGTERM");
     } catch {
       /* ignore */
     }
-    exited = await waitForExit(svc.pid, 2000);
+    exited = await waitForExit(trackedPid, 2000);
   }
-  if (!exited && pidAlive(svc.pid)) {
-    warn(`${svc.name}: still running (pid ${svc.pid}). Stop manually if needed.`);
+  if (!exited && pidAlive(trackedPid)) {
+    warn(`${svc.name}: still running (pid ${trackedPid}). Stop manually if needed.`);
+    return {
+      name: svc.name,
+      trackedPid,
+      stoppedByPid: false,
+      alreadyStopped: false
+    };
   } else {
     log(`${svc.name}: stopped.`);
+    return {
+      name: svc.name,
+      trackedPid,
+      stoppedByPid: true,
+      alreadyStopped: false
+    };
   }
 };
 
@@ -347,9 +523,41 @@ const stopDelegatedResolverModules = (state) => {
 };
 
 const main = async () => {
+  const stateFileExists = fs.existsSync(stateFile);
   const state = readState();
+  const stopResultsByService = new Map();
+
+  if (!stateFileExists) {
+    stateLog({
+      mode: requestedMode,
+      status: "missing",
+      file: path.relative(rootDir, stateFile)
+    });
+  } else if (!state) {
+    stateLog({
+      mode: requestedMode,
+      status: "stale_unreadable",
+      file: path.relative(rootDir, stateFile)
+    });
+  } else if (!isStateAlive(state)) {
+    stateLog({
+      mode: requestedMode,
+      status: "stale_pid_state",
+      file: path.relative(rootDir, stateFile)
+    });
+  } else {
+    stateLog({
+      mode: requestedMode,
+      status: "active",
+      file: path.relative(rootDir, stateFile),
+      supervisorPid: state.supervisorPid || "none",
+      trackedServices: Array.isArray(state.services) ? state.services.length : 0
+    });
+  }
+
   if (!state) {
-    log(`No ${requestedMode} stack state found. Nothing to stop.`);
+    log(`No ${requestedMode} stack state found. PID stop skipped.`);
+    await reconcileRootAppPorts(stopResultsByService);
     return;
   }
 
@@ -367,7 +575,8 @@ const main = async () => {
   }
 
   for (const svc of services) {
-    await stopService(svc);
+    const result = await stopService(svc);
+    stopResultsByService.set(svc.name, result);
   }
 
   if (withInfra) {
@@ -382,6 +591,7 @@ const main = async () => {
 
   if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
   log(`Cleared ${requestedMode} stack state.`);
+  await reconcileRootAppPorts(stopResultsByService);
   log(`mode=${requestedMode}`);
 };
 
