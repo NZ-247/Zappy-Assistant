@@ -167,7 +167,13 @@ External requirements:
 
 # 4. Container strategy
 
-Deployment should be container-based whenever possible.
+Deployment supports three runtime strategies:
+
+- pure external dependencies (`--infra=external`)
+- compose-managed dependencies (`--infra=managed`)
+- hybrid autodiscovery (`--infra=auto`)
+
+Docker is recommended for managed dependencies, but it is not mandatory for every production topology.
 
 Recommended containers:
 
@@ -198,7 +204,7 @@ worker
 admin-ui
 
 
-Benefits:
+Benefits (managed/hybrid modes):
 
 - environment consistency
 - easier scaling
@@ -213,9 +219,19 @@ Operational requirements for infra containers:
 Runtime bootstrap policy:
 
 - use `npm run start:dev|prod|debug` as the supervisor entrypoint
-- startup performs deterministic dependency verification (`container state` + `docker health` + `port connectivity`)
-- when a dependency is down/unhealthy, startup attempts `docker compose up -d <service>` and revalidates
+- startup performs deterministic dependency verification (`TCP port` + protocol check + ownership classification)
+- Redis validation uses `PING`; PostgreSQL validation uses real connection check (`SELECT 1`)
+- dependency source is classified as `external_host`, `external_container`, `compose_managed`, or `unavailable`
+- in `--infra=auto`, startup skips compose-up when an external/native dependency is already usable
+- in `--infra=external`, startup never compose-ups Redis/Postgres
+- in `--infra=managed`, startup enforces compose-managed Redis/Postgres and may compose-up missing ones
 - on failure, logs must include dependency name, attempted action, and final error reason
+
+Auxiliary resolver runtime policy:
+
+- Python resolvers are bootstrapped once (`npm run bootstrap:* -- --infra`)
+- runtime start uses tmux-managed windows (`zappy:core`, `zappy:youtube`, `zappy:facebook`)
+- stop with `--infra` closes only resolver windows owned by the current runtime
 
 ---
 

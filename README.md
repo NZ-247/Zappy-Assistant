@@ -33,65 +33,91 @@ npm run prisma:generate
 
 ## Run
 
-Preferred flow for local development:
+Bootstrap once per host (recommended):
 
 ```bash
-npm run start:dev
+npm run bootstrap:dev -- --infra
+# or
+npm run bootstrap:prod -- --infra
 ```
 
-With auxiliary resolver wrappers (for `yt`/`fb` bridge mode):
+`bootstrap` handles one-time setup (host checks + Python resolver `.venv` preparation). It is not part of recurring `start`.
+
+### Infra Strategy Modes
+
+All start modes (`dev`, `prod`, `debug`) support:
+
+- `--infra=external`
+- `--infra=managed`
+- `--infra=auto` (default)
+
+Semantics:
+
+- `external`: never runs `docker compose up` for `redis/postgres`; validates configured endpoints only.
+- `managed`: requires compose-managed `redis/postgres`; may start only those managed dependencies.
+- `auto`: discovers configured endpoints first and uses existing usable services; only starts managed dependency when no usable service is found.
+
+Dependency discovery before any compose-up includes:
+
+- TCP probe
+- Redis `PING`
+- PostgreSQL real connection check (`SELECT 1`)
+- ownership/source classification: `external_host`, `external_container`, `compose_managed`, `unavailable`
+
+### Start
+
+Preferred local command:
 
 ```bash
-npm run start:dev -- --with-external-services
-# shortcut:
-npm run start:dev:resolvers
+npm run start:dev -- --infra=auto
 ```
 
-What `start:dev` does:
-- checks Docker/Compose availability
-- validates infra dependencies (`postgres`, `redis`) with deterministic checks: container state + Docker health + TCP port
-- if a required dependency is down/unhealthy, runs `docker compose up -d <service>` automatically and revalidates before boot
-- emits structured dependency logs (`[deps] phase=...`) including failing service, attempted action, and final diagnostic
-- optionally starts auxiliary resolver services from `infra/external-services/*` (`--with-external-services` or per-service flags) and performs non-fatal YT/FB bridge health checks
-- prints a compact cfonts banner (mode/environment/timezone/LLM model/WA session path)
-- starts `assistant-api`, `media-resolver-api`, `wa-gateway`, `worker`, `admin-ui` in watch mode with prefixed logs and suppresses per-service banners
-- writes state to `.zappy-dev/dev-stack.json` so the stop script can cleanly shut things down
-
-Production flow (no watch mode, stable bootstrap):
+Production:
 
 ```bash
 npm run start:prod
 ```
 
-Build-on-demand before startup:
+Build-on-demand:
 
 ```bash
 npm run start:prod -- --build
 ```
 
-What it does in `prod`:
-- runs the same dependency validation/auto-recovery flow used in dev (state + health + port)
-- skips build by default (faster boot)
-- runs `npm run build` only when `--build` is passed
-- starts `assistant-api`, `media-resolver-api`, `wa-gateway`, `worker`, `admin-ui` with `npm run start -w ...`
-- writes state to `.zappy-dev/prod-stack.json`
-- prints runtime header with `build=executed|skipped`
-- forces runtime log defaults: `LOG_FORMAT=pretty`, `LOG_PRETTY_MODE=prod`, `LOG_COLORIZE=true`, `LOG_LEVEL=info`, `LOG_VERBOSE_FIELDS=false` (can still be overridden via env)
-
-Debug flow (technical troubleshooting):
+Debug:
 
 ```bash
 npm run start:debug
 ```
 
-What it does in `debug`:
-- runs the same dependency validation/auto-recovery flow used in dev/prod
-- runs `npm run build` before bootstrapping services
-- starts all apps with non-watch runtime (`npm run start -w ...`)
-- forces runtime log defaults: `LOG_FORMAT=json`, `LOG_LEVEL=debug`, `LOG_VERBOSE_FIELDS=true`, `DEBUG=trace` (can still be overridden via env)
-- writes state to `.zappy-dev/debug-stack.json`
+Production host example (native Redis already on `6379`):
 
-Stop services while keeping infra up:
+```bash
+npm run start:prod -- --infra=auto
+```
+
+Expected behavior: dependency source becomes `external_host` and compose autostart for Redis is skipped (no port conflict).
+
+Resolver startup via supervisor:
+
+```bash
+npm run start:dev -- --infra=auto --with-external-services
+# or per service:
+npm run start:dev -- --with-yt-resolver
+npm run start:dev -- --with-fb-resolver
+```
+
+Resolver runtime behavior:
+
+- uses tmux session `zappy`
+- standardized windows: `core`, `youtube`, `facebook`
+- verifies resolver directory + `.venv` before start
+- avoids duplicate starts when resolver is already healthy
+- validates `/health` after launch and logs status
+
+### Stop
+
+Stop app services only:
 
 ```bash
 npm run stop:dev
@@ -105,41 +131,51 @@ npm run stop:prod
 npm run stop:debug
 ```
 
-Stop services **and** infra (postgres/redis):
+Stop services plus infra/resolver resources owned by this runtime:
 
 ```bash
-npm run stop:dev -- --with-infra
+npm run stop:dev -- --infra
 ```
 
 ```bash
-npm run stop:prod -- --with-infra
+npm run stop:prod -- --infra
 ```
 
 ```bash
-npm run stop:debug -- --with-infra
+npm run stop:debug -- --infra
 ```
 
-Restart flows:
+Ownership-aware stop rules with `--infra`:
+
+- `external_host` and `external_container` dependencies are never stopped.
+- only `compose_managed` dependencies started by current runtime are candidates for stop.
+- only tmux resolver windows with `ownership=runtime_started` are closed.
+- unrelated tmux sessions/windows are untouched.
+
+### Restart
 
 ```bash
 npm run restart:dev
-```
-
-```bash
-npm run restart:dev -- --with-external-services
-# shortcut:
-npm run restart:dev:resolvers
-```
-
-```bash
-npm run restart:prod -- --build
-```
-
-```bash
+npm run restart:dev -- --infra=auto --with-external-services
+npm run restart:prod -- --infra=managed --build
 npm run restart:debug
 ```
 
-If you still prefer the old behavior, `npm run dev` remains available (it will print each service banner).
+`restart` forwards infra strategy to start and can stop owned infra when `--infra` (or `--infra=<mode>`) is provided.
+
+### Deployment Strategies
+
+- Pure external deps:
+  `npm run start:prod -- --infra=external`
+  Use host-managed/external Redis/Postgres, no compose-managed infra.
+- Managed deps:
+  `npm run start:prod -- --infra=managed`
+  Redis/Postgres owned by project compose.
+- Hybrid:
+  `npm run start:prod -- --infra=auto`
+  Reuse existing native/external services first and compose-up only missing dependencies.
+
+If you still prefer the old behavior, `npm run dev` remains available (it prints each service banner).
 
 Manual steps that remain:
 - keep `.env` up to date and run `npm run prisma:migrate` when schema changes
@@ -149,16 +185,20 @@ Manual steps that remain:
 
 - Source location: `infra/external-services/youtube-resolver` and `infra/external-services/facebook-resolver`.
 - Initialize vendored sources (if needed): `git submodule update --init --recursive infra/external-services/youtube-resolver infra/external-services/facebook-resolver`.
-- Bootstrap Python envs:
-  - `./infra/external-services/youtube-resolver/scripts/bootstrap.sh`
-  - `./infra/external-services/facebook-resolver/scripts/bootstrap.sh`
+- Bootstrap Python envs (one-time host setup):
+  - `npm run bootstrap:dev -- --infra`
+  - `npm run bootstrap:prod -- --infra`
 - Start wrappers manually:
   - `./infra/external-services/youtube-resolver/scripts/run.sh`
   - `./infra/external-services/facebook-resolver/scripts/run.sh`
 - Start via supervisor:
-  - all enabled bridges: `npm run start:dev -- --with-external-services`
+  - all enabled bridges: `npm run start:dev -- --infra=auto --with-external-services`
   - only YouTube wrapper: `npm run start:dev -- --with-yt-resolver`
   - only Facebook wrapper: `npm run start:dev -- --with-fb-resolver`
+- Start-time duplicate guard:
+  - if resolver is already healthy, startup logs `already_running` and does not spawn duplicate process/window.
+- Stop-time ownership guard:
+  - `npm run stop:dev -- --infra` closes only `zappy` resolver windows created by current runtime.
 - Health endpoints:
   - YouTube: `GET http://localhost:3401/health`
   - Facebook: `GET http://localhost:3402/health`

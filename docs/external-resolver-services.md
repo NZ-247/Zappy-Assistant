@@ -53,7 +53,17 @@ Default local ports (from base URLs):
 - YouTube resolver: `3401`
 - Facebook resolver: `3402`
 
-## Bootstrap Python environments
+## Bootstrap Python environments (one-time)
+
+```bash
+npm run bootstrap:dev -- --infra
+# or
+npm run bootstrap:prod -- --infra
+```
+
+This prepares resolver virtualenvs (`.venv`) and installs Python dependencies. Runtime `start` no longer installs resolver dependencies automatically.
+
+Direct bootstrap scripts are still available:
 
 ```bash
 ./infra/external-services/youtube-resolver/scripts/bootstrap.sh
@@ -72,18 +82,18 @@ Wrapper contract per service:
 - `GET /health`
 - `POST /resolve`
 
-## Run with supervisor
+## Run with supervisor (tmux-managed resolvers)
 
 Start normal stack:
 
 ```bash
-npm run start:dev
+npm run start:dev -- --infra=auto
 ```
 
 Start stack with auxiliary resolvers:
 
 ```bash
-npm run start:dev -- --with-external-services
+npm run start:dev -- --infra=auto --with-external-services
 ```
 
 Per-service startup flags:
@@ -93,7 +103,29 @@ npm run start:dev -- --with-yt-resolver
 npm run start:dev -- --with-fb-resolver
 ```
 
-Bridge health checks are logged and non-fatal.
+Resolver runtime policy:
+
+- tmux session name: `zappy`
+- standardized windows: `core`, `youtube`, `facebook`
+- startup checks resolver directory + `.venv` before launch
+- duplicate guard: if resolver is already healthy, startup logs `already_running` and does not create duplicate process/window
+- health validation after launch (`GET /health`)
+
+Bridge health checks remain non-fatal for app startup (operator gets explicit logs with reason).
+
+## Stop behavior with ownership guard
+
+Use `--infra` on stop when you want shutdown to include owned infra resources:
+
+```bash
+npm run stop:dev -- --infra
+```
+
+Ownership-aware rules:
+
+- resolver windows are closed only when ownership is `runtime_started`
+- windows/session not created by this runtime are left untouched
+- external host/container dependencies are never stopped by resolver stop flow
 
 ## Health checks
 
@@ -119,8 +151,9 @@ sudo apt update && sudo apt install -y ffmpeg
 - Resolver bridge health fails but stack is up:
   - confirm `*_RESOLVER_BASE_URL` points to the actual wrapper port.
   - confirm `*_RESOLVER_TOKEN` matches wrapper token.
+- Resolver startup reports `venv_missing`:
+  - run `npm run bootstrap:dev -- --infra` (or `bootstrap:prod` on production host).
 - Resolver process exits immediately:
-  - re-run `scripts/bootstrap.sh` and inspect pip install output.
   - run wrapper manually with `scripts/run.sh` and inspect logs.
 - `/dl yt` or `/dl fb` returns blocked/unsupported:
   - inspect `media-resolver-api` logs for `provider_call_*` and `provider_normalize_*` events.

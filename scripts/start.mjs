@@ -44,29 +44,94 @@ const MODE_PROFILES = {
   }
 };
 
+const INFRA_MODES = new Set(["auto", "external", "managed"]);
 const VALID_MODES = new Set(Object.keys(MODE_PROFILES));
+
+const printHelp = () => {
+  console.log(`Usage: node scripts/start.mjs <mode> [options]
+
+Modes:
+  dev | prod | debug
+
+Options:
+  --infra=<auto|external|managed>  Infra strategy mode (default: auto)
+  --infra                           Alias for --infra=auto
+  --build                           Build before boot (prod only; debug always builds)
+  --with-external-services          Start enabled auxiliary resolvers (YT/FB)
+  --with-yt-resolver                Start only YouTube auxiliary resolver
+  --with-fb-resolver                Start only Facebook auxiliary resolver
+  --skip-resolver-healthcheck       Skip resolver /health checks
+  --help                            Show this help
+
+Infra mode semantics:
+  auto:     use existing usable dependency first; compose-up only if missing/unusable.
+  external: never compose-up redis/postgres; validate configured endpoints only.
+  managed:  require compose-managed redis/postgres and start them when needed.`);
+};
+
 const requestedMode = (process.argv[2] ?? "dev").toLowerCase();
 if (!VALID_MODES.has(requestedMode)) {
   console.error(`[start] invalid mode "${requestedMode}". Use: dev | prod | debug`);
   process.exit(1);
 }
+
 const modeArgs = process.argv.slice(3);
-const validModeFlags = new Set([
+if (modeArgs.includes("--help")) {
+  printHelp();
+  process.exit(0);
+}
+
+const validBooleanFlags = new Set([
   "--build",
   "--with-external-services",
   "--with-yt-resolver",
   "--with-fb-resolver",
-  "--skip-resolver-healthcheck"
+  "--skip-resolver-healthcheck",
+  "--infra"
 ]);
-const unknownModeFlags = modeArgs.filter((arg) => arg.startsWith("--") && !validModeFlags.has(arg));
-if (unknownModeFlags.length > 0) {
+
+let infraMode = "auto";
+const seenInfraModes = [];
+const unknownFlags = [];
+for (const arg of modeArgs) {
+  if (arg.startsWith("--infra=")) {
+    const rawMode = arg.slice("--infra=".length).trim().toLowerCase();
+    if (!INFRA_MODES.has(rawMode)) {
+      console.error(`[start:${requestedMode}] invalid infra mode "${rawMode}". Use: auto | external | managed`);
+      process.exit(1);
+    }
+    seenInfraModes.push(rawMode);
+    continue;
+  }
+
+  if (validBooleanFlags.has(arg)) {
+    if (arg === "--infra") seenInfraModes.push("auto");
+    continue;
+  }
+
+  if (arg.startsWith("--")) unknownFlags.push(arg);
+}
+
+if (unknownFlags.length > 0) {
   console.error(
-    `[start:${requestedMode}] unknown flag(s): ${unknownModeFlags.join(
+    `[start:${requestedMode}] unknown flag(s): ${unknownFlags.join(
       ", "
-    )}. Supported: --build --with-external-services --with-yt-resolver --with-fb-resolver --skip-resolver-healthcheck`
+    )}. Supported: --infra=<auto|external|managed> --infra --build --with-external-services --with-yt-resolver --with-fb-resolver --skip-resolver-healthcheck --help`
   );
   process.exit(1);
 }
+
+if (seenInfraModes.length > 1) {
+  const unique = Array.from(new Set(seenInfraModes));
+  if (unique.length > 1) {
+    console.error(`[start:${requestedMode}] conflicting infra flags: ${unique.join(", ")}. Pick only one infra mode.`);
+    process.exit(1);
+  }
+}
+if (seenInfraModes.length > 0) {
+  infraMode = seenInfraModes[seenInfraModes.length - 1];
+}
+
 const prodBuildRequested = modeArgs.includes("--build");
 const withExternalServices = modeArgs.includes("--with-external-services");
 const withYoutubeResolver = modeArgs.includes("--with-yt-resolver");
@@ -91,25 +156,32 @@ if (!fs.existsSync(composeFile)) {
   process.exit(1);
 }
 
-const infraDependencies = [
-  {
-    service: "postgres",
-    label: "PostgreSQL",
-    host: "127.0.0.1",
-    port: 5432,
-    requireHealthyStatus: true
-  },
-  {
-    service: "redis",
-    label: "Redis",
-    host: "127.0.0.1",
-    port: 6379,
-    requireHealthyStatus: true
-  }
-];
-const requiredInfra = infraDependencies.map((item) => item.service);
 const dependencyValidationTimeoutMs = 45_000;
 const dependencyValidationIntervalMs = 1_250;
+
+const dependencyDefinitions = [
+  {
+    key: "postgres",
+    service: "postgres",
+    kind: "postgres",
+    label: "PostgreSQL",
+    envVar: "DATABASE_URL",
+    defaultUrl: "postgresql://postgres:postgres@localhost:5432/zappy_assistant?schema=public",
+    supportedSchemes: new Set(["postgres", "postgresql"]),
+    defaultPort: 5432
+  },
+  {
+    key: "redis",
+    service: "redis",
+    kind: "redis",
+    label: "Redis",
+    envVar: "REDIS_URL",
+    defaultUrl: "redis://localhost:6379",
+    supportedSchemes: new Set(["redis", "rediss"]),
+    defaultPort: 6379
+  }
+];
+
 const services = [
   { name: "assistant-api", workspace: "@zappy/assistant-api" },
   { name: "media-resolver-api", workspace: "@zappy/media-resolver-api" },
@@ -117,30 +189,38 @@ const services = [
   { name: "worker", workspace: "@zappy/worker" },
   { name: "admin-ui", workspace: "@zappy/admin-ui" }
 ];
+
+const tmuxSessionName = (process.env.ZAPPY_TMUX_SESSION || "zappy").trim() || "zappy";
+
 const auxiliaryResolverDefinitions = [
   {
     key: "yt",
     provider: "yt",
     serviceName: "youtube-resolver",
+    windowName: "youtube",
     enabledEnv: "YT_RESOLVER_ENABLED",
     baseUrlEnv: "YT_RESOLVER_BASE_URL",
     tokenEnv: "YT_RESOLVER_TOKEN",
     defaultBaseUrl: "http://localhost:3401",
     workingDir: path.join(rootDir, "infra", "external-services", "youtube-resolver"),
-    runScriptPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", "scripts", "run.sh")
+    runScriptPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", "scripts", "run.sh"),
+    venvPythonPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", ".venv", "bin", "python")
   },
   {
     key: "fb",
     provider: "fb",
     serviceName: "facebook-resolver",
+    windowName: "facebook",
     enabledEnv: "FB_RESOLVER_ENABLED",
     baseUrlEnv: "FB_RESOLVER_BASE_URL",
     tokenEnv: "FB_RESOLVER_TOKEN",
     defaultBaseUrl: "http://localhost:3402",
     workingDir: path.join(rootDir, "infra", "external-services", "facebook-resolver"),
-    runScriptPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", "scripts", "run.sh")
+    runScriptPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", "scripts", "run.sh"),
+    venvPythonPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", ".venv", "bin", "python")
   }
 ];
+
 const prefixedServiceNames = [...services.map((item) => item.name), ...auxiliaryResolverDefinitions.map((item) => item.serviceName)];
 const prefixedServiceWidth = Math.max(...prefixedServiceNames.map((name) => name.length));
 
@@ -189,6 +269,14 @@ const parseToggleEnv = (value, defaultValue = false) => {
   return parsed ?? defaultValue;
 };
 
+const stripWrappingQuotes = (value) => {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+};
+
 const parseBaseUrlSafe = (input) => {
   try {
     return new URL(input);
@@ -202,12 +290,54 @@ const isLoopbackHost = (rawHost) => {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "0.0.0.0" || normalized === "::1";
 };
 
+const parseConnectionTarget = (definition, env) => {
+  const raw = stripWrappingQuotes((env[definition.envVar] || definition.defaultUrl || "").trim());
+  if (!raw) {
+    fail(`[deps] ${definition.envVar} is empty; set a valid ${definition.kind} URL.`);
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    fail(`[deps] ${definition.envVar} is invalid: ${raw}`);
+  }
+
+  const protocol = parsed.protocol.replace(/:$/, "").toLowerCase();
+  if (!definition.supportedSchemes.has(protocol)) {
+    fail(
+      `[deps] ${definition.envVar} uses unsupported scheme "${protocol}". Supported: ${Array.from(definition.supportedSchemes).join(", ")}`
+    );
+  }
+
+  const host = (parsed.hostname || "").trim();
+  if (!host) {
+    fail(`[deps] ${definition.envVar} must include a hostname.`);
+  }
+
+  const port = parsed.port ? Number(parsed.port) : definition.defaultPort;
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    fail(`[deps] ${definition.envVar} has invalid port "${parsed.port || ""}".`);
+  }
+
+  return {
+    ...definition,
+    connectionUrl: raw,
+    host,
+    port,
+    endpoint: `${host}:${port}`,
+    loopback: isLoopbackHost(host)
+  };
+};
+
+const resolveDependencyTargets = (env) => dependencyDefinitions.map((definition) => parseConnectionTarget(definition, env));
+
 const resolveAuxiliaryTargets = (env) =>
   auxiliaryResolverDefinitions.map((definition) => {
     const enabled = parseToggleEnv(env[definition.enabledEnv], false);
-    const baseUrl = env[definition.baseUrlEnv] || definition.defaultBaseUrl;
+    const baseUrl = stripWrappingQuotes((env[definition.baseUrlEnv] || definition.defaultBaseUrl || "").trim());
     const parsedBaseUrl = parseBaseUrlSafe(baseUrl);
-    const token = (env[definition.tokenEnv] || "").trim() || undefined;
+    const token = stripWrappingQuotes((env[definition.tokenEnv] || "").trim()) || undefined;
     return {
       ...definition,
       enabled,
@@ -230,6 +360,20 @@ const warn = (msg) => console.warn(`[start:${requestedMode}] ${msg}`);
 const fail = (msg) => {
   console.error(`[start:${requestedMode}] ${msg}`);
   process.exit(1);
+};
+
+const dependencyLog = (phase, fields = {}) => {
+  const suffix = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  log(`[deps] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+};
+
+const resolverLog = (phase, fields = {}) => {
+  const suffix = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  log(`[resolver] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
 };
 
 const pidAlive = (pid) => {
@@ -260,36 +404,73 @@ const clearState = (targetFile = stateFile) => {
   if (fs.existsSync(targetFile)) fs.unlinkSync(targetFile);
 };
 
-const detectComposeCmd = () => {
-  const tryCmd = (cmd, args) => spawnSync(cmd, args, { stdio: "ignore" }).status === 0;
-  if (tryCmd("docker", ["info"])) {
-    if (tryCmd("docker", ["compose", "version"])) return ["docker", "compose"];
-  }
-  if (tryCmd("docker-compose", ["version"])) return ["docker-compose"];
-  return null;
-};
-
-const composeCmd = detectComposeCmd();
-if (!composeCmd) {
-  fail("Docker Compose is required. Install Docker Desktop/Engine with Compose v2.");
-}
-
-const runCompose = (args, options = {}) => {
-  const allowFailure = options.allowFailure === true;
-  const result = spawnSync(composeCmd[0], composeCmd.slice(1).concat(args), {
-    cwd: rootDir,
+const runCommand = (command, args, options = {}) => {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? rootDir,
     encoding: "utf8",
+    env: options.env,
     stdio: options.stdio ?? "pipe"
   });
-  if (!allowFailure && result.status !== 0) {
-    const stderr = result.stderr?.trim() || result.stdout?.trim() || "unknown error";
-    fail(`Docker Compose failed (${args.join(" ")}): ${stderr}`);
-  }
+
   return {
     status: result.status ?? 1,
     stdout: (result.stdout ?? "").trim(),
     stderr: (result.stderr ?? "").trim()
   };
+};
+
+let composeCmdCache;
+const detectComposeCmd = () => {
+  const dockerComposeResult = runCommand("docker", ["compose", "version"], { stdio: "ignore" });
+  if (dockerComposeResult.status === 0) return ["docker", "compose"];
+
+  const dockerComposeV1Result = runCommand("docker-compose", ["version"], { stdio: "ignore" });
+  if (dockerComposeV1Result.status === 0) return ["docker-compose"];
+
+  return null;
+};
+
+const getComposeCmd = () => {
+  if (composeCmdCache !== undefined) return composeCmdCache;
+  composeCmdCache = detectComposeCmd();
+  return composeCmdCache;
+};
+
+let dockerAvailabilityCache;
+const getDockerAvailability = () => {
+  if (dockerAvailabilityCache !== undefined) return dockerAvailabilityCache;
+  const dockerCli = runCommand("docker", ["version"], { stdio: "ignore" }).status === 0;
+  const daemon = dockerCli && runCommand("docker", ["info"], { stdio: "ignore" }).status === 0;
+  dockerAvailabilityCache = { dockerCli, daemon };
+  return dockerAvailabilityCache;
+};
+
+const ensureComposeReady = () => {
+  const composeCmd = getComposeCmd();
+  if (!composeCmd) {
+    fail("Docker Compose is required for managed infra actions. Install Compose or use --infra=external.");
+  }
+  const dockerAvailability = getDockerAvailability();
+  if (!dockerAvailability.daemon) {
+    fail("Docker daemon not reachable for managed infra actions. Start Docker or use --infra=external.");
+  }
+  return composeCmd;
+};
+
+const runCompose = (args, options = {}) => {
+  const composeCmd = getComposeCmd();
+  if (!composeCmd) {
+    return {
+      status: 1,
+      stdout: "",
+      stderr: "compose_not_available"
+    };
+  }
+
+  return runCommand(composeCmd[0], composeCmd.slice(1).concat(args), {
+    cwd: rootDir,
+    stdio: options.stdio ?? "pipe"
+  });
 };
 
 const runNpm = (args, options = {}) => {
@@ -303,54 +484,740 @@ const runNpm = (args, options = {}) => {
   }
 };
 
-const probePort = (port, label, host = "127.0.0.1", timeoutMs = 1200) =>
-  new Promise((resolve) => {
-    const socket = net.createConnection({ port, host });
-    const done = (ok) => {
-      socket.destroy();
-      resolve(ok);
-    };
-    socket.setTimeout(timeoutMs);
-    socket.on("connect", () => done(true));
-    socket.on("timeout", () => done(false));
-    socket.on("error", () => done(false));
-  });
-
-const waitForPort = (port, label, host = "127.0.0.1", timeoutMs = 12_000) =>
-  new Promise((resolve, reject) => {
-    const start = Date.now();
-    const attempt = () => {
-      const socket = net.createConnection({ port, host }, () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.on("error", () => {
-        socket.destroy();
-        if (Date.now() - start >= timeoutMs) {
-          reject(new Error(`${label} not reachable on ${host}:${port}`));
-        } else {
-          setTimeout(attempt, 350);
-        }
-      });
-    };
-    attempt();
-  });
-
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const dependencyLog = (phase, fields = {}) => {
-  const suffix = Object.entries(fields)
-    .map(([key, value]) => `${key}=${String(value)}`)
-    .join(" ");
-  log(`[deps] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+const withTimeout = (promise, timeoutMs, timeoutLabel) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(timeoutLabel)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+
+const probeTcpPort = (host, port, timeoutMs = 1400) =>
+  new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const done = (open, reason) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ open, reason });
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => done(true, "connected"));
+    socket.on("timeout", () => done(false, "timeout"));
+    socket.on("error", (err) => done(false, err.code || "connect_error"));
+  });
+
+let redisCtorPromise;
+const loadRedisCtor = async () => {
+  if (!redisCtorPromise) {
+    redisCtorPromise = import("ioredis")
+      .then((mod) => mod.default ?? mod.Redis ?? mod)
+      .catch((error) => {
+        throw new Error(`ioredis import failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+  }
+  return redisCtorPromise;
 };
 
-const resolverLog = (phase, fields = {}) => {
-  const suffix = Object.entries(fields)
-    .map(([key, value]) => `${key}=${String(value)}`)
-    .join(" ");
-  log(`[resolver] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
+const checkRedisPing = async (connectionUrl, timeoutMs = 3200) => {
+  let client;
+  try {
+    const RedisCtor = await loadRedisCtor();
+    client = new RedisCtor(connectionUrl, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 0,
+      connectTimeout: timeoutMs,
+      enableReadyCheck: true
+    });
+
+    await withTimeout(client.connect(), timeoutMs, "connect_timeout");
+    const pong = await withTimeout(client.ping(), timeoutMs, "ping_timeout");
+    return {
+      ok: typeof pong === "string" && pong.toUpperCase() === "PONG",
+      reason: typeof pong === "string" ? `ping_${pong.toLowerCase()}` : "ping_unexpected"
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "redis_ping_failed"
+    };
+  } finally {
+    if (!client) return;
+    try {
+      await client.quit();
+    } catch {
+      try {
+        client.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 };
+
+let psqlAvailableCache;
+const isPsqlAvailable = () => {
+  if (psqlAvailableCache !== undefined) return psqlAvailableCache;
+  psqlAvailableCache = runCommand("psql", ["--version"], { stdio: "ignore" }).status === 0;
+  return psqlAvailableCache;
+};
+
+let prismaClientCtorPromise;
+const loadPrismaClientCtor = async () => {
+  if (!prismaClientCtorPromise) {
+    prismaClientCtorPromise = import("@prisma/client")
+      .then((mod) => mod.PrismaClient ?? mod.default?.PrismaClient)
+      .then((ctor) => {
+        if (!ctor) throw new Error("PrismaClient export not found");
+        return ctor;
+      })
+      .catch((error) => {
+        throw new Error(
+          `@prisma/client import failed (${error instanceof Error ? error.message : String(error)}). Run npm run prisma:generate if needed.`
+        );
+      });
+  }
+  return prismaClientCtorPromise;
+};
+
+const checkPostgresViaPsql = async (connectionUrl, timeoutMs = 4000) => {
+  const connectTimeout = Math.max(1, Math.floor(timeoutMs / 1000));
+  const result = runCommand("psql", ["-w", "-Atqc", "SELECT 1", connectionUrl], {
+    env: {
+      ...process.env,
+      PGCONNECT_TIMEOUT: String(connectTimeout)
+    }
+  });
+
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      reason: result.stderr || result.stdout || "psql_check_failed"
+    };
+  }
+
+  const ok = result.stdout.split(/\r?\n/).map((line) => line.trim()).includes("1");
+  return {
+    ok,
+    reason: ok ? "select_1_ok" : "select_1_unexpected_output"
+  };
+};
+
+const checkPostgresViaPrisma = async (connectionUrl, timeoutMs = 5000) => {
+  let client;
+  try {
+    const PrismaClient = await loadPrismaClientCtor();
+    client = new PrismaClient({
+      datasources: {
+        db: {
+          url: connectionUrl
+        }
+      }
+    });
+
+    await withTimeout(client.$queryRawUnsafe("SELECT 1"), timeoutMs, "query_timeout");
+    return {
+      ok: true,
+      reason: "select_1_ok"
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "postgres_check_failed"
+    };
+  } finally {
+    if (client) {
+      try {
+        await client.$disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+};
+
+const checkPostgresConnection = async (connectionUrl, timeoutMs = 5000) => {
+  if (isPsqlAvailable()) {
+    return checkPostgresViaPsql(connectionUrl, timeoutMs);
+  }
+  return checkPostgresViaPrisma(connectionUrl, timeoutMs);
+};
+
+const shortContainerId = (containerId) => {
+  if (!containerId) return null;
+  return containerId.slice(0, 12);
+};
+
+const getComposeServiceState = (serviceName) => {
+  const composeCmd = getComposeCmd();
+  if (!composeCmd) {
+    return {
+      available: false,
+      exists: false,
+      running: false,
+      containerId: null,
+      containerName: null,
+      status: "compose_unavailable",
+      health: "unknown",
+      composeProject: null,
+      error: "compose_unavailable"
+    };
+  }
+
+  const psResult = runCompose(["-f", composeFile, "ps", "-q", serviceName]);
+  if (psResult.status !== 0) {
+    return {
+      available: true,
+      exists: false,
+      running: false,
+      containerId: null,
+      containerName: null,
+      status: "compose_ps_failed",
+      health: "unknown",
+      composeProject: null,
+      error: psResult.stderr || psResult.stdout || "compose_ps_failed"
+    };
+  }
+
+  const containerId = psResult.stdout
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean)[0];
+
+  if (!containerId) {
+    return {
+      available: true,
+      exists: false,
+      running: false,
+      containerId: null,
+      containerName: null,
+      status: "missing",
+      health: "missing",
+      composeProject: null,
+      error: null
+    };
+  }
+
+  const inspectResult = runCommand("docker", ["inspect", containerId]);
+  if (inspectResult.status !== 0) {
+    return {
+      available: true,
+      exists: true,
+      running: false,
+      containerId,
+      containerName: null,
+      status: "inspect_failed",
+      health: "unknown",
+      composeProject: null,
+      error: inspectResult.stderr || inspectResult.stdout || "inspect_failed"
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(inspectResult.stdout);
+    const inspected = parsed[0] ?? {};
+    const state = inspected.State ?? {};
+    const labels = inspected.Config?.Labels ?? {};
+
+    return {
+      available: true,
+      exists: true,
+      running: state.Status === "running",
+      containerId,
+      containerName: inspected.Name ? String(inspected.Name).replace(/^\//, "") : null,
+      status: state.Status || "unknown",
+      health: state.Health?.Status || "none",
+      composeProject: labels["com.docker.compose.project"] || null,
+      error: null
+    };
+  } catch (error) {
+    return {
+      available: true,
+      exists: true,
+      running: false,
+      containerId,
+      containerName: null,
+      status: "inspect_parse_failed",
+      health: "unknown",
+      composeProject: null,
+      error: error instanceof Error ? error.message : "inspect_parse_failed"
+    };
+  }
+};
+
+const getPortOwnerContainer = (port) => {
+  const dockerAvailability = getDockerAvailability();
+  if (!dockerAvailability.daemon) return null;
+
+  const psResult = runCommand("docker", ["ps", "--filter", `publish=${port}`, "--format", "{{.ID}}\t{{.Names}}"]);
+  if (psResult.status !== 0 || !psResult.stdout) return null;
+
+  const [firstLine] = psResult.stdout.split(/\r?\n/).filter(Boolean);
+  if (!firstLine) return null;
+
+  const [containerId, containerName] = firstLine.split("\t");
+  if (!containerId) return null;
+
+  const inspectResult = runCommand("docker", ["inspect", containerId]);
+  if (inspectResult.status !== 0) {
+    return {
+      containerId,
+      containerName: containerName || null,
+      composeProject: null,
+      inspectError: inspectResult.stderr || inspectResult.stdout || "inspect_failed"
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(inspectResult.stdout);
+    const inspected = parsed[0] ?? {};
+    const labels = inspected.Config?.Labels ?? {};
+    return {
+      containerId,
+      containerName: containerName || inspected.Name?.replace(/^\//, "") || null,
+      composeProject: labels["com.docker.compose.project"] || null,
+      inspectError: null
+    };
+  } catch (error) {
+    return {
+      containerId,
+      containerName: containerName || null,
+      composeProject: null,
+      inspectError: error instanceof Error ? error.message : "inspect_parse_failed"
+    };
+  }
+};
+
+const containerIdsMatch = (left, right) => {
+  if (!left || !right) return false;
+  return left === right || left.startsWith(right) || right.startsWith(left);
+};
+
+const classifyDependencySource = ({ dependency, tcpOpen, serviceOk, composeState, portOwner }) => {
+  const loopback = dependency.loopback;
+  const composeCandidate = loopback && dependency.port === dependency.defaultPort;
+
+  const composeOwnsPort = Boolean(
+    composeCandidate &&
+      composeState.exists &&
+      composeState.containerId &&
+      portOwner &&
+      containerIdsMatch(composeState.containerId, portOwner.containerId)
+  );
+
+  if (composeOwnsPort) return "compose_managed";
+
+  if (tcpOpen && serviceOk) {
+    if (loopback && portOwner) return "external_container";
+    return "external_host";
+  }
+
+  if (loopback && portOwner) return "external_container";
+  if (composeCandidate && composeState.exists) return "compose_managed";
+  if (!loopback && (tcpOpen || serviceOk)) return "external_host";
+  return "unavailable";
+};
+
+const discoverDependency = async (dependency, phase = "discover") => {
+  dependencyLog(`${phase}-start`, {
+    service: dependency.service,
+    endpoint: dependency.endpoint,
+    mode: infraMode
+  });
+
+  const composeState = getComposeServiceState(dependency.service);
+  const tcpProbe = await probeTcpPort(dependency.host, dependency.port);
+
+  let serviceCheck = {
+    ok: false,
+    reason: tcpProbe.open ? "not_checked" : `tcp_${tcpProbe.reason}`
+  };
+
+  if (tcpProbe.open) {
+    if (dependency.kind === "redis") {
+      serviceCheck = await checkRedisPing(dependency.connectionUrl);
+    } else {
+      serviceCheck = await checkPostgresConnection(dependency.connectionUrl);
+    }
+  }
+
+  const portOwner = dependency.loopback ? getPortOwnerContainer(dependency.port) : null;
+  const source = classifyDependencySource({
+    dependency,
+    tcpOpen: tcpProbe.open,
+    serviceOk: serviceCheck.ok,
+    composeState,
+    portOwner
+  });
+
+  const usable = tcpProbe.open && serviceCheck.ok;
+
+  dependencyLog(`${phase}-result`, {
+    service: dependency.service,
+    source,
+    tcpOpen: tcpProbe.open ? "yes" : "no",
+    serviceOk: serviceCheck.ok ? "yes" : "no",
+    usable: usable ? "yes" : "no",
+    composeStatus: composeState.status,
+    composeHealth: composeState.health,
+    owner: portOwner?.containerName || "none",
+    check: serviceCheck.reason
+  });
+
+  return {
+    ...dependency,
+    source,
+    usable,
+    tcpOpen: tcpProbe.open,
+    tcpReason: tcpProbe.reason,
+    serviceCheckOk: serviceCheck.ok,
+    serviceCheckReason: serviceCheck.reason,
+    compose: composeState,
+    portOwner
+  };
+};
+
+const waitForDependency = async (dependency, phase, matcher, timeoutMs = dependencyValidationTimeoutMs) => {
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+
+  while (Date.now() <= deadline) {
+    latest = await discoverDependency(dependency, phase);
+    if (matcher(latest)) {
+      return { ok: true, snapshot: latest };
+    }
+    await delay(dependencyValidationIntervalMs);
+  }
+
+  return { ok: false, snapshot: latest };
+};
+
+const composeUpDependency = (serviceName) => {
+  ensureComposeReady();
+
+  dependencyLog("compose-up-attempt", {
+    service: serviceName,
+    action: "compose_up"
+  });
+
+  const result = runCompose(["-f", composeFile, "up", "-d", serviceName]);
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: result.stderr || result.stdout || "compose_up_failed"
+    };
+  }
+
+  dependencyLog("compose-up-result", {
+    service: serviceName,
+    status: "ok"
+  });
+
+  return {
+    ok: true
+  };
+};
+
+const sanitizeDependencyForState = (snapshot, action) => ({
+  service: snapshot.service,
+  label: snapshot.label,
+  envVar: snapshot.envVar,
+  endpoint: snapshot.endpoint,
+  source: snapshot.source,
+  usable: snapshot.usable,
+  tcpOpen: snapshot.tcpOpen,
+  tcpReason: snapshot.tcpReason,
+  serviceCheckOk: snapshot.serviceCheckOk,
+  serviceCheckReason: snapshot.serviceCheckReason,
+  action,
+  compose: {
+    available: snapshot.compose.available,
+    exists: snapshot.compose.exists,
+    running: snapshot.compose.running,
+    status: snapshot.compose.status,
+    health: snapshot.compose.health,
+    containerId: shortContainerId(snapshot.compose.containerId),
+    containerName: snapshot.compose.containerName,
+    project: snapshot.compose.composeProject,
+    error: snapshot.compose.error || null
+  },
+  portOwner: snapshot.portOwner
+    ? {
+        containerId: shortContainerId(snapshot.portOwner.containerId),
+        containerName: snapshot.portOwner.containerName,
+        project: snapshot.portOwner.composeProject || null,
+        inspectError: snapshot.portOwner.inspectError || null
+      }
+    : null
+});
+
+const ensureInfra = async (dependencies) => {
+  dependencyLog("strategy", {
+    mode: infraMode,
+    services: dependencies.map((item) => item.service).join(",")
+  });
+
+  const managedServicesStarted = new Set();
+  const finalized = [];
+
+  for (const dependency of dependencies) {
+    let snapshot = await discoverDependency(dependency, "initial");
+
+    if (infraMode === "external") {
+      if (!snapshot.usable) {
+        fail(
+          `[deps] infra=external validation failed for ${dependency.service} (${dependency.endpoint}). source=${snapshot.source} tcpOpen=${
+            snapshot.tcpOpen ? "yes" : "no"
+          } serviceOk=${snapshot.serviceCheckOk ? "yes" : "no"} check=${snapshot.serviceCheckReason}`
+        );
+      }
+
+      finalized.push(sanitizeDependencyForState(snapshot, "validated_external"));
+      continue;
+    }
+
+    if (infraMode === "auto") {
+      if (snapshot.usable) {
+        if (snapshot.source === "compose_managed") {
+          dependencyLog("auto-decision", {
+            service: dependency.service,
+            decision: "reuse_compose_managed",
+            reason: "usable_dependency_detected"
+          });
+        } else {
+          dependencyLog("auto-decision", {
+            service: dependency.service,
+            decision: "skip_compose",
+            reason: "usable_external_dependency_detected",
+            source: snapshot.source
+          });
+        }
+
+        finalized.push(sanitizeDependencyForState(snapshot, "reuse_existing"));
+        continue;
+      }
+
+      dependencyLog("auto-decision", {
+        service: dependency.service,
+        decision: "compose_up",
+        reason: "no_usable_dependency"
+      });
+
+      const beforeStartManaged = snapshot.compose.exists && snapshot.compose.running;
+      const upResult = composeUpDependency(dependency.service);
+      if (!upResult.ok) {
+        fail(
+          `[deps] auto compose-up failed for ${dependency.service}. source=${snapshot.source} endpoint=${dependency.endpoint} error=${upResult.error}`
+        );
+      }
+
+      if (!beforeStartManaged) {
+        managedServicesStarted.add(dependency.service);
+      }
+
+      const waited = await waitForDependency(dependency, "auto-post-compose", (item) => item.usable);
+      snapshot = waited.snapshot;
+      if (!waited.ok || !snapshot?.usable) {
+        fail(
+          `[deps] auto validation failed after compose-up for ${dependency.service}. source=${snapshot?.source ?? "unknown"} check=${
+            snapshot?.serviceCheckReason ?? "unknown"
+          }`
+        );
+      }
+
+      finalized.push(sanitizeDependencyForState(snapshot, "compose_started"));
+      continue;
+    }
+
+    if (snapshot.usable && snapshot.source !== "compose_managed") {
+      fail(
+        `[deps] infra=managed requires compose-managed ${dependency.service}, but detected ${snapshot.source} at ${dependency.endpoint}. ` +
+          "Switch to --infra=auto/--infra=external or free the host port for compose-managed dependency."
+      );
+    }
+
+    if (snapshot.usable && snapshot.source === "compose_managed") {
+      dependencyLog("managed-decision", {
+        service: dependency.service,
+        decision: "reuse_compose_managed"
+      });
+      finalized.push(sanitizeDependencyForState(snapshot, "reuse_managed"));
+      continue;
+    }
+
+    dependencyLog("managed-decision", {
+      service: dependency.service,
+      decision: "compose_up",
+      reason: "managed_dependency_unavailable_or_unusable"
+    });
+
+    const beforeStartManaged = snapshot.compose.exists && snapshot.compose.running;
+    const upResult = composeUpDependency(dependency.service);
+    if (!upResult.ok) {
+      fail(
+        `[deps] managed compose-up failed for ${dependency.service}. source=${snapshot.source} endpoint=${dependency.endpoint} error=${upResult.error}`
+      );
+    }
+
+    if (!beforeStartManaged) {
+      managedServicesStarted.add(dependency.service);
+    }
+
+    const waited = await waitForDependency(dependency, "managed-post-compose", (item) => item.usable && item.source === "compose_managed");
+    snapshot = waited.snapshot;
+    if (!waited.ok || !snapshot?.usable || snapshot.source !== "compose_managed") {
+      fail(
+        `[deps] managed validation failed for ${dependency.service}. finalSource=${snapshot?.source ?? "unknown"} ` +
+          `check=${snapshot?.serviceCheckReason ?? "unknown"}`
+      );
+    }
+
+    finalized.push(sanitizeDependencyForState(snapshot, "compose_started"));
+  }
+
+  dependencyLog("strategy-complete", {
+    mode: infraMode,
+    summary: finalized.map((item) => `${item.service}:${item.source}:${item.usable ? "usable" : "unusable"}`).join(",")
+  });
+
+  return {
+    mode: infraMode,
+    dependencies: finalized,
+    managedServicesStarted: Array.from(managedServicesStarted),
+    composeCommand: getComposeCmd()?.join(" ") || null,
+    composeFile
+  };
+};
+
+const toLocalTime = (timezone) => {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short"
+    }).format(new Date());
+  } catch {
+    return new Date().toLocaleTimeString();
+  }
+};
+
+const printDevBanner = () => {
+  const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
+  const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
+  const waSessionPath = process.env.WA_SESSION_PATH || ".wa_auth";
+
+  const rendered = cfonts.render("Zappy Assistant ©", {
+    font: "slick",
+    align: "left",
+    colors: ["cyan", "magenta"],
+    letterSpacing: 1,
+    lineHeight: 1,
+    gradient: ["#00d7ff", "#b14cff"],
+    env: "node"
+  });
+  console.log(rendered.string);
+
+  const rows = [
+    ["Mode", "dev"],
+    ["Environment", "development"],
+    ["Infra mode", infraMode],
+    ["Timezone", `${timezone} (${toLocalTime(timezone)})`],
+    ["LLM/model", llmEnabled ? llmModel : `disabled (${llmModel})`],
+    ["WA session path", path.resolve(rootDir, waSessionPath)]
+  ];
+
+  const pad = Math.max(...rows.map(([k]) => k.length));
+  rows.forEach(([k, v]) => console.log(`${k.padEnd(pad)} : ${v}`));
+  console.log("");
+};
+
+const printProdBanner = (runtimeEnv, options = {}) => {
+  const buildStatus = options.buildExecuted ? "executed" : "skipped";
+  const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
+  const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
+  const waSessionPath = process.env.WA_SESSION_PATH || ".wa_auth";
+  console.log("==============================================");
+  console.log("Zappy Assistant Runtime");
+  console.log("mode=prod environment=production");
+  console.log(`infraMode=${infraMode}`);
+  console.log(`timezone=${timezone} localTime=${toLocalTime(timezone)}`);
+  console.log(`llm=${llmEnabled ? "enabled" : "disabled"} model=${llmModel}`);
+  console.log(
+    `logs format=${runtimeEnv.LOG_FORMAT ?? "pretty"} level=${runtimeEnv.LOG_LEVEL ?? "info"} prettyMode=${
+      runtimeEnv.LOG_PRETTY_MODE ?? "prod"
+    } colorize=${runtimeEnv.LOG_COLORIZE ?? "true"} verboseFields=${runtimeEnv.LOG_VERBOSE_FIELDS ?? "false"}`
+  );
+  console.log(`build=${buildStatus}`);
+  console.log(`waSessionPath=${path.resolve(rootDir, waSessionPath)}`);
+  console.log("==============================================");
+};
+
+const printDebugBanner = (runtimeEnv) => {
+  const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
+  const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
+  const waSessionPath = process.env.WA_SESSION_PATH || ".wa_auth";
+  console.log("==============================================");
+  console.log("Zappy Assistant Runtime");
+  console.log("mode=debug environment=production");
+  console.log(`infraMode=${infraMode}`);
+  console.log(`timezone=${timezone} localTime=${toLocalTime(timezone)}`);
+  console.log(`llm=${llmEnabled ? "enabled" : "disabled"} model=${llmModel}`);
+  console.log(
+    `logs format=${runtimeEnv.LOG_FORMAT ?? "json"} level=${runtimeEnv.LOG_LEVEL ?? "debug"} verboseFields=${
+      runtimeEnv.LOG_VERBOSE_FIELDS ?? "true"
+    } debug=${runtimeEnv.DEBUG ?? "trace"}`
+  );
+  console.log(`waSessionPath=${path.resolve(rootDir, waSessionPath)}`);
+  console.log("==============================================");
+};
+
+const applyDefaultEnv = (env, key, value) => {
+  if (env[key] === undefined || env[key] === "") env[key] = value;
+};
+
+const buildRuntimeEnv = () => {
+  const env = {
+    ...process.env,
+    ZAPPY_RUNTIME_MODE: requestedMode,
+    NODE_ENV: modeProfile.nodeEnv,
+    ZAPPY_SKIP_SERVICE_BANNER: "1"
+  };
+  for (const [key, value] of Object.entries(modeProfile.logDefaults)) {
+    applyDefaultEnv(env, key, value);
+  }
+  return env;
+};
+
+const isStateAlive = (state) =>
+  Boolean(state) && (pidAlive(state.supervisorPid) || (state.services || []).some((svc) => svc.pid && pidAlive(svc.pid)));
+
+const prefixWriter = (name, stream, isErr) => {
+  const rawPrefix = `[${name.padEnd(prefixedServiceWidth)}]`;
+  const prefix = colorizedPrefixes ? `${servicePrefixColor(name)}${rawPrefix}${ANSI.reset}` : rawPrefix;
+  const rl = createInterface({ input: stream });
+  rl.on("line", (line) => {
+    const output = `${prefix} ${line}`;
+    isErr ? console.error(output) : console.log(output);
+  });
+};
+
+const shellEscape = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 
 const requestResolverHealth = async (input) => {
   const endpoint = `${input.baseUrl.replace(/\/+$/, "")}/health`;
@@ -451,298 +1318,281 @@ const waitForResolverHealthy = async (target, timeoutMs = 20_000) => {
   return latestResult;
 };
 
-const inspectContainerState = (containerId) => {
-  const result = spawnSync("docker", ["inspect", containerId, "--format", "{{json .State}}"], {
-    cwd: rootDir,
-    encoding: "utf8"
-  });
-  if (result.status !== 0) {
-    return {
-      status: "inspect_error",
-      health: "unknown",
-      hasHealthcheck: false,
-      inspectError: result.stderr?.trim() || "inspect_failed"
-    };
-  }
+const isTmuxAvailable = () => runCommand("tmux", ["-V"], { stdio: "ignore" }).status === 0;
 
-  const raw = result.stdout?.trim();
-  if (!raw) {
-    return {
-      status: "inspect_error",
-      health: "unknown",
-      hasHealthcheck: false,
-      inspectError: "empty_inspect_payload"
-    };
-  }
+const runTmux = (args) => runCommand("tmux", args);
 
-  try {
-    const parsed = JSON.parse(raw);
-    const status = typeof parsed?.Status === "string" ? parsed.Status : "unknown";
-    const health = typeof parsed?.Health?.Status === "string" ? parsed.Health.Status : "none";
-    const hasHealthcheck = parsed?.Health && typeof parsed.Health === "object";
-    return { status, health, hasHealthcheck, inspectError: undefined };
-  } catch (error) {
-    return {
-      status: "inspect_error",
-      health: "unknown",
-      hasHealthcheck: false,
-      inspectError: error instanceof Error ? error.message : "inspect_parse_failed"
-    };
-  }
+const tmuxSessionExists = (sessionName) => runTmux(["has-session", "-t", sessionName]).status === 0;
+
+const listTmuxWindows = (sessionName) => {
+  const result = runTmux(["list-windows", "-t", sessionName, "-F", "#{window_name}"]);
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 };
 
-const getDependencySnapshot = async () => {
-  const snapshots = [];
-
-  for (const dependency of infraDependencies) {
-    const psResult = runCompose(["-f", composeFile, "ps", "-q", dependency.service], { allowFailure: true });
-    if (psResult.status !== 0) {
-      snapshots.push({
-        ...dependency,
-        containerId: null,
-        containerStatus: "missing",
-        healthStatus: "unknown",
-        hasHealthcheck: false,
-        portReachable: false,
-        ready: false,
-        failedCheck: "compose_ps_failed",
-        diagnostic: psResult.stderr || psResult.stdout || "compose_ps_failed"
-      });
-      continue;
+const ensureTmuxSession = (sessionName) => {
+  if (!tmuxSessionExists(sessionName)) {
+    const createResult = runTmux(["new-session", "-d", "-s", sessionName, "-n", "core"]);
+    if (createResult.status !== 0) {
+      return {
+        ok: false,
+        error: createResult.stderr || createResult.stdout || "tmux_session_create_failed"
+      };
     }
-
-    const containerId = psResult.stdout.split(/\s+/).map((item) => item.trim()).filter(Boolean)[0] ?? null;
-    if (!containerId) {
-      snapshots.push({
-        ...dependency,
-        containerId: null,
-        containerStatus: "missing",
-        healthStatus: "missing",
-        hasHealthcheck: false,
-        portReachable: false,
-        ready: false,
-        failedCheck: "container_missing",
-        diagnostic: "container not created"
-      });
-      continue;
-    }
-
-    const inspected = inspectContainerState(containerId);
-    const running = inspected.status === "running";
-    const portReachable = running ? await probePort(dependency.port, dependency.label, dependency.host) : false;
-    const healthRequired = dependency.requireHealthyStatus && inspected.hasHealthcheck;
-    const healthReady = !healthRequired || inspected.health === "healthy";
-    const ready = running && healthReady && portReachable;
-
-    let failedCheck = "none";
-    if (!running) failedCheck = "container_not_running";
-    else if (!healthReady) failedCheck = "health_not_healthy";
-    else if (!portReachable) failedCheck = "port_unreachable";
-
-    const diagnosticParts = [
-      `container=${containerId.slice(0, 12)}`,
-      `status=${inspected.status}`,
-      `health=${inspected.health}`,
-      `port=${dependency.host}:${dependency.port}`,
-      `portReachable=${portReachable}`
-    ];
-    if (inspected.inspectError) diagnosticParts.push(`inspectError=${inspected.inspectError}`);
-
-    snapshots.push({
-      ...dependency,
-      containerId,
-      containerStatus: inspected.status,
-      healthStatus: inspected.health,
-      hasHealthcheck: inspected.hasHealthcheck,
-      portReachable,
-      ready,
-      failedCheck,
-      diagnostic: diagnosticParts.join(", ")
+    resolverLog("tmux-session", {
+      session: sessionName,
+      status: "created"
     });
+    return { ok: true, created: true };
   }
 
-  return snapshots;
-};
-
-const logDependencySnapshot = (phase, snapshots) => {
-  for (const item of snapshots) {
-    dependencyLog(phase, {
-      service: item.service,
-      ready: item.ready ? "yes" : "no",
-      containerStatus: item.containerStatus,
-      health: item.healthStatus,
-      port: `${item.host}:${item.port}`,
-      failedCheck: item.failedCheck
-    });
-  }
-};
-
-const ensureInfra = async () => {
-  dependencyLog("docker-check", { status: "start" });
-  const info = spawnSync("docker", ["info"], { stdio: "ignore" });
-  if (info.status !== 0) fail("Docker daemon not reachable. Start Docker and retry.");
-  dependencyLog("docker-check", { status: "ok" });
-
-  dependencyLog("pre-validate", { services: requiredInfra.join(",") });
-  let snapshots = await getDependencySnapshot();
-  logDependencySnapshot("pre-validate", snapshots);
-  let pending = snapshots.filter((item) => !item.ready);
-
-  if (pending.length === 0) {
-    dependencyLog("pre-validate", { status: "all_ready" });
-    return;
-  }
-
-  const targetServices = pending.map((item) => item.service);
-  dependencyLog("auto-start", { action: "compose_up", services: targetServices.join(",") });
-  const upResult = runCompose(["-f", composeFile, "up", "-d", ...targetServices], { allowFailure: true });
-  if (upResult.status !== 0) {
-    for (const item of pending) {
-      warn(
-        `[start:${requestedMode}][deps] service=${item.service} action=compose_up status=failed reason=${item.failedCheck} diagnostic="${item.diagnostic}"`
-      );
-    }
-    fail(`Dependency auto-start failed: ${upResult.stderr || upResult.stdout || "unknown compose error"}`);
-  }
-
-  const deadline = Date.now() + dependencyValidationTimeoutMs;
-  while (Date.now() <= deadline) {
-    await delay(dependencyValidationIntervalMs);
-    snapshots = await getDependencySnapshot();
-    pending = snapshots.filter((item) => !item.ready);
-    if (pending.length === 0) {
-      dependencyLog("post-validate", { status: "all_ready", waitedMs: dependencyValidationTimeoutMs - (deadline - Date.now()) });
-      return;
+  const windows = listTmuxWindows(sessionName);
+  if (!windows.includes("core")) {
+    const coreResult = runTmux(["new-window", "-d", "-t", sessionName, "-n", "core"]);
+    if (coreResult.status !== 0) {
+      return {
+        ok: false,
+        error: coreResult.stderr || coreResult.stdout || "tmux_core_window_create_failed"
+      };
     }
   }
 
-  logDependencySnapshot("post-validate", snapshots);
-  for (const item of pending) {
-    warn(
-      `[start:${requestedMode}][deps] service=${item.service} action=compose_up status=failed finalCheck=${item.failedCheck} diagnostic="${item.diagnostic}"`
-    );
-  }
-  fail(`Dependency validation failed after ${dependencyValidationTimeoutMs}ms.`);
-};
-
-const toLocalTime = (timezone) => {
-  try {
-    return new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      timeZoneName: "short"
-    }).format(new Date());
-  } catch {
-    return new Date().toLocaleTimeString();
-  }
-};
-
-const printDevBanner = () => {
-  const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
-  const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
-  const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
-  const waSessionPath = process.env.WA_SESSION_PATH || ".wa_auth";
-
-  const rendered = cfonts.render("Zappy Assistant ©", {
-    font: "slick",
-    align: "left",
-    colors: ["cyan", "magenta"],
-    letterSpacing: 1,
-    lineHeight: 1,
-    gradient: ["#00d7ff", "#b14cff"],
-    env: "node"
+  resolverLog("tmux-session", {
+    session: sessionName,
+    status: "ready"
   });
-  console.log(rendered.string);
-
-  const rows = [
-    ["Mode", "dev"],
-    ["Environment", "development"],
-    ["Timezone", `${timezone} (${toLocalTime(timezone)})`],
-    ["LLM/model", llmEnabled ? llmModel : `disabled (${llmModel})`],
-    ["WA session path", path.resolve(rootDir, waSessionPath)]
-  ];
-
-  const pad = Math.max(...rows.map(([k]) => k.length));
-  rows.forEach(([k, v]) => console.log(`${k.padEnd(pad)} : ${v}`));
-  console.log("");
+  return { ok: true, created: false };
 };
 
-const printProdBanner = (runtimeEnv, options = {}) => {
-  const buildStatus = options.buildExecuted ? "executed" : "skipped";
-  const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
-  const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
-  const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
-  const waSessionPath = process.env.WA_SESSION_PATH || ".wa_auth";
-  console.log("==============================================");
-  console.log("Zappy Assistant Runtime");
-  console.log("mode=prod environment=production");
-  console.log(`timezone=${timezone} localTime=${toLocalTime(timezone)}`);
-  console.log(`llm=${llmEnabled ? "enabled" : "disabled"} model=${llmModel}`);
-  console.log(
-    `logs format=${runtimeEnv.LOG_FORMAT ?? "pretty"} level=${runtimeEnv.LOG_LEVEL ?? "info"} prettyMode=${
-      runtimeEnv.LOG_PRETTY_MODE ?? "prod"
-    } colorize=${runtimeEnv.LOG_COLORIZE ?? "true"} verboseFields=${runtimeEnv.LOG_VERBOSE_FIELDS ?? "false"}`
-  );
-  console.log(`build=${buildStatus}`);
-  console.log(`waSessionPath=${path.resolve(rootDir, waSessionPath)}`);
-  console.log("==============================================");
-};
+const ensureTmuxWindow = (sessionName, windowName) => {
+  const windows = listTmuxWindows(sessionName);
+  if (windows.includes(windowName)) {
+    return { ok: true, existed: true };
+  }
 
-const printDebugBanner = (runtimeEnv) => {
-  const timezone = process.env.BOT_TIMEZONE || "America/Cuiaba";
-  const llmModel = process.env.LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
-  const llmEnabled = (process.env.LLM_ENABLED ?? "true").toString() !== "false";
-  const waSessionPath = process.env.WA_SESSION_PATH || ".wa_auth";
-  console.log("==============================================");
-  console.log("Zappy Assistant Runtime");
-  console.log("mode=debug environment=production");
-  console.log(`timezone=${timezone} localTime=${toLocalTime(timezone)}`);
-  console.log(`llm=${llmEnabled ? "enabled" : "disabled"} model=${llmModel}`);
-  console.log(
-    `logs format=${runtimeEnv.LOG_FORMAT ?? "json"} level=${runtimeEnv.LOG_LEVEL ?? "debug"} verboseFields=${
-      runtimeEnv.LOG_VERBOSE_FIELDS ?? "true"
-    } debug=${runtimeEnv.DEBUG ?? "trace"}`
-  );
-  console.log(`waSessionPath=${path.resolve(rootDir, waSessionPath)}`);
-  console.log("==============================================");
-};
+  const created = runTmux(["new-window", "-d", "-t", sessionName, "-n", windowName]);
+  if (created.status !== 0) {
+    return {
+      ok: false,
+      existed: false,
+      error: created.stderr || created.stdout || "tmux_window_create_failed"
+    };
+  }
 
-const applyDefaultEnv = (env, key, value) => {
-  if (env[key] === undefined || env[key] === "") env[key] = value;
-};
-
-const buildRuntimeEnv = () => {
-  const env = {
-    ...process.env,
-    ZAPPY_RUNTIME_MODE: requestedMode,
-    NODE_ENV: modeProfile.nodeEnv,
-    ZAPPY_SKIP_SERVICE_BANNER: "1"
+  return {
+    ok: true,
+    existed: false
   };
-  for (const [key, value] of Object.entries(modeProfile.logDefaults)) {
-    applyDefaultEnv(env, key, value);
+};
+
+const shouldStartAuxiliaryResolver = (target) => {
+  if (target.key === "yt" && withYoutubeResolver) return true;
+  if (target.key === "fb" && withFacebookResolver) return true;
+  if (withExternalServices && target.enabled) return true;
+  return false;
+};
+
+const startAuxiliaryResolvers = async (env) => {
+  const targets = resolveAuxiliaryTargets(env);
+  const selected = targets.filter((target) => shouldStartAuxiliaryResolver(target));
+  const state = {
+    manager: "tmux",
+    session: tmuxSessionName,
+    windows: []
+  };
+
+  if (!selected.length) {
+    resolverLog("autostart-skip", { reason: "no_selected_services" });
+    return { targets, state };
   }
-  return env;
-};
 
-const isStateAlive = (state) =>
-  Boolean(state) && (pidAlive(state.supervisorPid) || (state.services || []).some((svc) => svc.pid && pidAlive(svc.pid)));
-
-const ensurePorts = async () => {
-  dependencyLog("port-check", { status: "start" });
-  await Promise.all(infraDependencies.map((dependency) => waitForPort(dependency.port, dependency.label, dependency.host)));
-  dependencyLog("port-check", { status: "ok" });
-};
-
-const prefixWriter = (name, stream, isErr) => {
-  const rawPrefix = `[${name.padEnd(prefixedServiceWidth)}]`;
-  const prefix = colorizedPrefixes ? `${servicePrefixColor(name)}${rawPrefix}${ANSI.reset}` : rawPrefix;
-  const rl = createInterface({ input: stream });
-  rl.on("line", (line) => {
-    const output = `${prefix} ${line}`;
-    isErr ? console.error(output) : console.log(output);
+  resolverLog("autostart-start", {
+    manager: "tmux",
+    session: tmuxSessionName,
+    selected: selected.map((target) => target.serviceName).join(","),
+    requestedByFlags: [withExternalServices ? "all" : null, withYoutubeResolver ? "yt" : null, withFacebookResolver ? "fb" : null]
+      .filter(Boolean)
+      .join(",")
   });
+
+  if (!isTmuxAvailable()) {
+    warn("tmux is not available. Auxiliary resolver autostart skipped.");
+    for (const target of selected) {
+      state.windows.push({
+        key: target.key,
+        provider: target.provider,
+        serviceName: target.serviceName,
+        windowName: target.windowName,
+        ownership: "not_started",
+        status: "failed",
+        reason: "tmux_unavailable",
+        baseUrl: target.baseUrl
+      });
+    }
+    return { targets, state };
+  }
+
+  const ensuredSession = ensureTmuxSession(tmuxSessionName);
+  if (!ensuredSession.ok) {
+    warn(`tmux session setup failed for session=${tmuxSessionName}: ${ensuredSession.error}`);
+    for (const target of selected) {
+      state.windows.push({
+        key: target.key,
+        provider: target.provider,
+        serviceName: target.serviceName,
+        windowName: target.windowName,
+        ownership: "not_started",
+        status: "failed",
+        reason: `tmux_session_error:${ensuredSession.error}`,
+        baseUrl: target.baseUrl
+      });
+    }
+    return { targets, state };
+  }
+
+  for (const target of selected) {
+    const record = {
+      key: target.key,
+      provider: target.provider,
+      serviceName: target.serviceName,
+      windowName: target.windowName,
+      ownership: "not_started",
+      status: "skipped",
+      reason: null,
+      baseUrl: target.baseUrl
+    };
+
+    if (!fs.existsSync(target.workingDir)) {
+      record.status = "failed";
+      record.reason = "working_dir_missing";
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} workingDir missing (${path.relative(
+          rootDir,
+          target.workingDir
+        )}). Skipping tmux startup.`
+      );
+      state.windows.push(record);
+      continue;
+    }
+
+    if (!fs.existsSync(target.runScriptPath)) {
+      record.status = "failed";
+      record.reason = "run_script_missing";
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} run script missing (${path.relative(
+          rootDir,
+          target.runScriptPath
+        )}). Skipping tmux startup.`
+      );
+      state.windows.push(record);
+      continue;
+    }
+
+    if (!fs.existsSync(target.venvPythonPath)) {
+      record.status = "failed";
+      record.reason = "venv_missing";
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} missing .venv (${path.relative(
+          rootDir,
+          path.dirname(target.venvPythonPath)
+        )}). Run npm run bootstrap:${requestedMode} -- --infra before startup.`
+      );
+      state.windows.push(record);
+      continue;
+    }
+
+    if (!target.localBaseUrl) {
+      record.status = "failed";
+      record.reason = "non_local_base_url";
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} baseUrl=${target.baseUrl} is not local. tmux autostart skipped.`
+      );
+      state.windows.push(record);
+      continue;
+    }
+
+    const preHealth = await requestResolverHealth({
+      baseUrl: target.baseUrl,
+      token: target.token,
+      timeoutMs: 2200
+    });
+
+    if (preHealth.ok) {
+      resolverLog("tmux-resolver", {
+        provider: target.provider,
+        service: target.serviceName,
+        window: target.windowName,
+        status: "already_running",
+        endpoint: preHealth.endpoint
+      });
+      record.status = "already_running";
+      record.ownership = "preexisting";
+      record.reason = "health_already_ok";
+      state.windows.push(record);
+      continue;
+    }
+
+    const ensuredWindow = ensureTmuxWindow(tmuxSessionName, target.windowName);
+    if (!ensuredWindow.ok) {
+      record.status = "failed";
+      record.reason = `window_error:${ensuredWindow.error}`;
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} tmux window setup failed (${ensuredWindow.error})`
+      );
+      state.windows.push(record);
+      continue;
+    }
+
+    const targetWindow = `${tmuxSessionName}:${target.windowName}`;
+
+    runTmux(["send-keys", "-t", targetWindow, "C-c"]);
+
+    const command =
+      `cd ${shellEscape(target.workingDir)} && ` +
+      `source ${shellEscape(path.join(path.dirname(target.venvPythonPath), "activate"))} && ` +
+      `exec ${shellEscape(target.runScriptPath)}`;
+
+    const sent = runTmux(["send-keys", "-t", targetWindow, command, "C-m"]);
+    if (sent.status !== 0) {
+      record.status = "failed";
+      record.reason = sent.stderr || sent.stdout || "tmux_send_failed";
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} tmux start command failed (${record.reason})`
+      );
+      state.windows.push(record);
+      continue;
+    }
+
+    const health = await waitForResolverHealthy(target);
+    if (!health?.ok) {
+      record.status = "failed";
+      record.ownership = "runtime_started";
+      record.reason = `health_failed:${health?.reason ?? "unknown"}`;
+      warn(
+        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} failed to become healthy at ${target.baseUrl} (reason=${health?.reason ?? "unknown"})`
+      );
+      state.windows.push(record);
+      continue;
+    }
+
+    resolverLog("tmux-resolver", {
+      provider: target.provider,
+      service: target.serviceName,
+      window: target.windowName,
+      status: "started",
+      endpoint: health.endpoint
+    });
+
+    record.status = "started";
+    record.ownership = "runtime_started";
+    record.reason = "health_ok";
+    state.windows.push(record);
+  }
+
+  return { targets, state };
 };
 
 const childProcs = [];
@@ -805,108 +1655,7 @@ const assertNoRunningStack = () => {
   }
 };
 
-const shouldStartAuxiliaryResolver = (target) => {
-  if (target.key === "yt" && withYoutubeResolver) return true;
-  if (target.key === "fb" && withFacebookResolver) return true;
-  if (withExternalServices && target.enabled) return true;
-  return false;
-};
-
-const startAuxiliaryResolvers = async (env) => {
-  const targets = resolveAuxiliaryTargets(env);
-  const selected = targets.filter((target) => shouldStartAuxiliaryResolver(target));
-
-  if (!selected.length) {
-    resolverLog("autostart-skip", { reason: "no_selected_services" });
-    return targets;
-  }
-
-  resolverLog("autostart-start", {
-    selected: selected.map((target) => target.serviceName).join(","),
-    requestedByFlags: [withExternalServices ? "all" : null, withYoutubeResolver ? "yt" : null, withFacebookResolver ? "fb" : null]
-      .filter(Boolean)
-      .join(",")
-  });
-
-  for (const target of selected) {
-    if (!fs.existsSync(target.workingDir)) {
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} workingDir missing (${path.relative(
-          rootDir,
-          target.workingDir
-        )}). Skipping autostart.`
-      );
-      continue;
-    }
-
-    if (!target.localBaseUrl) {
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} baseUrl=${target.baseUrl} is not local. Skipping autostart.`
-      );
-      continue;
-    }
-
-    if (!fs.existsSync(target.runScriptPath)) {
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} run script missing (${path.relative(
-          rootDir,
-          target.runScriptPath
-        )}). Skipping autostart.`
-      );
-      continue;
-    }
-
-    const child = spawn("bash", [target.runScriptPath], {
-      cwd: target.workingDir,
-      env: {
-        ...env,
-        PYTHONUNBUFFERED: "1"
-      },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    childProcs.push({
-      name: target.serviceName,
-      workspace: path.relative(rootDir, target.workingDir),
-      pid: child.pid,
-      proc: child,
-      script: "external",
-      kind: "auxiliary",
-      critical: false
-    });
-    prefixWriter(target.serviceName, child.stdout, false);
-    prefixWriter(target.serviceName, child.stderr, true);
-
-    child.on("exit", (code, signal) => {
-      if (shuttingDown) return;
-      warn(
-        `${target.serviceName} exited (${signal ?? code}). Continuing without this auxiliary service (non-fatal).`
-      );
-    });
-    child.on("error", (error) => {
-      if (shuttingDown) return;
-      warn(`${target.serviceName} process error (${error.message}). Continuing without this auxiliary service (non-fatal).`);
-    });
-
-    const health = await waitForResolverHealthy(target);
-    if (!health?.ok) {
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} failed to become healthy at ${target.baseUrl} (reason=${health?.reason ?? "unknown"})`
-      );
-      continue;
-    }
-
-    resolverLog("autostart-ready", {
-      provider: target.provider,
-      service: target.serviceName,
-      endpoint: health.endpoint
-    });
-  }
-
-  return targets;
-};
-
-const startServices = (env) => {
+const startServices = (env, runtimeStateInfra) => {
   services.forEach((svc) => {
     const child = spawn("npm", ["run", serviceScript, "-w", svc.workspace], {
       cwd: rootDir,
@@ -933,15 +1682,21 @@ const startServices = (env) => {
     });
   });
 
+  const composeCmd = getComposeCmd();
   writeState({
     mode: requestedMode,
     supervisorPid: process.pid,
     startedAt: new Date().toISOString(),
     services: childProcs.map(({ name, pid, workspace, script, kind }) => ({ name, pid, workspace, script, kind })),
-    infra: { compose: composeCmd.join(" "), composeFile, requiredInfra }
+    infra: {
+      ...runtimeStateInfra,
+      compose: composeCmd ? composeCmd.join(" ") : null,
+      composeFile
+    }
   });
 
   log(`mode=${requestedMode}`);
+  log(`infraMode=${infraMode}`);
   log(`${requestedMode} services started. Tracking state at ${path.relative(rootDir, stateFile)}.`);
   log(`To stop services, run: npm run stop:${requestedMode}`);
 };
@@ -949,10 +1704,9 @@ const startServices = (env) => {
 const main = async () => {
   const runtimeEnv = buildRuntimeEnv();
   assertNoRunningStack();
-  await ensureInfra();
-  await ensurePorts().catch((err) => fail(err.message));
-  const auxiliaryTargets = await startAuxiliaryResolvers(runtimeEnv);
-  await runResolverHealthChecks(auxiliaryTargets, "pre-app-start", { onlyEnabled: true });
+
+  const dependencies = resolveDependencyTargets(runtimeEnv);
+  const infraState = await ensureInfra(dependencies);
 
   if (isDev) {
     printDevBanner();
@@ -970,8 +1724,17 @@ const main = async () => {
     printDebugBanner(runtimeEnv);
   }
 
-  startServices(runtimeEnv);
-  void runResolverHealthChecks(auxiliaryTargets, "post-app-start", { onlyEnabled: true });
+  const resolverRuntime = await startAuxiliaryResolvers(runtimeEnv);
+  await runResolverHealthChecks(resolverRuntime.targets, "pre-app-start", { onlyEnabled: true });
+
+  startServices(runtimeEnv, {
+    mode: infraMode,
+    dependencies: infraState.dependencies,
+    managedServicesStarted: infraState.managedServicesStarted,
+    resolvers: resolverRuntime.state
+  });
+
+  void runResolverHealthChecks(resolverRuntime.targets, "post-app-start", { onlyEnabled: true });
 };
 
 process.on("SIGINT", () => cleanup("SIGINT"));

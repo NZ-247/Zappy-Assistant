@@ -7,6 +7,9 @@
     "packages/*"
   ],
   "scripts": {
+    "bootstrap:dev": "node scripts/bootstrap.mjs dev",
+    "bootstrap:prod": "node scripts/bootstrap.mjs prod",
+    "bootstrap:debug": "node scripts/bootstrap.mjs debug",
     "start:dev": "node scripts/start.mjs dev",
     "start:dev:resolvers": "node scripts/start.mjs dev --with-external-services",
     "stop:dev": "node scripts/stop.mjs dev",
