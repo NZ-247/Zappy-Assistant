@@ -193,32 +193,30 @@ const services = [
   { name: "admin-ui", workspace: "@zappy/admin-ui" }
 ];
 
-const tmuxSessionName = (process.env.ZAPPY_TMUX_SESSION || "zappy").trim() || "zappy";
-
 const auxiliaryResolverDefinitions = [
   {
     key: "yt",
     provider: "yt",
     serviceName: "youtube-resolver",
-    windowName: "youtube",
     enabledEnv: "YT_RESOLVER_ENABLED",
     baseUrlEnv: "YT_RESOLVER_BASE_URL",
     tokenEnv: "YT_RESOLVER_TOKEN",
     defaultBaseUrl: "http://localhost:3401",
     workingDir: path.join(rootDir, "infra", "external-services", "youtube-resolver"),
-    runScriptPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", "scripts", "run.sh")
+    runScriptPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", "scripts", "run.sh"),
+    stopScriptPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", "scripts", "stop.sh")
   },
   {
     key: "fb",
     provider: "fb",
     serviceName: "facebook-resolver",
-    windowName: "facebook",
     enabledEnv: "FB_RESOLVER_ENABLED",
     baseUrlEnv: "FB_RESOLVER_BASE_URL",
     tokenEnv: "FB_RESOLVER_TOKEN",
     defaultBaseUrl: "http://localhost:3402",
     workingDir: path.join(rootDir, "infra", "external-services", "facebook-resolver"),
-    runScriptPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", "scripts", "run.sh")
+    runScriptPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", "scripts", "run.sh"),
+    stopScriptPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", "scripts", "stop.sh")
   }
 ];
 
@@ -278,14 +276,6 @@ const stripWrappingQuotes = (value) => {
   return trimmed;
 };
 
-const parseBaseUrlSafe = (input) => {
-  try {
-    return new URL(input);
-  } catch {
-    return null;
-  }
-};
-
 const isLoopbackHost = (rawHost) => {
   const normalized = (rawHost ?? "").trim().toLowerCase();
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "0.0.0.0" || normalized === "::1";
@@ -337,15 +327,12 @@ const resolveAuxiliaryTargets = (env) =>
   auxiliaryResolverDefinitions.map((definition) => {
     const enabled = parseToggleEnv(env[definition.enabledEnv], false);
     const baseUrl = stripWrappingQuotes((env[definition.baseUrlEnv] || definition.defaultBaseUrl || "").trim());
-    const parsedBaseUrl = parseBaseUrlSafe(baseUrl);
     const token = stripWrappingQuotes((env[definition.tokenEnv] || "").trim()) || undefined;
     return {
       ...definition,
       enabled,
       baseUrl,
-      token,
-      parsedBaseUrl,
-      localBaseUrl: Boolean(parsedBaseUrl && isLoopbackHost(parsedBaseUrl.hostname))
+      token
     };
   });
 
@@ -356,9 +343,32 @@ const forceColor = parseColorEnv(process.env.FORCE_COLOR);
 const colorizedPrefixes =
   (noColorRaw === undefined || noColor === false) && (logColorize ?? forceColor ?? process.stdout.isTTY);
 
+const normalizeDiagnostic = (value) => String(value || "").replace(/\s+/g, " ").trim();
+
+const classifyDiagnosticCategory = (value) => {
+  const text = normalizeDiagnostic(value).toLowerCase();
+  if (!text) return "unknown";
+  if (text.includes("eaddrinuse") || text.includes("address already in use")) return "port_conflict";
+  if (
+    text.includes("does not provide an export named") ||
+    text.includes("err_package_path_not_exported") ||
+    text.includes("cannot find module") ||
+    text.includes("err_module_not_found") ||
+    text.includes("named export")
+  ) {
+    return "package_export_error";
+  }
+  if (text.includes("[resolver]") || text.includes("health_fail_after_delegate") || text.includes("run_delegate_failed")) {
+    return "external_resolver";
+  }
+  return "startup_validation_issue";
+};
+
 const log = (msg) => console.log(`[start:${requestedMode}] ${msg}`);
 const warn = (msg) => console.warn(`[start:${requestedMode}] ${msg}`);
 const fail = (msg) => {
+  const category = classifyDiagnosticCategory(msg);
+  console.error(`[start:${requestedMode}] [startup-diagnostics] category=${category} message="${normalizeDiagnostic(msg)}"`);
   console.error(`[start:${requestedMode}] ${msg}`);
   process.exit(1);
 };
@@ -1208,17 +1218,41 @@ const buildRuntimeEnv = () => {
 const isStateAlive = (state) =>
   Boolean(state) && (pidAlive(state.supervisorPid) || (state.services || []).some((svc) => svc.pid && pidAlive(svc.pid)));
 
-const prefixWriter = (name, stream, isErr) => {
+const prefixWriter = (name, stream, isErr, onLine) => {
   const rawPrefix = `[${name.padEnd(prefixedServiceWidth)}]`;
   const prefix = colorizedPrefixes ? `${servicePrefixColor(name)}${rawPrefix}${ANSI.reset}` : rawPrefix;
   const rl = createInterface({ input: stream });
   rl.on("line", (line) => {
     const output = `${prefix} ${line}`;
     isErr ? console.error(output) : console.log(output);
+    if (typeof onLine === "function") onLine(line, isErr);
   });
 };
 
-const shellEscape = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+const pushLine = (buffer, line, limit = 80) => {
+  buffer.push(String(line));
+  while (buffer.length > limit) buffer.shift();
+};
+
+const extractDiagnosticLine = (lines) => {
+  const all = Array.isArray(lines) ? lines : [];
+  const patterns = [
+    /EADDRINUSE/i,
+    /address already in use/i,
+    /does not provide an export named/i,
+    /ERR_PACKAGE_PATH_NOT_EXPORTED/i,
+    /ERR_MODULE_NOT_FOUND/i,
+    /Cannot find module/i
+  ];
+
+  for (const pattern of patterns) {
+    const matched = all.find((line) => pattern.test(line));
+    if (matched) return normalizeDiagnostic(matched).slice(0, 240);
+  }
+
+  const fallback = all[all.length - 1] || "no_output";
+  return normalizeDiagnostic(fallback).slice(0, 240);
+};
 
 const requestResolverHealth = async (input) => {
   const endpoint = `${input.baseUrl.replace(/\/+$/, "")}/health`;
@@ -1265,43 +1299,6 @@ const requestResolverHealth = async (input) => {
   }
 };
 
-const runResolverHealthChecks = async (targets, phase, options = {}) => {
-  if (skipResolverHealthcheck) {
-    resolverLog(`${phase}-skip`, { reason: "flag_disabled" });
-    return;
-  }
-
-  const onlyEnabled = options.onlyEnabled !== false;
-  const candidates = targets.filter((item) => (onlyEnabled ? item.enabled : true));
-  if (!candidates.length) {
-    resolverLog(`${phase}-skip`, { reason: "no_candidates" });
-    return;
-  }
-
-  for (const target of candidates) {
-    const startedAt = Date.now();
-    const result = await requestResolverHealth({
-      baseUrl: target.baseUrl,
-      token: target.token,
-      timeoutMs: 6000
-    });
-    resolverLog(`${phase}-check`, {
-      provider: target.provider,
-      service: target.serviceName,
-      enabled: target.enabled ? "yes" : "no",
-      status: result.ok ? "ok" : "fail",
-      endpoint: result.endpoint,
-      reason: result.reason,
-      latencyMs: Date.now() - startedAt
-    });
-    if (!result.ok) {
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} health=fail endpoint=${result.endpoint} reason=${result.reason} (non-fatal)`
-      );
-    }
-  }
-};
-
 const waitForResolverHealthy = async (target, timeoutMs = 20_000) => {
   if (skipResolverHealthcheck) {
     return {
@@ -1327,113 +1324,46 @@ const waitForResolverHealthy = async (target, timeoutMs = 20_000) => {
   return latestResult;
 };
 
-const isTmuxAvailable = () => runCommand("tmux", ["-V"], { stdio: "ignore" }).status === 0;
+const spawnResolverRunDelegate = (target, env) =>
+  new Promise((resolve) => {
+    try {
+      const child = spawn("bash", ["scripts/run.sh"], {
+        cwd: target.workingDir,
+        env,
+        stdio: "ignore",
+        detached: true
+      });
 
-const runTmux = (args) => runCommand("tmux", args);
-
-const tmuxSessionExists = (sessionName) => runTmux(["has-session", "-t", sessionName]).status === 0;
-
-const listTmuxWindows = (sessionName) => {
-  const result = runTmux(["list-windows", "-t", sessionName, "-F", "#{window_name}"]);
-  if (result.status !== 0) return [];
-  return result.stdout
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-};
-
-const ensureTmuxSession = (sessionName) => {
-  if (!tmuxSessionExists(sessionName)) {
-    const createResult = runTmux(["new-session", "-d", "-s", sessionName, "-n", "core"]);
-    if (createResult.status !== 0) {
-      return {
-        ok: false,
-        error: createResult.stderr || createResult.stdout || "tmux_session_create_failed"
+      let settled = false;
+      const done = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
       };
-    }
-    resolverLog("tmux-session", {
-      session: sessionName,
-      status: "created"
-    });
-  } else {
-    resolverLog("tmux-session", {
-      session: sessionName,
-      status: "reused"
-    });
-  }
 
-  const windows = listTmuxWindows(sessionName);
-  if (!windows.includes("core")) {
-    const coreResult = runTmux(["new-window", "-d", "-t", sessionName, "-n", "core"]);
-    if (coreResult.status !== 0) {
-      return {
+      child.once("error", (error) => {
+        done({
+          ok: false,
+          error: error instanceof Error ? error.message : "run_delegate_error"
+        });
+      });
+
+      child.once("spawn", () => {
+        child.unref();
+        setTimeout(() => {
+          done({
+            ok: true,
+            pid: child.pid ?? null
+          });
+        }, 40);
+      });
+    } catch (error) {
+      resolve({
         ok: false,
-        error: coreResult.stderr || coreResult.stdout || "tmux_core_window_create_failed"
-      };
+        error: error instanceof Error ? error.message : "run_delegate_error"
+      });
     }
-    resolverLog("tmux-window", {
-      session: sessionName,
-      window: "core",
-      status: "created"
-    });
-  } else {
-    resolverLog("tmux-window", {
-      session: sessionName,
-      window: "core",
-      status: "reused"
-    });
-  }
-
-  return { ok: true };
-};
-
-const ensureTmuxWindow = (sessionName, windowName) => {
-  if (!tmuxSessionExists(sessionName)) {
-    return {
-      ok: false,
-      existed: false,
-      error: "tmux_session_missing"
-    };
-  }
-
-  const before = listTmuxWindows(sessionName);
-  if (before.includes(windowName)) {
-    resolverLog("tmux-window", {
-      session: sessionName,
-      window: windowName,
-      status: "reused"
-    });
-    return { ok: true, existed: true };
-  }
-
-  const created = runTmux(["new-window", "-d", "-t", sessionName, "-n", windowName]);
-  if (created.status !== 0) {
-    return {
-      ok: false,
-      existed: false,
-      error: created.stderr || created.stdout || "tmux_window_create_failed"
-    };
-  }
-
-  const after = listTmuxWindows(sessionName);
-  if (!after.includes(windowName)) {
-    return {
-      ok: false,
-      existed: false,
-      error: "tmux_window_not_listed_after_create"
-    };
-  }
-
-  resolverLog("tmux-window", {
-    session: sessionName,
-    window: windowName,
-    status: "created"
   });
-  return {
-    ok: true,
-    existed: false
-  };
-};
 
 const shouldStartAuxiliaryResolver = (target) => {
   if (target.key === "yt" && withYoutubeResolver) return { selected: true };
@@ -1478,9 +1408,8 @@ const startAuxiliaryResolvers = async (env) => {
   }
 
   const state = {
-    manager: "tmux",
-    session: tmuxSessionName,
-    windows: []
+    manager: "module_delegate",
+    modules: []
   };
 
   resolverLog("selection", {
@@ -1493,83 +1422,46 @@ const startAuxiliaryResolvers = async (env) => {
       service: item.target.serviceName,
       reason: item.reason
     });
-    if (item.reason === "disabled_by_env") {
-      state.windows.push({
-        key: item.target.key,
-        provider: item.target.provider,
-        serviceName: item.target.serviceName,
-        windowName: item.target.windowName,
-        ownership: "not_started",
-        status: "skipped",
-        reason: "disabled_by_env",
-        baseUrl: item.target.baseUrl
-      });
-    }
+    state.modules.push({
+      key: item.target.key,
+      provider: item.target.provider,
+      serviceName: item.target.serviceName,
+      moduleDir: item.target.workingDir,
+      runScriptPath: item.target.runScriptPath,
+      stopScriptPath: item.target.stopScriptPath,
+      ownership: "not_started",
+      status: "skipped",
+      reason: item.reason,
+      baseUrl: item.target.baseUrl
+    });
   }
 
   if (!selected.length) {
-    resolverLog("autostart-skip", { reason: "no_selected_services" });
+    resolverLog("delegation-skip", { reason: "no_selected_services" });
     return { targets, state };
   }
 
-  resolverLog("autostart-start", {
-    manager: "tmux",
-    session: tmuxSessionName,
+  resolverLog("delegation-start", {
+    manager: "module_delegate",
     selected: selected.map((target) => target.serviceName).join(","),
     requestedByFlags: [withExternalServices ? "all" : null, withYoutubeResolver ? "yt" : null, withFacebookResolver ? "fb" : null]
       .filter(Boolean)
       .join(",")
   });
 
-  if (!isTmuxAvailable()) {
-    warn("tmux is not available. Auxiliary resolver autostart skipped.");
-    for (const target of selected) {
-      resolverLog("selection-skip", {
-        service: target.serviceName,
-        reason: "tmux_unavailable"
-      });
-      state.windows.push({
-        key: target.key,
-        provider: target.provider,
-        serviceName: target.serviceName,
-        windowName: target.windowName,
-        ownership: "not_started",
-        status: "failed",
-        reason: "tmux_unavailable",
-        baseUrl: target.baseUrl
-      });
-    }
-    return { targets, state };
-  }
-
-  const ensuredSession = ensureTmuxSession(tmuxSessionName);
-  if (!ensuredSession.ok) {
-    warn(`tmux session setup failed for session=${tmuxSessionName}: ${ensuredSession.error}`);
-    for (const target of selected) {
-      state.windows.push({
-        key: target.key,
-        provider: target.provider,
-        serviceName: target.serviceName,
-        windowName: target.windowName,
-        ownership: "not_started",
-        status: "failed",
-        reason: `tmux_session_error:${ensuredSession.error}`,
-        baseUrl: target.baseUrl
-      });
-    }
-    return { targets, state };
-  }
-
   for (const target of selected) {
     const record = {
       key: target.key,
       provider: target.provider,
       serviceName: target.serviceName,
-      windowName: target.windowName,
+      moduleDir: target.workingDir,
+      runScriptPath: target.runScriptPath,
+      stopScriptPath: target.stopScriptPath,
       ownership: "not_started",
       status: "skipped",
       reason: null,
-      baseUrl: target.baseUrl
+      baseUrl: target.baseUrl,
+      delegatedPid: null
     };
 
     if (!fs.existsSync(target.workingDir)) {
@@ -1580,7 +1472,7 @@ const startAuxiliaryResolvers = async (env) => {
         service: target.serviceName,
         reason: "missing_module_dir"
       });
-      state.windows.push(record);
+      state.modules.push(record);
       continue;
     }
 
@@ -1592,150 +1484,104 @@ const startAuxiliaryResolvers = async (env) => {
         service: target.serviceName,
         reason: "missing_run_script"
       });
-      state.windows.push(record);
+      state.modules.push(record);
       continue;
     }
 
-    if (!target.localBaseUrl) {
-      record.status = "failed";
-      record.reason = "non_local_base_url";
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} baseUrl=${target.baseUrl} is not local. tmux autostart skipped.`
-      );
-      state.windows.push(record);
-      continue;
-    }
-
-    const knownWindows = new Set(listTmuxWindows(tmuxSessionName));
-    if (skipResolverHealthcheck && knownWindows.has(target.windowName)) {
-      resolverLog("health-check", {
+    let preHealth;
+    if (skipResolverHealthcheck) {
+      preHealth = {
+        ok: false,
+        endpoint: `${target.baseUrl.replace(/\/+$/, "")}/health`,
+        reason: "flag_disabled"
+      };
+      resolverLog("health-before", {
         provider: target.provider,
         service: target.serviceName,
         status: "skip",
-        reason: "flag_disabled_window_exists"
+        endpoint: preHealth.endpoint,
+        reason: "flag_disabled"
       });
-      resolverLog("tmux-resolver", {
+    } else {
+      preHealth = await requestResolverHealth({
+        baseUrl: target.baseUrl,
+        token: target.token,
+        timeoutMs: 2500
+      });
+      resolverLog("health-before", {
         provider: target.provider,
         service: target.serviceName,
-        window: target.windowName,
-        status: "already_running",
-        reason: "window_exists_healthcheck_skipped"
+        status: preHealth.ok ? "ok" : "fail",
+        endpoint: preHealth.endpoint,
+        reason: preHealth.reason
       });
-      record.status = "already_running";
-      record.ownership = "preexisting";
-      record.reason = "window_exists_healthcheck_skipped";
-      state.windows.push(record);
-      continue;
     }
-
-    const preHealth = await requestResolverHealth({
-      baseUrl: target.baseUrl,
-      token: target.token,
-      timeoutMs: 2200
-    });
 
     if (preHealth.ok) {
-      resolverLog("health-check", {
+      resolverLog("run-skip", {
         provider: target.provider,
         service: target.serviceName,
-        status: "pass",
-        endpoint: preHealth.endpoint,
-        reason: "already_healthy"
-      });
-      resolverLog("tmux-resolver", {
-        provider: target.provider,
-        service: target.serviceName,
-        window: target.windowName,
-        status: "already_running",
-        endpoint: preHealth.endpoint
+        reason: "health_ok_already_running"
       });
       record.status = "already_running";
       record.ownership = "preexisting";
-      record.reason = "health_already_ok";
-      state.windows.push(record);
+      record.reason = "health_ok_already_running";
+      state.modules.push(record);
       continue;
     }
 
-    const ensuredWindow = ensureTmuxWindow(tmuxSessionName, target.windowName);
-    if (!ensuredWindow.ok) {
-      record.status = "failed";
-      record.reason = `window_error:${ensuredWindow.error}`;
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} tmux window setup failed (${ensuredWindow.error})`
-      );
-      state.windows.push(record);
-      continue;
-    }
-
-    const targetWindow = `${tmuxSessionName}:${target.windowName}`;
-
-    runTmux(["send-keys", "-t", targetWindow, "C-c"]);
-
-    const command = `cd ${shellEscape(target.workingDir)} && bash scripts/run.sh`;
     resolverLog("run-delegate", {
       provider: target.provider,
       service: target.serviceName,
       cwd: target.workingDir,
       action: "run-delegate",
-      window: target.windowName,
       entrypoint: "scripts/run.sh"
     });
 
-    let sent = runTmux(["send-keys", "-t", targetWindow, command, "C-m"]);
-    if (sent.status !== 0 && `${sent.stderr || ""} ${sent.stdout || ""}`.toLowerCase().includes("can't find window")) {
-      const retryWindow = ensureTmuxWindow(tmuxSessionName, target.windowName);
-      if (retryWindow.ok) {
-        sent = runTmux(["send-keys", "-t", targetWindow, command, "C-m"]);
-      }
-    }
-
-    if (sent.status !== 0) {
+    const delegated = await spawnResolverRunDelegate(target, env);
+    if (!delegated.ok) {
       record.status = "failed";
-      record.reason = sent.stderr || sent.stdout || "tmux_send_failed";
+      record.reason = `run_delegate_failed:${delegated.error || "unknown"}`;
       warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} tmux start command failed (${record.reason})`
+        `[resolver] provider=${target.provider} service=${target.serviceName} run delegation failed (${record.reason})`
       );
-      state.windows.push(record);
+      state.modules.push(record);
       continue;
     }
+
+    record.ownership = "runtime_delegated";
+    record.delegatedPid = delegated.pid ?? null;
 
     const health = await waitForResolverHealthy(target);
-    if (!health?.ok) {
-      record.status = "failed";
-      record.ownership = "runtime_started";
-      record.reason = `health_failed:${health?.reason ?? "unknown"}`;
-      resolverLog("health-check", {
-        provider: target.provider,
-        service: target.serviceName,
-        status: "fail",
-        reason: health?.reason ?? "unknown"
-      });
-      warn(
-        `[start:${requestedMode}][resolver] provider=${target.provider} service=${target.serviceName} failed to become healthy at ${target.baseUrl} (reason=${health?.reason ?? "unknown"})`
-      );
-      state.windows.push(record);
+    const healthStatus = health?.reason === "flag_disabled" ? "skip" : health?.ok ? "ok" : "fail";
+    resolverLog("health-after", {
+      provider: target.provider,
+      service: target.serviceName,
+      status: healthStatus,
+      endpoint: health?.endpoint ?? `${target.baseUrl.replace(/\/+$/, "")}/health`,
+      reason: health?.reason ?? "unknown"
+    });
+
+    if (health?.reason === "flag_disabled") {
+      record.status = "delegated";
+      record.reason = "healthcheck_skipped_after_delegate";
+      state.modules.push(record);
       continue;
     }
 
-    resolverLog("health-check", {
-      provider: target.provider,
-      service: target.serviceName,
-      status: "pass",
-      endpoint: health.endpoint,
-      reason: "post_delegate_healthy"
-    });
-    resolverLog("tmux-resolver", {
-      provider: target.provider,
-      service: target.serviceName,
-      window: target.windowName,
-      status: "started",
-      endpoint: health.endpoint
-    });
+    if (!health?.ok) {
+      record.status = "failed";
+      record.reason = `health_fail_after_delegate:${health?.reason ?? "unknown"}`;
+      warn(
+        `[resolver] provider=${target.provider} service=${target.serviceName} post-run health failed at ${target.baseUrl} (reason=${health?.reason ?? "unknown"}). module_owns_runtime=true`
+      );
+      state.modules.push(record);
+      continue;
+    }
 
     record.status = "started";
-    record.ownership = "runtime_started";
-    record.reason = "health_ok";
-    state.windows.push(record);
+    record.reason = "health_ok_after_delegate";
+    state.modules.push(record);
   }
 
   return { targets, state };
@@ -1803,6 +1649,9 @@ const assertNoRunningStack = () => {
 
 const startServices = (env, runtimeStateInfra) => {
   services.forEach((svc) => {
+    const stdoutLines = [];
+    const stderrLines = [];
+
     const child = spawn("npm", ["run", serviceScript, "-w", svc.workspace], {
       cwd: rootDir,
       env,
@@ -1818,11 +1667,15 @@ const startServices = (env, runtimeStateInfra) => {
       kind: "workspace",
       critical: true
     });
-    prefixWriter(svc.name, child.stdout, false);
-    prefixWriter(svc.name, child.stderr, true);
+    prefixWriter(svc.name, child.stdout, false, (line) => pushLine(stdoutLines, line));
+    prefixWriter(svc.name, child.stderr, true, (line) => pushLine(stderrLines, line));
 
     child.on("exit", (code, signal) => {
       if (shuttingDown) return;
+      const combined = stderrLines.concat(stdoutLines).join("\n");
+      const category = classifyDiagnosticCategory(combined);
+      const hint = extractDiagnosticLine(stderrLines.concat(stdoutLines));
+      log(`[app-diagnostics] service=${svc.name} category=${category} hint="${hint}"`);
       warn(`${svc.name} exited (${signal ?? code}). Stopping remaining services.`);
       cleanup(`${svc.name} exited`, typeof code === "number" && code !== 0 ? code : 1);
     });
@@ -1879,7 +1732,6 @@ const main = async () => {
   }
 
   const resolverRuntime = await startAuxiliaryResolvers(runtimeEnv);
-  await runResolverHealthChecks(resolverRuntime.targets, "pre-app-start", { onlyEnabled: true });
 
   if (scriptSmokeMode) {
     writeState({
@@ -1907,7 +1759,6 @@ const main = async () => {
     resolvers: resolverRuntime.state
   });
 
-  void runResolverHealthChecks(resolverRuntime.targets, "post-app-start", { onlyEnabled: true });
 };
 
 process.on("SIGINT", () => cleanup("SIGINT"));

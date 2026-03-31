@@ -28,7 +28,7 @@ Options:
 Ownership behavior when --infra is used:
   - external_host/external_container dependencies are never stopped
   - compose_managed dependencies stop only when this runtime started them
-  - tmux resolver windows stop only when ownership=runtime_started`);
+  - resolver module stop is delegated only when module provides scripts/stop.sh`);
 };
 
 const args = process.argv.slice(3);
@@ -238,103 +238,109 @@ const stopOwnedManagedDependencies = (state, effectiveInfraMode) => {
   }
 };
 
-const runTmux = (tmuxArgs) => runCommand("tmux", tmuxArgs);
-
-const isTmuxAvailable = () => runTmux(["-V"]).status === 0;
-
-const tmuxSessionExists = (sessionName) => runTmux(["has-session", "-t", sessionName]).status === 0;
-
-const listTmuxWindows = (sessionName) => {
-  const result = runTmux(["list-windows", "-t", sessionName, "-F", "#{window_name}"]);
-  if (result.status !== 0) return [];
-  return result.stdout
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+const inferModuleDirFromServiceName = (serviceName) => {
+  if (!serviceName) return null;
+  return path.join(rootDir, "infra", "external-services", serviceName);
 };
 
-const stopOwnedResolverWindows = (state) => {
+const resolveResolverModules = (state) => {
   const resolverState = state?.infra?.resolvers;
-  if (!resolverState || resolverState.manager !== "tmux") {
+  if (!resolverState) return [];
+
+  if (Array.isArray(resolverState.modules)) {
+    return resolverState.modules;
+  }
+
+  if (Array.isArray(resolverState.windows)) {
+    return resolverState.windows.map((item) => ({
+      ...item,
+      moduleDir: item.moduleDir || inferModuleDirFromServiceName(item.serviceName),
+      stopScriptPath:
+        item.stopScriptPath || (item.moduleDir ? path.join(item.moduleDir, "scripts", "stop.sh") : undefined),
+      ownership: item.ownership === "runtime_started" ? "runtime_delegated" : item.ownership
+    }));
+  }
+
+  return [];
+};
+
+const stopDelegatedResolverModules = (state) => {
+  const resolverModules = resolveResolverModules(state);
+  if (!resolverModules.length) {
     resolverLog("ownership-input", {
       status: "skip",
-      reason: "no_tmux_resolver_state"
+      reason: "no_resolver_state"
     });
     return;
   }
-
-  const sessionName = resolverState.session || "zappy";
-  const windows = Array.isArray(resolverState.windows) ? resolverState.windows : [];
-  const ownedWindows = windows.filter((item) => item.ownership === "runtime_started" && item.windowName);
 
   resolverLog("ownership-input", {
-    session: sessionName,
-    trackedWindows: windows.length,
-    ownedWindows: ownedWindows.length
+    manager: state?.infra?.resolvers?.manager || "unknown",
+    trackedModules: resolverModules.length
   });
 
-  for (const item of windows) {
-    resolverLog("ownership-check", {
-      service: item.serviceName,
-      window: item.windowName,
-      ownership: item.ownership,
-      action: item.ownership === "runtime_started" ? "stop_candidate" : "skip"
-    });
-  }
+  for (const moduleState of resolverModules) {
+    const serviceName = moduleState.serviceName || "unknown";
+    const ownership = moduleState.ownership || "unknown";
+    const moduleDir = moduleState.moduleDir || inferModuleDirFromServiceName(serviceName);
+    const stopScriptPath = moduleState.stopScriptPath || (moduleDir ? path.join(moduleDir, "scripts", "stop.sh") : null);
 
-  if (!ownedWindows.length) {
-    resolverLog("tmux-stop", {
-      status: "skip",
-      reason: "no_owned_windows"
-    });
-    return;
-  }
-
-  if (!isTmuxAvailable()) {
-    warn("tmux not available; cannot stop owned resolver windows.");
-    return;
-  }
-
-  if (!tmuxSessionExists(sessionName)) {
-    resolverLog("tmux-stop", {
-      status: "skip",
-      reason: "session_missing",
-      session: sessionName
-    });
-    return;
-  }
-
-  const existingWindows = new Set(listTmuxWindows(sessionName));
-
-  for (const item of ownedWindows) {
-    if (!existingWindows.has(item.windowName)) {
-      resolverLog("tmux-stop-window", {
-        session: sessionName,
-        window: item.windowName,
-        status: "skip",
-        reason: "window_missing"
+    if (ownership !== "runtime_delegated") {
+      resolverLog("ownership-check", {
+        service: serviceName,
+        ownership,
+        action: "skip",
+        reason: "not_runtime_delegated"
       });
       continue;
     }
 
-    const target = `${sessionName}:${item.windowName}`;
-    runTmux(["send-keys", "-t", target, "C-c"]);
-    resolverLog("tmux-stop-window", {
-      session: sessionName,
-      window: item.windowName,
-      status: "terminate_signal_sent"
+    if (!moduleDir || !fs.existsSync(moduleDir)) {
+      resolverLog("module-stop", {
+        service: serviceName,
+        action: "skip",
+        reason: "missing_module_dir",
+        manual: "required"
+      });
+      continue;
+    }
+
+    if (!stopScriptPath || !fs.existsSync(stopScriptPath)) {
+      resolverLog("module-stop", {
+        service: serviceName,
+        action: "skip",
+        reason: "missing_stop_script",
+        cwd: moduleDir,
+        manual: "required"
+      });
+      continue;
+    }
+
+    resolverLog("module-stop", {
+      service: serviceName,
+      action: "delegate",
+      cwd: moduleDir,
+      entrypoint: "scripts/stop.sh"
     });
 
-    const result = runTmux(["kill-window", "-t", target]);
+    const result = runCommand("bash", ["scripts/stop.sh"], {
+      cwd: moduleDir,
+      stdio: "inherit"
+    });
+
     if (result.status !== 0) {
-      warn(
-        `[stop:${requestedMode}][resolver-stop] failed to close window ${target}: ${result.stderr || result.stdout || "unknown_error"}`
-      );
+      resolverLog("module-stop", {
+        service: serviceName,
+        action: "failed",
+        cwd: moduleDir,
+        exitCode: result.status
+      });
+      warn(`[resolver-stop] delegated stop failed for ${serviceName}; check module logs.`);
     } else {
-      resolverLog("tmux-stop-window", {
-        session: sessionName,
-        window: item.windowName,
-        status: "closed"
+      resolverLog("module-stop", {
+        service: serviceName,
+        action: "ok",
+        cwd: moduleDir
       });
     }
   }
@@ -369,7 +375,7 @@ const main = async () => {
       mode: effectiveInfraMode
     });
     stopOwnedManagedDependencies(state, effectiveInfraMode);
-    stopOwnedResolverWindows(state);
+    stopDelegatedResolverModules(state);
   } else {
     log("Infra resources left untouched (use --infra to stop runtime-owned managed deps/resolvers).");
   }

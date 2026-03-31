@@ -61,6 +61,8 @@ Regras:
 - payload cru de serviço externo não sobe para `wa-gateway`
 - falhas desses auxiliares não devem derrubar runtimes não relacionados
 - orquestração raiz (`scripts/bootstrap.mjs`, `scripts/start.mjs`, `scripts/stop.mjs`) apenas delega entrypoints de módulo com `cwd` do resolver
+- `start` adota fluxo health-first (`already_running` quando `/health` está OK; delegação para `scripts/run.sh` apenas quando necessário)
+- `stop` delega para `scripts/stop.sh` somente quando o módulo disponibiliza esse entrypoint; caso contrário, a ação é manual e explicitamente logada
 - setup/runtime Python pertence ao módulo externo (`scripts/bootstrap.sh`, `scripts/run.sh`), não ao root
 
 ### `apps/admin-ui`

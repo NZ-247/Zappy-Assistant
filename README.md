@@ -64,6 +64,17 @@ Dependency discovery before any compose-up includes:
 - PostgreSQL real connection check (`SELECT 1`)
 - ownership/source classification: `external_host`, `external_container`, `compose_managed`, `unavailable`
 
+### Runtime Ports (Defaults)
+
+- PostgreSQL: `5432`
+- Redis: `6379`
+- `assistant-api`: `3333` (`ADMIN_API_PORT`)
+- `wa-gateway` internal endpoint: `3334` (`WA_GATEWAY_INTERNAL_PORT`)
+- `media-resolver-api`: `3335` (`MEDIA_RESOLVER_API_PORT`)
+- `admin-ui`: `8080` (`ADMIN_UI_PORT`)
+- `youtube-resolver`: `3401` (`YT_RESOLVER_BASE_URL`)
+- `facebook-resolver`: `3402` (`FB_RESOLVER_BASE_URL`)
+
 ### Start
 
 Preferred local command:
@@ -98,7 +109,7 @@ npm run start:prod -- --infra=auto
 
 Expected behavior: dependency source becomes `external_host` and compose autostart for Redis is skipped (no port conflict).
 
-Resolver startup via supervisor:
+Resolver startup via delegation:
 
 ```bash
 npm run start:dev -- --infra=auto --with-external-services
@@ -109,12 +120,10 @@ npm run start:dev -- --with-fb-resolver
 
 Resolver runtime behavior:
 
-- uses tmux session `zappy`
-- standardized windows: `core`, `youtube`, `facebook`
-- verifies resolver module directory + `scripts/run.sh` before start
-- delegates runtime using module entrypoint (`cd <module-dir> && bash scripts/run.sh`)
-- avoids duplicate starts when resolver is already healthy
-- validates `/health` after launch and logs status
+- root start validates selection + resolver health and then delegates to module runtime script (`cd <module-dir> && bash scripts/run.sh`) only when needed
+- if resolver health is already OK, startup logs `health_ok_already_running` and skips duplicate startup
+- root start does not create `.venv`, install dependencies, or activate Python inline
+- resolver internals (tmux/screen/backgrounding/uvicorn/etc.) are module-owned and must stay inside each module `scripts/run.sh`
 
 ### Stop
 
@@ -150,8 +159,8 @@ Ownership-aware stop rules with `--infra`:
 
 - `external_host` and `external_container` dependencies are never stopped.
 - only `compose_managed` dependencies started by current runtime are candidates for stop.
-- only tmux resolver windows with `ownership=runtime_started` are closed.
-- unrelated tmux sessions/windows are untouched.
+- resolver stop is delegated only when state marks module as `runtime_delegated` and module provides `scripts/stop.sh`.
+- if `scripts/stop.sh` is missing, stop logs `missing_stop_script` and reports manual/non-delegated module stop.
 
 ### Restart
 
@@ -193,20 +202,32 @@ Manual steps that remain:
 - Start wrappers manually:
   - `./infra/external-services/youtube-resolver/scripts/run.sh`
   - `./infra/external-services/facebook-resolver/scripts/run.sh`
-- Start via supervisor:
+- Start via root delegation:
   - all enabled bridges: `npm run start:dev -- --infra=auto --with-external-services`
   - only YouTube wrapper: `npm run start:dev -- --with-yt-resolver`
   - only Facebook wrapper: `npm run start:dev -- --with-fb-resolver`
 - Start-time duplicate guard:
-  - if resolver is already healthy, startup logs `already_running` and does not spawn duplicate process/window.
+  - if resolver is already healthy, startup logs `health_ok_already_running` and does not spawn duplicate startup.
 - Root start does not activate `.venv` or run `uvicorn` inline; it delegates to module `scripts/run.sh` using resolver-local `cwd`.
 - Stop-time ownership guard:
-  - `npm run stop:dev -- --infra` closes only `zappy` resolver windows created by current runtime.
+  - `npm run stop:dev -- --infra` delegates to `scripts/stop.sh` only when module provides it.
+  - without module `scripts/stop.sh`, stop reports manual action required.
 - Health endpoints:
   - YouTube: `GET http://localhost:3401/health`
   - Facebook: `GET http://localhost:3402/health`
 - Required host dependency for Facebook resolver flows: `ffmpeg`.
 - Full runbook: `docs/external-resolver-services.md`.
+
+### Runtime Troubleshooting
+
+- `disabled_by_env`:
+  - resolver was requested by `--with-external-services` but `YT_RESOLVER_ENABLED`/`FB_RESOLVER_ENABLED` is `false`.
+- `EADDRINUSE`:
+  - app port conflict. Free the conflicting port or change the service port env (`ADMIN_API_PORT`, `ADMIN_UI_PORT`, `WA_GATEWAY_INTERNAL_PORT`, `MEDIA_RESOLVER_API_PORT`, resolver base URL ports `3401/3402`).
+- missing exports / package errors:
+  - startup logs `category=package_export_error`; check recent package changes and run `npm install` + `npm run build`/`npm run prisma:generate` as needed.
+- resolver health fails after delegation:
+  - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
 Version note: current release line is `v1.7.0`.
 
