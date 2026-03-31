@@ -41,7 +41,7 @@ npm run bootstrap:dev -- --infra
 npm run bootstrap:prod -- --infra
 ```
 
-`bootstrap` handles one-time setup (host checks + Python resolver `.venv` preparation). It is not part of recurring `start`.
+`bootstrap` is a thin orchestrator: it only selects resolver modules and delegates to each module `scripts/bootstrap.sh` with module-local `cwd`. It is not part of recurring `start`.
 
 ### Infra Strategy Modes
 
@@ -111,7 +111,8 @@ Resolver runtime behavior:
 
 - uses tmux session `zappy`
 - standardized windows: `core`, `youtube`, `facebook`
-- verifies resolver directory + `.venv` before start
+- verifies resolver module directory + `scripts/run.sh` before start
+- delegates runtime using module entrypoint (`cd <module-dir> && bash scripts/run.sh`)
 - avoids duplicate starts when resolver is already healthy
 - validates `/health` after launch and logs status
 
@@ -188,6 +189,7 @@ Manual steps that remain:
 - Bootstrap Python envs (one-time host setup):
   - `npm run bootstrap:dev -- --infra`
   - `npm run bootstrap:prod -- --infra`
+- Root bootstrap does not run `pip`/`venv` directly; each resolver owns its bootstrap internals in `scripts/bootstrap.sh`.
 - Start wrappers manually:
   - `./infra/external-services/youtube-resolver/scripts/run.sh`
   - `./infra/external-services/facebook-resolver/scripts/run.sh`
@@ -197,6 +199,7 @@ Manual steps that remain:
   - only Facebook wrapper: `npm run start:dev -- --with-fb-resolver`
 - Start-time duplicate guard:
   - if resolver is already healthy, startup logs `already_running` and does not spawn duplicate process/window.
+- Root start does not activate `.venv` or run `uvicorn` inline; it delegates to module `scripts/run.sh` using resolver-local `cwd`.
 - Stop-time ownership guard:
   - `npm run stop:dev -- --infra` closes only `zappy` resolver windows created by current runtime.
 - Health endpoints:

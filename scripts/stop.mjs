@@ -71,7 +71,9 @@ if (unknownFlags.length > 0) {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = path.resolve(__dirname, "..");
+const rootDir = process.env.ZAPPY_PROJECT_ROOT
+  ? path.resolve(process.env.ZAPPY_PROJECT_ROOT)
+  : path.resolve(__dirname, "..");
 const stateFile = path.join(rootDir, ".zappy-dev", `${requestedMode}-stack.json`);
 const composeFile = path.join(rootDir, "infra", "docker-compose.yml");
 
@@ -316,6 +318,13 @@ const stopOwnedResolverWindows = (state) => {
     }
 
     const target = `${sessionName}:${item.windowName}`;
+    runTmux(["send-keys", "-t", target, "C-c"]);
+    resolverLog("tmux-stop-window", {
+      session: sessionName,
+      window: item.windowName,
+      status: "terminate_signal_sent"
+    });
+
     const result = runTmux(["kill-window", "-t", target]);
     if (result.status !== 0) {
       warn(

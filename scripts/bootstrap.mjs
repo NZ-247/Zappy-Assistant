@@ -54,7 +54,9 @@ const withYoutubeResolver = args.includes("--with-yt-resolver");
 const withFacebookResolver = args.includes("--with-fb-resolver");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = path.resolve(__dirname, "..");
+const rootDir = process.env.ZAPPY_PROJECT_ROOT
+  ? path.resolve(process.env.ZAPPY_PROJECT_ROOT)
+  : path.resolve(__dirname, "..");
 const stateDir = path.join(rootDir, ".zappy-dev");
 
 dotenv.config({ path: path.join(rootDir, ".env") });
@@ -64,20 +66,19 @@ const resolverDefinitions = [
     key: "yt",
     serviceName: "youtube-resolver",
     enabledEnv: "YT_RESOLVER_ENABLED",
-    workingDir: path.join(rootDir, "infra", "external-services", "youtube-resolver"),
+    moduleDir: path.join(rootDir, "infra", "external-services", "youtube-resolver"),
     bootstrapScriptPath: path.join(rootDir, "infra", "external-services", "youtube-resolver", "scripts", "bootstrap.sh")
   },
   {
     key: "fb",
     serviceName: "facebook-resolver",
     enabledEnv: "FB_RESOLVER_ENABLED",
-    workingDir: path.join(rootDir, "infra", "external-services", "facebook-resolver"),
+    moduleDir: path.join(rootDir, "infra", "external-services", "facebook-resolver"),
     bootstrapScriptPath: path.join(rootDir, "infra", "external-services", "facebook-resolver", "scripts", "bootstrap.sh")
   }
 ];
 
 const log = (msg) => console.log(`[bootstrap:${requestedMode}] ${msg}`);
-const warn = (msg) => console.warn(`[bootstrap:${requestedMode}] ${msg}`);
 const fail = (msg) => {
   console.error(`[bootstrap:${requestedMode}] ${msg}`);
   process.exit(1);
@@ -91,58 +92,76 @@ const parseToggle = (value, defaultValue = false) => {
   return defaultValue;
 };
 
-const runCommand = (command, commandArgs, options = {}) => {
-  const result = spawnSync(command, commandArgs, {
-    cwd: options.cwd ?? rootDir,
-    stdio: options.stdio ?? "pipe",
-    env: options.env
-  });
-  return {
-    status: result.status ?? 1
-  };
-};
-
-const commandExists = (command, argsForCheck = ["--version"]) => runCommand(command, argsForCheck, { stdio: "ignore" }).status === 0;
-
-const detectCompose = () => {
-  if (commandExists("docker", ["compose", "version"])) return "docker compose";
-  if (commandExists("docker-compose", ["version"])) return "docker-compose";
-  return null;
-};
-
-const resolveResolverTargets = () => {
+const shouldSelectResolver = (target) => {
   if (withYoutubeResolver || withFacebookResolver) {
-    return resolverDefinitions.filter((item) => (item.key === "yt" && withYoutubeResolver) || (item.key === "fb" && withFacebookResolver));
+    if (target.key === "yt" && withYoutubeResolver) return { selected: true };
+    if (target.key === "fb" && withFacebookResolver) return { selected: true };
+    return { selected: false, reason: "not_selected_by_flag" };
   }
 
-  if (withExternalServices) {
-    return resolverDefinitions.filter((item) => parseToggle(process.env[item.enabledEnv], false));
+  if (withExternalServices && !parseToggle(process.env[target.enabledEnv], false)) {
+    return { selected: false, reason: "disabled_by_env" };
   }
 
-  return resolverDefinitions;
+  return { selected: true };
+};
+
+const resolveResolverSelection = () => {
+  const selected = [];
+  const skipped = [];
+
+  for (const target of resolverDefinitions) {
+    const decision = shouldSelectResolver(target);
+    if (decision.selected) {
+      selected.push(target);
+      continue;
+    }
+    skipped.push({
+      ...target,
+      reason: decision.reason || "selection_filtered"
+    });
+  }
+
+  return { selected, skipped };
 };
 
 const runResolverBootstrap = (target) => {
-  if (!fs.existsSync(target.workingDir)) {
-    fail(`Resolver directory missing for ${target.serviceName}: ${path.relative(rootDir, target.workingDir)}`);
+  if (!fs.existsSync(target.moduleDir)) {
+    log(`resolver=${target.serviceName} action=bootstrap-skip reason=missing_module_dir cwd=${target.moduleDir}`);
+    return {
+      status: "skipped",
+      reason: "missing_module_dir"
+    };
   }
 
   if (!fs.existsSync(target.bootstrapScriptPath)) {
-    fail(`Bootstrap script missing for ${target.serviceName}: ${path.relative(rootDir, target.bootstrapScriptPath)}`);
+    log(`resolver=${target.serviceName} action=bootstrap-skip reason=missing_bootstrap_script cwd=${target.moduleDir}`);
+    return {
+      status: "skipped",
+      reason: "missing_bootstrap_script"
+    };
   }
 
-  log(`resolver=${target.serviceName} action=bootstrap-start`);
-  const result = spawnSync("bash", [target.bootstrapScriptPath], {
-    cwd: target.workingDir,
+  log(`resolver=${target.serviceName} cwd=${target.moduleDir} action=bootstrap-delegate entrypoint=scripts/bootstrap.sh`);
+  const result = spawnSync("bash", ["scripts/bootstrap.sh"], {
+    cwd: target.moduleDir,
     stdio: "inherit",
     env: process.env
   });
 
-  if ((result.status ?? 1) !== 0) {
-    fail(`resolver=${target.serviceName} bootstrap failed`);
+  const exitCode = result.status ?? 1;
+  if (exitCode !== 0) {
+    log(`resolver=${target.serviceName} action=bootstrap-fail cwd=${target.moduleDir} exitCode=${exitCode}`);
+    return {
+      status: "failed",
+      reason: "bootstrap_delegate_failed"
+    };
   }
 
-  log(`resolver=${target.serviceName} action=bootstrap-ok`);
+  log(`resolver=${target.serviceName} action=bootstrap-ok cwd=${target.moduleDir}`);
+  return {
+    status: "ok"
+  };
 };
 
 const main = () => {
@@ -156,33 +175,24 @@ const main = () => {
   }
 
   log("infraBootstrap=start");
-
-  if (!commandExists("python3", ["--version"])) {
-    fail("python3 not found. Install python3 before running bootstrap with --infra.");
-  }
-  log("prereq=python3 status=ok");
-
-  const composeCmd = detectCompose();
-  if (composeCmd) {
-    log(`prereq=compose status=ok cmd=\"${composeCmd}\"`);
-  } else {
-    warn("prereq=compose status=missing (acceptable for pure external infra mode)");
+  const selection = resolveResolverSelection();
+  log(
+    `resolver-selection selected=${
+      selection.selected.length ? selection.selected.map((item) => item.serviceName).join(",") : "none"
+    } skipped=${selection.skipped.length ? selection.skipped.map((item) => `${item.serviceName}:${item.reason}`).join(",") : "none"}`
+  );
+  for (const item of selection.skipped) {
+    log(`resolver=${item.serviceName} action=bootstrap-skip reason=${item.reason}`);
   }
 
-  if (commandExists("tmux", ["-V"])) {
-    log("prereq=tmux status=ok");
-  } else {
-    warn("prereq=tmux status=missing (required for tmux-managed resolver runtime)");
+  let failed = 0;
+  for (const target of selection.selected) {
+    const result = runResolverBootstrap(target);
+    if (result.status === "failed") failed += 1;
   }
 
-  const targets = resolveResolverTargets();
-  if (!targets.length) {
-    warn("No resolver selected for bootstrap (filters excluded all services).");
-  } else {
-    log(`resolvers=${targets.map((item) => item.serviceName).join(",")} action=bootstrap`);
-    for (const target of targets) {
-      runResolverBootstrap(target);
-    }
+  if (failed > 0) {
+    fail(`infraBootstrap=failed resolverBootstrapFailures=${failed}`);
   }
 
   log("infraBootstrap=done");

@@ -60,6 +60,8 @@ Regras:
 - wrappers finos expõem contrato mínimo (`GET /health`, `POST /resolve`)
 - payload cru de serviço externo não sobe para `wa-gateway`
 - falhas desses auxiliares não devem derrubar runtimes não relacionados
+- orquestração raiz (`scripts/bootstrap.mjs`, `scripts/start.mjs`, `scripts/stop.mjs`) apenas delega entrypoints de módulo com `cwd` do resolver
+- setup/runtime Python pertence ao módulo externo (`scripts/bootstrap.sh`, `scripts/run.sh`), não ao root
 
 ### `apps/admin-ui`
 Consome apenas `assistant-api`, sem lógica de domínio embarcada.

@@ -62,6 +62,7 @@ npm run bootstrap:prod -- --infra
 ```
 
 This prepares resolver virtualenvs (`.venv`) and installs Python dependencies. Runtime `start` no longer installs resolver dependencies automatically.
+Root `bootstrap` only delegates to each resolver `scripts/bootstrap.sh` using resolver-local `cwd`.
 
 Direct bootstrap scripts are still available:
 
@@ -107,7 +108,8 @@ Resolver runtime policy:
 
 - tmux session name: `zappy`
 - standardized windows: `core`, `youtube`, `facebook`
-- startup checks resolver directory + `.venv` before launch
+- startup checks resolver module directory + `scripts/run.sh` before launch
+- root `start` delegates to module entrypoint: `cd <module-dir> && bash scripts/run.sh`
 - duplicate guard: if resolver is already healthy, startup logs `already_running` and does not create duplicate process/window
 - health validation after launch (`GET /health`)
 
