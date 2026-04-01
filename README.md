@@ -147,6 +147,14 @@ npm run stop:prod
 npm run stop:debug
 ```
 
+Optional cleanup mode for stale Zappy leftovers on root app ports (`8080/3333/3334/3335`):
+
+```bash
+npm run stop:dev -- --cleanup-ports
+# alias:
+npm run stop:dev -- --force-runtime-cleanup
+```
+
 Stop services plus infra/resolver resources owned by this runtime:
 
 ```bash
@@ -171,6 +179,13 @@ Ownership-aware stop rules with `--infra`:
   - `stopped_by_pid`
   - `already_stopped`
   - `port_still_busy_unknown_process` (reported only; unknown processes are not force-killed)
+
+Cleanup behavior with `--cleanup-ports`:
+
+- default stop remains unchanged/safe (`npm run stop:*` without cleanup is report-only for unknown owners).
+- cleanup scans root app ports and classifies listeners by Zappy command/path markers.
+- only confidently-classified Zappy leftovers receive signal sequence `SIGINT -> SIGTERM -> SIGKILL` (last resort).
+- non-Zappy/uncertain listeners are skipped and logged as `skipped_non_zappy_process`.
 
 ### Restart
 
@@ -241,6 +256,10 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - stale/missing state file (`.zappy-dev/<mode>-stack.json`):
   - startup/stop logs explicit `[state] status=missing|stale_*|active` diagnostics.
   - stale state is cleared automatically before continuing.
+- stale Zappy process still holding root app port after stop:
+  - run explicit cleanup mode: `npm run stop:dev -- --cleanup-ports`.
+  - check `[cleanup]` logs for `classification=...`, `signal_sent`, and final `status=cleared|still_busy`.
+  - non-Zappy processes are intentionally not killed (`status=skipped_non_zappy_process`).
 - external Redis warning (`min_version_recommended`):
   - check `[deps] service=redis source=... version=...`.
   - recommendation: use compose-managed Redis 7, or upgrade host Redis to `>= 6.2.0`.

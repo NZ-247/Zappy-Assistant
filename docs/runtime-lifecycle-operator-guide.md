@@ -52,6 +52,22 @@ Important:
 - stop does **not** kill arbitrary unknown processes.
 - unknown occupancy is reported so operators can decide what to do manually.
 
+## Optional cleanup mode for stale leftovers
+
+When needed, run:
+
+- `npm run stop:dev -- --cleanup-ports`
+- alias: `npm run stop:dev -- --force-runtime-cleanup`
+
+Cleanup mode behavior:
+
+- scans root app ports (`8080/3333/3334/3335`) after normal stop flow
+- logs owner classification (`service/port/pid/classification`)
+- sends signals in order: `SIGINT -> SIGTERM -> SIGKILL` (last resort)
+- targets only confidently-classified Zappy runtime leftovers (command/path markers)
+- skips non-Zappy or uncertain owners with `status=skipped_non_zappy_process`
+- logs final per-port cleanup status: `cleared` or `still_busy`
+
 ## State file behavior
 
 Runtime ownership still uses `.zappy-dev/<mode>-stack.json`, but with explicit diagnostics:
@@ -116,6 +132,9 @@ Example:
 
 - Stop logs show `status=port_still_busy_unknown_process`.
 - Runtime will not kill unknown process automatically; operator must decide/manual stop.
+- If it is likely a stale Zappy runtime process, run cleanup mode:
+  - `npm run stop:dev -- --cleanup-ports`
+  - verify `[cleanup]` logs for classification and final `status=cleared`.
 
 ### External Redis `6.0.16` warning
 

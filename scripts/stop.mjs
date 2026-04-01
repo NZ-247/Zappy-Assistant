@@ -25,12 +25,19 @@ Options:
   --infra                         Stop only infra/resolver resources owned by this runtime
   --infra=<auto|external|managed> Same as --infra, with explicit mode annotation in logs
   --with-infra                    Backward-compatible alias for --infra
+  --cleanup-ports                 Try cleanup of stale Zappy root-app leftovers on ports 8080/3333/3334/3335
+  --force-runtime-cleanup         Backward-compatible alias for --cleanup-ports
   --help                          Show this help
 
 Ownership behavior when --infra is used:
   - external_host/external_container dependencies are never stopped
   - compose_managed dependencies stop only when this runtime started them
-  - resolver module stop is delegated only when module provides scripts/stop.sh`);
+  - resolver module stop is delegated only when module provides scripts/stop.sh
+
+Ownership behavior when --cleanup-ports is used:
+  - default stop behavior remains unchanged (report-only for unknown processes)
+  - cleanup sends SIGINT -> SIGTERM -> SIGKILL (last resort) only to confidently-classified Zappy leftovers
+  - non-Zappy/uncertain processes are always skipped with explicit logs`);
 };
 
 const args = process.argv.slice(3);
@@ -41,6 +48,7 @@ if (args.includes("--help")) {
 
 let withInfra = false;
 let explicitInfraMode = null;
+let cleanupPorts = false;
 const unknownFlags = [];
 
 for (const arg of args) {
@@ -60,6 +68,11 @@ for (const arg of args) {
     continue;
   }
 
+  if (arg === "--cleanup-ports" || arg === "--force-runtime-cleanup") {
+    cleanupPorts = true;
+    continue;
+  }
+
   if (arg.startsWith("--")) unknownFlags.push(arg);
 }
 
@@ -67,7 +80,7 @@ if (unknownFlags.length > 0) {
   console.error(
     `[stop:${requestedMode}] unknown flag(s): ${unknownFlags.join(
       ", "
-    )}. Supported: --infra --infra=<auto|external|managed> --with-infra --help`
+    )}. Supported: --infra --infra=<auto|external|managed> --with-infra --cleanup-ports --force-runtime-cleanup --help`
   );
   process.exit(1);
 }
@@ -83,6 +96,7 @@ dotenv.config({ path: path.join(rootDir, ".env") });
 const rootAppPortServices = [
   {
     name: "admin-ui",
+    workspace: "@zappy/admin-ui",
     port: {
       envVar: "ADMIN_UI_PORT",
       defaultPort: 8080
@@ -90,6 +104,7 @@ const rootAppPortServices = [
   },
   {
     name: "assistant-api",
+    workspace: "@zappy/assistant-api",
     port: {
       envVar: "ADMIN_API_PORT",
       defaultPort: 3333
@@ -97,6 +112,7 @@ const rootAppPortServices = [
   },
   {
     name: "wa-gateway",
+    workspace: "@zappy/wa-gateway",
     port: {
       envVar: "WA_GATEWAY_INTERNAL_PORT",
       defaultPort: 3334
@@ -104,6 +120,7 @@ const rootAppPortServices = [
   },
   {
     name: "media-resolver-api",
+    workspace: "@zappy/media-resolver-api",
     port: {
       envVar: "MEDIA_RESOLVER_API_PORT",
       defaultPort: 3335
@@ -133,6 +150,13 @@ const stateLog = (fields = {}) => {
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(" ");
   log(`[state]${suffix ? ` ${suffix}` : ""}`);
+};
+
+const cleanupLog = (phase, fields = {}) => {
+  const suffix = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  log(`[cleanup] phase=${phase}${suffix ? ` ${suffix}` : ""}`);
 };
 
 const pidAlive = (pid) => {
@@ -242,6 +266,94 @@ const getPortOwnerProcesses = (port) =>
     commandLine: getProcessCommandLine(pid)
   }));
 
+const normalizeMarker = (value) => String(value || "").trim().toLowerCase().replace(/\\/g, "/");
+const runtimeIdentityMarkers = [normalizeMarker(rootDir), normalizeMarker("zappy-assistant"), normalizeMarker("scripts/start.mjs")];
+const nodeLikeCommandPattern = /\b(node|npm|pnpm|yarn|bun|tsx|ts-node)\b/;
+
+const serviceIdentityMarkers = (service) =>
+  [
+    service.workspace || `@zappy/${service.name}`,
+    `@zappy/${service.name}`,
+    `apps/${service.name}`,
+    path.join(rootDir, "apps", service.name)
+  ]
+    .map((item) => normalizeMarker(item))
+    .filter(Boolean);
+
+const classifyPortOwner = (service, owner) => {
+  const normalizedCommandLine = normalizeMarker(owner.commandLine);
+  const serviceMarkers = serviceIdentityMarkers(service);
+  const matchedServiceMarkers = serviceMarkers.filter((marker) => normalizedCommandLine.includes(marker));
+  const matchedRuntimeMarkers = runtimeIdentityMarkers.filter((marker) => normalizedCommandLine.includes(marker));
+  const nodeLikeCommand = nodeLikeCommandPattern.test(normalizedCommandLine);
+  const confident = matchedServiceMarkers.length > 0 && (nodeLikeCommand || matchedRuntimeMarkers.length > 0);
+
+  return {
+    confident,
+    classification: confident ? "confident_zappy_runtime_leftover" : "non_zappy_or_uncertain",
+    matchedServiceMarker: matchedServiceMarkers[0] || "none",
+    matchedRuntimeMarker: matchedRuntimeMarkers[0] || "none",
+    nodeLikeCommand
+  };
+};
+
+const sendSignal = (pid, signal) => {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const terminateConfidentLeftoverProcess = async ({ service, port, pid }) => {
+  if (!pidAlive(pid)) {
+    cleanupLog("already_exited", {
+      service,
+      port,
+      pid
+    });
+    return { exited: true };
+  }
+
+  const signalStages = [
+    { signal: "SIGINT", waitMs: 3000 },
+    { signal: "SIGTERM", waitMs: 2000 }
+  ];
+
+  for (const stage of signalStages) {
+    if (!pidAlive(pid)) return { exited: true };
+    const sent = sendSignal(pid, stage.signal);
+    cleanupLog("signal_sent", {
+      service,
+      port,
+      pid,
+      signal: stage.signal,
+      status: sent ? "ok" : "failed"
+    });
+    if (!sent) continue;
+    const exited = await waitForExit(pid, stage.waitMs);
+    if (exited) return { exited: true };
+  }
+
+  if (pidAlive(pid)) {
+    const sent = sendSignal(pid, "SIGKILL");
+    cleanupLog("signal_sent", {
+      service,
+      port,
+      pid,
+      signal: "SIGKILL",
+      status: sent ? "ok" : "failed"
+    });
+    if (sent) {
+      const exited = await waitForExit(pid, 1000);
+      if (exited) return { exited: true };
+    }
+  }
+
+  return { exited: !pidAlive(pid) };
+};
+
 const probeTcpPort = (host, port, timeoutMs = 1100) =>
   new Promise((resolve) => {
     const socket = net.createConnection({ host, port });
@@ -270,6 +382,62 @@ const resolveServicePort = (service) => {
     return service.port.defaultPort;
   }
   return parsed;
+};
+
+const cleanupRootAppPorts = async () => {
+  const portTargets = rootAppPortServices.map((service) => resolveServicePort(service)).join(",");
+  cleanupLog("scan_started", {
+    services: rootAppPortServices.length,
+    ports: portTargets
+  });
+  const cleanupByPid = new Map();
+
+  for (const service of rootAppPortServices) {
+    const port = resolveServicePort(service);
+    const owners = getPortOwnerProcesses(port);
+
+    for (const owner of owners) {
+      const classification = classifyPortOwner(service, owner);
+      cleanupLog("owner", {
+        service: service.name,
+        port,
+        pid: owner.pid,
+        classification: classification.classification,
+        matchedServiceMarker: classification.matchedServiceMarker,
+        matchedRuntimeMarker: classification.matchedRuntimeMarker,
+        nodeLikeCommand: classification.nodeLikeCommand
+      });
+
+      if (!classification.confident) {
+        cleanupLog("skip", {
+          service: service.name,
+          port,
+          pid: owner.pid,
+          status: "skipped_non_zappy_process"
+        });
+        continue;
+      }
+
+      if (!cleanupByPid.has(owner.pid)) {
+        const terminateResult = await terminateConfidentLeftoverProcess({
+          service: service.name,
+          port,
+          pid: owner.pid
+        });
+        cleanupByPid.set(owner.pid, terminateResult);
+      }
+    }
+
+    const ownersAfter = getPortOwnerProcesses(port);
+    const probeAfter =
+      ownersAfter.length > 0 ? { open: true, reason: "owner_detected" } : await probeTcpPort("127.0.0.1", port, 900);
+    const stillBusy = ownersAfter.length > 0 || probeAfter.open;
+    cleanupLog("port", {
+      service: service.name,
+      port,
+      status: stillBusy ? "still_busy" : "cleared"
+    });
+  }
 };
 
 const reconcileRootAppPorts = async (serviceStopResultsByName = new Map()) => {
@@ -557,6 +725,9 @@ const main = async () => {
 
   if (!state) {
     log(`No ${requestedMode} stack state found. PID stop skipped.`);
+    if (cleanupPorts) {
+      await cleanupRootAppPorts();
+    }
     await reconcileRootAppPorts(stopResultsByService);
     return;
   }
@@ -591,6 +762,9 @@ const main = async () => {
 
   if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
   log(`Cleared ${requestedMode} stack state.`);
+  if (cleanupPorts) {
+    await cleanupRootAppPorts();
+  }
   await reconcileRootAppPorts(stopResultsByService);
   log(`mode=${requestedMode}`);
 };

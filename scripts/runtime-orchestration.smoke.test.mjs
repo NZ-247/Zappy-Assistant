@@ -177,6 +177,15 @@ const waitForTcpPort = async (port, timeoutMs = 3500) => {
   return false;
 };
 
+const waitForTcpPortClosed = async (port, timeoutMs = 3500) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (!(await probeTcpPort(port, 250))) return true;
+    await new Promise((resolve) => setTimeout(resolve, 70));
+  }
+  return false;
+};
+
 const startDetachedPortServer = async ({ port, marker = "smoke-marker" }) => {
   const serverScript =
     'const net=require("node:net"); const port=Number(process.argv[1]); const marker=String(process.argv[2]||"marker"); const s=net.createServer(); s.listen(port,"127.0.0.1"); process.on("SIGTERM",()=>s.close(()=>process.exit(0))); setInterval(()=>{ if (!marker) process.stdout.write(""); }, 1000);';
@@ -583,6 +592,77 @@ test("stop reconciles root app ports with already_stopped vs still_busy_unknown_
     )
   );
   assert.match(output, new RegExp(`\\[stop-reconcile\\] service=admin-ui port=${ports.values.adminUiPort} status=already_stopped`));
+});
+
+test("stop --cleanup-ports terminates confidently-classified zappy leftovers on root app ports", async (t) => {
+  const project = createTempProject();
+  const ports = await allocateRootServicePorts();
+  const holder = await startDetachedPortServer({
+    port: ports.values.waGatewayPort,
+    marker: "@zappy/wa-gateway"
+  });
+  t.after(() => holder.stop());
+
+  const result = runNodeScript(stopScript, ["dev", "--cleanup-ports"], {
+    projectRoot: project.rootDir,
+    env: {
+      ADMIN_UI_PORT: ports.ADMIN_UI_PORT,
+      ADMIN_API_PORT: ports.ADMIN_API_PORT,
+      WA_GATEWAY_INTERNAL_PORT: ports.WA_GATEWAY_INTERNAL_PORT,
+      MEDIA_RESOLVER_API_PORT: ports.MEDIA_RESOLVER_API_PORT
+    }
+  });
+
+  assert.equal(result.status, 0, toOutput(result));
+  const output = toOutput(result);
+  assert.match(output, /\[cleanup\] phase=scan_started/);
+  assert.match(
+    output,
+    new RegExp(
+      `\\[cleanup\\] phase=owner service=wa-gateway port=${ports.values.waGatewayPort} pid=\\d+ classification=confident_zappy_runtime_leftover`
+    )
+  );
+  assert.match(
+    output,
+    new RegExp(`\\[cleanup\\] phase=signal_sent service=wa-gateway port=${ports.values.waGatewayPort} pid=\\d+ signal=SIG(INT|TERM|KILL)`)
+  );
+  assert.match(output, new RegExp(`\\[cleanup\\] phase=port service=wa-gateway port=${ports.values.waGatewayPort} status=cleared`));
+  assert.equal(await waitForTcpPortClosed(ports.values.waGatewayPort, 3500), true, toOutput(result));
+});
+
+test("stop --cleanup-ports skips non-zappy process owners safely", async (t) => {
+  const project = createTempProject();
+  const ports = await allocateRootServicePorts();
+  const holder = await startDetachedPortServer({
+    port: ports.values.assistantApiPort,
+    marker: "unrelated-process"
+  });
+  t.after(() => holder.stop());
+
+  const result = runNodeScript(stopScript, ["dev", "--cleanup-ports"], {
+    projectRoot: project.rootDir,
+    env: {
+      ADMIN_UI_PORT: ports.ADMIN_UI_PORT,
+      ADMIN_API_PORT: ports.ADMIN_API_PORT,
+      WA_GATEWAY_INTERNAL_PORT: ports.WA_GATEWAY_INTERNAL_PORT,
+      MEDIA_RESOLVER_API_PORT: ports.MEDIA_RESOLVER_API_PORT
+    }
+  });
+
+  assert.equal(result.status, 0, toOutput(result));
+  const output = toOutput(result);
+  assert.match(
+    output,
+    new RegExp(
+      `\\[cleanup\\] phase=owner service=assistant-api port=${ports.values.assistantApiPort} pid=\\d+ classification=non_zappy_or_uncertain`
+    )
+  );
+  assert.match(
+    output,
+    new RegExp(`\\[cleanup\\] phase=skip service=assistant-api port=${ports.values.assistantApiPort} pid=\\d+ status=skipped_non_zappy_process`)
+  );
+  assert.match(output, new RegExp(`\\[cleanup\\] phase=port service=assistant-api port=${ports.values.assistantApiPort} status=still_busy`));
+  assert.equal(await probeTcpPort(ports.values.assistantApiPort, 500), true);
 });
 
 test("start clears stale state and still runs port precheck reconciliation", async () => {
