@@ -1,6 +1,6 @@
 {
   "name": "@zappy/worker",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@zappy/adapters": "1.5.0",
-    "@zappy/shared": "1.5.0",
+    "@zappy/adapters": "1.6.0",
+    "@zappy/shared": "1.6.0",
     "bullmq": "^5.40.3",
     "@prisma/client": "^6.4.1"
   },
