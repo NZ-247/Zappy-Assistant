@@ -127,6 +127,8 @@ const rootAppPortServices = [
     }
   }
 ];
+const knownRootAppPorts = new Set(rootAppPortServices.map((service) => service.port.defaultPort));
+const knownRootServiceNames = new Set(rootAppPortServices.map((service) => service.name));
 
 const log = (msg) => console.log(`[stop:${requestedMode}] ${msg}`);
 const warn = (msg) => console.warn(`[stop:${requestedMode}] ${msg}`);
@@ -260,10 +262,30 @@ const getProcessCommandLine = (pid) => {
   return result.stdout.trim();
 };
 
+const tryReadProcLink = (targetPath) => {
+  try {
+    return fs.readlinkSync(targetPath).trim();
+  } catch {
+    return "";
+  }
+};
+
+const getProcessCwd = (pid) => tryReadProcLink(path.join("/proc", String(pid), "cwd"));
+
+const getProcessExecutablePath = (pid) => {
+  const fromProc = tryReadProcLink(path.join("/proc", String(pid), "exe"));
+  if (fromProc) return fromProc;
+  const result = runCommand("ps", ["-o", "comm=", "-p", String(pid)]);
+  if (result.status !== 0) return "";
+  return result.stdout.trim();
+};
+
 const getPortOwnerProcesses = (port) =>
   listListeningPidsByPort(port).map((pid) => ({
     pid,
-    commandLine: getProcessCommandLine(pid)
+    commandLine: getProcessCommandLine(pid),
+    cwdPath: getProcessCwd(pid),
+    executablePath: getProcessExecutablePath(pid)
   }));
 
 const normalizeMarker = (value) => String(value || "").trim().toLowerCase().replace(/\\/g, "/");
@@ -280,20 +302,54 @@ const serviceIdentityMarkers = (service) =>
     .map((item) => normalizeMarker(item))
     .filter(Boolean);
 
-const classifyPortOwner = (service, owner) => {
+const classifyPortOwnerForCleanup = (service, port, owner) => {
   const normalizedCommandLine = normalizeMarker(owner.commandLine);
+  const normalizedCwdPath = normalizeMarker(owner.cwdPath);
+  const normalizedExecutablePath = normalizeMarker(owner.executablePath);
+  const normalizedProcessSignature = [normalizedCommandLine, normalizedCwdPath, normalizedExecutablePath].filter(Boolean).join(" ");
   const serviceMarkers = serviceIdentityMarkers(service);
-  const matchedServiceMarkers = serviceMarkers.filter((marker) => normalizedCommandLine.includes(marker));
-  const matchedRuntimeMarkers = runtimeIdentityMarkers.filter((marker) => normalizedCommandLine.includes(marker));
-  const nodeLikeCommand = nodeLikeCommandPattern.test(normalizedCommandLine);
-  const confident = matchedServiceMarkers.length > 0 && (nodeLikeCommand || matchedRuntimeMarkers.length > 0);
+  const matchedServiceMarkers = serviceMarkers.filter((marker) => normalizedProcessSignature.includes(marker));
+  const matchedRuntimeMarkersFromCommand = runtimeIdentityMarkers.filter((marker) => normalizedCommandLine.includes(marker));
+  const matchedRuntimeMarkersFromCwd = runtimeIdentityMarkers.filter((marker) => normalizedCwdPath.includes(marker));
+  const matchedRuntimeMarkersFromExecutable = runtimeIdentityMarkers.filter((marker) => normalizedExecutablePath.includes(marker));
+  const matchedRuntimeMarkers = Array.from(
+    new Set([...matchedRuntimeMarkersFromCommand, ...matchedRuntimeMarkersFromCwd, ...matchedRuntimeMarkersFromExecutable])
+  );
+  const runtimeMarkerSources = [];
+  if (matchedRuntimeMarkersFromCommand.length > 0) runtimeMarkerSources.push("command");
+  if (matchedRuntimeMarkersFromCwd.length > 0) runtimeMarkerSources.push("cwd");
+  if (matchedRuntimeMarkersFromExecutable.length > 0) runtimeMarkerSources.push("executable");
+  const strongRuntimeMarker = matchedRuntimeMarkersFromCommand.length > 0 || matchedRuntimeMarkersFromExecutable.length > 0;
+  const nodeLikeCommand = nodeLikeCommandPattern.test(normalizedProcessSignature);
+  const knownRootPort = knownRootAppPorts.has(port) || knownRootServiceNames.has(service.name);
+  const confidentByServiceMarker = matchedServiceMarkers.length > 0 && (nodeLikeCommand || matchedRuntimeMarkers.length > 0);
+  const likelyByPortAndRuntime = knownRootPort && nodeLikeCommand && strongRuntimeMarker;
+
+  let confident = false;
+  let classification = "non_zappy_or_uncertain";
+  if (confidentByServiceMarker) {
+    confident = true;
+    classification = "confident_zappy_runtime_leftover";
+  } else if (likelyByPortAndRuntime) {
+    confident = true;
+    classification = "zappy_likely_process_by_port_and_runtime";
+  }
+
+  const matchedSignals = [];
+  if (knownRootPort) matchedSignals.push("known_port");
+  if (nodeLikeCommand) matchedSignals.push("node_like");
+  if (matchedRuntimeMarkers.length > 0) matchedSignals.push("runtime_marker");
+  if (matchedServiceMarkers.length > 0) matchedSignals.push("service_marker");
 
   return {
     confident,
-    classification: confident ? "confident_zappy_runtime_leftover" : "non_zappy_or_uncertain",
+    classification,
+    knownRootPort,
     matchedServiceMarker: matchedServiceMarkers[0] || "none",
     matchedRuntimeMarker: matchedRuntimeMarkers[0] || "none",
-    nodeLikeCommand
+    matchedRuntimeMarkerSource: runtimeMarkerSources.join(",") || "none",
+    nodeLikeCommand,
+    matchedSignals: matchedSignals.join(",") || "none"
   };
 };
 
@@ -397,7 +453,7 @@ const cleanupRootAppPorts = async () => {
     const owners = getPortOwnerProcesses(port);
 
     for (const owner of owners) {
-      const classification = classifyPortOwner(service, owner);
+      const classification = classifyPortOwnerForCleanup(service, port, owner);
       cleanupLog("owner", {
         service: service.name,
         port,
@@ -405,7 +461,10 @@ const cleanupRootAppPorts = async () => {
         classification: classification.classification,
         matchedServiceMarker: classification.matchedServiceMarker,
         matchedRuntimeMarker: classification.matchedRuntimeMarker,
-        nodeLikeCommand: classification.nodeLikeCommand
+        matchedRuntimeMarkerSource: classification.matchedRuntimeMarkerSource,
+        nodeLikeCommand: classification.nodeLikeCommand,
+        knownRootPort: classification.knownRootPort,
+        matchedSignals: classification.matchedSignals
       });
 
       if (!classification.confident) {
@@ -413,7 +472,9 @@ const cleanupRootAppPorts = async () => {
           service: service.name,
           port,
           pid: owner.pid,
-          status: "skipped_non_zappy_process"
+          status: "skipped_non_zappy_process",
+          classification: classification.classification,
+          matchedSignals: classification.matchedSignals
         });
         continue;
       }
@@ -435,7 +496,9 @@ const cleanupRootAppPorts = async () => {
     cleanupLog("port", {
       service: service.name,
       port,
-      status: stillBusy ? "still_busy" : "cleared"
+      status: stillBusy ? "still_busy" : "cleared",
+      ownerCount: ownersAfter.length,
+      probe: probeAfter.reason
     });
   }
 };

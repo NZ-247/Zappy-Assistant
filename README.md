@@ -185,7 +185,9 @@ Cleanup behavior with `--cleanup-ports`:
 - default stop remains unchanged/safe (`npm run stop:*` without cleanup is report-only for unknown owners).
 - cleanup scans root app ports and classifies listeners by Zappy command/path markers.
 - only confidently-classified Zappy leftovers receive signal sequence `SIGINT -> SIGTERM -> SIGKILL` (last resort).
+- cleanup fallback can classify `zappy_likely_process_by_port_and_runtime` when `known_port,node_like,runtime_marker` signals match.
 - non-Zappy/uncertain listeners are skipped and logged as `skipped_non_zappy_process`.
+- owner logs include `matchedSignals=...` so kill/skip reasoning is explicit.
 
 ### Restart
 

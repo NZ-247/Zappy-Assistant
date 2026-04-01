@@ -62,9 +62,10 @@ When needed, run:
 Cleanup mode behavior:
 
 - scans root app ports (`8080/3333/3334/3335`) after normal stop flow
-- logs owner classification (`service/port/pid/classification`)
+- logs owner classification (`service/port/pid/classification`) plus `matchedSignals`
 - sends signals in order: `SIGINT -> SIGTERM -> SIGKILL` (last resort)
 - targets only confidently-classified Zappy runtime leftovers (command/path markers)
+- includes fallback classification `zappy_likely_process_by_port_and_runtime` for `known_port + node_like + runtime_marker`
 - skips non-Zappy or uncertain owners with `status=skipped_non_zappy_process`
 - logs final per-port cleanup status: `cleared` or `still_busy`
 

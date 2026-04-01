@@ -630,6 +630,42 @@ test("stop --cleanup-ports terminates confidently-classified zappy leftovers on 
   assert.equal(await waitForTcpPortClosed(ports.values.waGatewayPort, 3500), true, toOutput(result));
 });
 
+test("stop --cleanup-ports terminates likely zappy leftovers by known port + runtime marker fallback", async (t) => {
+  const project = createTempProject();
+  const ports = await allocateRootServicePorts();
+  const holder = await startDetachedPortServer({
+    port: ports.values.waGatewayPort,
+    marker: project.rootDir
+  });
+  t.after(() => holder.stop());
+
+  const result = runNodeScript(stopScript, ["dev", "--cleanup-ports"], {
+    projectRoot: project.rootDir,
+    env: {
+      ADMIN_UI_PORT: ports.ADMIN_UI_PORT,
+      ADMIN_API_PORT: ports.ADMIN_API_PORT,
+      WA_GATEWAY_INTERNAL_PORT: ports.WA_GATEWAY_INTERNAL_PORT,
+      MEDIA_RESOLVER_API_PORT: ports.MEDIA_RESOLVER_API_PORT
+    }
+  });
+
+  assert.equal(result.status, 0, toOutput(result));
+  const output = toOutput(result);
+  assert.match(
+    output,
+    new RegExp(
+      `\\[cleanup\\] phase=owner service=wa-gateway port=${ports.values.waGatewayPort} pid=\\d+ classification=zappy_likely_process_by_port_and_runtime`
+    )
+  );
+  assert.match(output, /matchedSignals=known_port,node_like,runtime_marker/);
+  assert.match(
+    output,
+    new RegExp(`\\[cleanup\\] phase=signal_sent service=wa-gateway port=${ports.values.waGatewayPort} pid=\\d+ signal=SIG(INT|TERM|KILL)`)
+  );
+  assert.match(output, new RegExp(`\\[cleanup\\] phase=port service=wa-gateway port=${ports.values.waGatewayPort} status=cleared`));
+  assert.equal(await waitForTcpPortClosed(ports.values.waGatewayPort, 3500), true, toOutput(result));
+});
+
 test("stop --cleanup-ports skips non-zappy process owners safely", async (t) => {
   const project = createTempProject();
   const ports = await allocateRootServicePorts();
