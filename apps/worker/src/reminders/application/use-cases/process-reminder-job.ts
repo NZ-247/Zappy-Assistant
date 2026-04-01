@@ -11,7 +11,96 @@ import { resolveAsyncJobRecipient } from "../../../infrastructure/recipient-reso
 
 type LoggerLike = {
   info: (obj: unknown, msg?: string) => void;
+  warn?: (obj: unknown, msg?: string) => void;
   error: (obj: unknown, msg?: string) => void;
+};
+
+type ReminderProcessingStage =
+  | "load_reminder"
+  | "resolve_recipient"
+  | "dispatch_gateway"
+  | "mark_sent_status"
+  | "persist_outbound"
+  | "metrics_audit";
+
+export interface ReminderPersistencePort {
+  getReminderDispatchById: typeof getReminderDispatchById;
+  updateReminderStatus: typeof updateReminderStatus;
+  markReminderMessage: typeof markReminderMessage;
+  persistOutboundMessage: typeof persistOutboundMessage;
+}
+
+const defaultPersistence: ReminderPersistencePort = {
+  getReminderDispatchById,
+  updateReminderStatus,
+  markReminderMessage,
+  persistOutboundMessage
+};
+
+const compactInline = (value: string): string => value.replace(/\s+/g, " ").trim();
+
+export const summarizeReminderJobError = (error: unknown): { errorName: string; operatorMessage: string } => {
+  if (error instanceof Error) {
+    const message = compactInline(error.message || "erro_desconhecido");
+    return {
+      errorName: error.name || "Error",
+      operatorMessage: message.length <= 180 ? message : `${message.slice(0, 177)}...`
+    };
+  }
+  const raw = compactInline(String(error ?? "erro_desconhecido"));
+  return {
+    errorName: "UnknownError",
+    operatorMessage: raw.length <= 180 ? raw : `${raw.slice(0, 177)}...`
+  };
+};
+
+const failureCategoryByStage = (stage: ReminderProcessingStage): string => {
+  switch (stage) {
+    case "load_reminder":
+      return "reminder_lookup_failed";
+    case "resolve_recipient":
+      return "recipient_resolution_failed";
+    case "dispatch_gateway":
+      return "gateway_dispatch_failed";
+    case "mark_sent_status":
+      return "status_persistence_failed";
+    case "persist_outbound":
+      return "outbound_persistence_failed";
+    case "metrics_audit":
+      return "post_dispatch_observability_failed";
+    default:
+      return "reminder_processing_failed";
+  }
+};
+
+export const buildReminderFailureLogPayload = (input: {
+  tenantId: string;
+  reminderId: string;
+  reminderPublicId?: string;
+  referenceId: string;
+  stage: ReminderProcessingStage;
+  jobId?: string;
+  error: unknown;
+  originalRecipient?: string | null;
+  resolvedRecipient?: string | null;
+  recipientSource?: string | null;
+}) => {
+  const summarized = summarizeReminderJobError(input.error);
+  return withCategory("ERROR", {
+    action: "send_reminder",
+    tenantId: input.tenantId,
+    jobId: input.jobId,
+    reminderId: input.reminderId,
+    reminderPublicId: input.reminderPublicId,
+    referenceId: input.referenceId,
+    stage: input.stage,
+    failureCategory: failureCategoryByStage(input.stage),
+    operatorMessage: summarized.operatorMessage,
+    errorName: summarized.errorName,
+    originalRecipient: input.originalRecipient ?? undefined,
+    resolvedRecipient: input.resolvedRecipient ?? undefined,
+    recipientSource: input.recipientSource ?? undefined
+  });
 };
 
 export interface ReminderJobDeps {
@@ -30,19 +119,29 @@ export interface ReminderJobDeps {
       actor?: string;
     }) => Promise<void>;
   };
+  jobId?: string;
+  persistence?: ReminderPersistencePort;
 }
 
 export const processReminderJob = async (reminderId: string, deps: ReminderJobDeps): Promise<void> => {
-  const reminder = await getReminderDispatchById(reminderId);
+  const persistence = deps.persistence ?? defaultPersistence;
+  let stage: ReminderProcessingStage = "load_reminder";
+  const reminder = await persistence.getReminderDispatchById(reminderId);
   if (!reminder) return;
   if (reminder.status !== ReminderStatus.SCHEDULED) {
     deps.logger.info(
-      withCategory("QUEUE", { reminderId, reminderPublicId: reminder.publicId ?? reminder.id, status: reminder.status }),
+      withCategory("QUEUE", {
+        reminderId,
+        reminderPublicId: reminder.publicId ?? reminder.id,
+        status: reminder.status,
+        jobId: deps.jobId
+      }),
       "reminder already processed"
     );
     return;
   }
 
+  stage = "resolve_recipient";
   const recipient = resolveAsyncJobRecipient({
     waGroupId: reminder.waGroupId,
     waUserId: reminder.waUserId,
@@ -55,6 +154,9 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
   const text = `⏰ Lembrete: ${reminder.message}`;
   const tenantId = reminder.tenantId ?? "";
   const logContext = {
+    reminderId: reminder.id,
+    reminderPublicId: reminder.publicId ?? reminder.id,
+    jobId: deps.jobId,
     tenantId,
     action: "send_reminder",
     referenceId,
@@ -65,7 +167,9 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
 
   try {
     if (!recipient.resolvedRecipient) throw new Error("Reminder has no recipient");
-    deps.logger.info(withCategory("WA-OUT", { ...logContext, waMessageId: null }), "dispatching reminder");
+
+    stage = "dispatch_gateway";
+    deps.logger.info(withCategory("WA-OUT", { ...logContext, waMessageId: null, stage }), "dispatching reminder");
 
     // Worker does not speak to Baileys directly; it dispatches via the internal gateway API.
     const sent = await deps.gatewayClient.sendText({
@@ -78,11 +182,13 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
       waGroupId: reminder.waGroupId ?? undefined
     });
 
-    await updateReminderStatus(reminder.id, ReminderStatus.SENT);
-    await markReminderMessage({ reminderId: reminder.id, messageId: sent.waMessageId });
+    stage = "mark_sent_status";
+    await persistence.updateReminderStatus(reminder.id, ReminderStatus.SENT);
+    await persistence.markReminderMessage({ reminderId: reminder.id, messageId: sent.waMessageId });
 
+    stage = "persist_outbound";
     const outboundWaUserId = reminder.waUserId ?? recipient.resolvedRecipient;
-    await persistOutboundMessage({
+    await persistence.persistOutboundMessage({
       tenantId,
       userId: reminder.userId ?? undefined,
       groupId: reminder.groupId ?? undefined,
@@ -93,6 +199,7 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
       rawJson: sent.raw
     });
 
+    stage = "metrics_audit";
     await deps.metrics.increment("reminders_sent_total");
     await deps.auditTrail.record({
       kind: "reminder",
@@ -104,9 +211,18 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
       message: reminder.message
     });
 
-    deps.logger.info(withCategory("WA-OUT", { ...logContext, waMessageId: sent.waMessageId }), "reminder delivered");
+    deps.logger.info(withCategory("WA-OUT", { ...logContext, stage: "completed", waMessageId: sent.waMessageId }), "reminder delivered");
   } catch (error) {
-    await updateReminderStatus(reminder.id, ReminderStatus.FAILED);
+    await persistence.updateReminderStatus(reminder.id, ReminderStatus.FAILED).catch((statusError) => {
+      deps.logger.warn?.(
+        withCategory("WARN", {
+          ...logContext,
+          stage: "mark_failed_status",
+          ...summarizeReminderJobError(statusError)
+        }),
+        "failed to persist reminder failed status"
+      );
+    });
 
     const auditWaUserId = reminder.waUserId ?? recipient.resolvedRecipient ?? reminder.waGroupId ?? "unknown";
     await deps.auditTrail.record({
@@ -119,7 +235,22 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
       message: reminder.message
     });
 
-    deps.logger.error(withCategory("ERROR", { ...logContext, waMessageId: null, error }), "failed to process reminder");
+    deps.logger.error(
+      buildReminderFailureLogPayload({
+        tenantId,
+        reminderId: reminder.id,
+        reminderPublicId: reminder.publicId ?? reminder.id,
+        referenceId,
+        stage,
+        jobId: deps.jobId,
+        error,
+        originalRecipient: recipient.originalRecipient,
+        resolvedRecipient: recipient.resolvedRecipient,
+        recipientSource: recipient.recipientSource
+      }),
+      "failed to process reminder"
+    );
     throw error;
   }
 };
+

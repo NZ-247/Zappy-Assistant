@@ -2,6 +2,7 @@ import type { ResponseAction } from "../../../../pipeline/actions.js";
 import type { LoggerPort } from "../../../../pipeline/ports.js";
 import type { SearchAiPort } from "../../ports.js";
 import { isValidSearchAiQuery, normalizeSearchAiQuery } from "../../domain/search-ai-query.js";
+import { formatSearchAiReply } from "../../infrastructure/search-ai-reply-formatter.js";
 
 export interface SearchAiUseCaseConfig {
   enabled: boolean;
@@ -98,21 +99,13 @@ export const executeSearchAi = async (input: {
     });
 
     const summary = compactText(result.summary || "");
-    const lines: string[] = [
-      `Busca assistida (${result.provider}${result.model ? `/${result.model}` : ""}) para: ${normalizedQuery}`
-    ];
-
-    if (summary) {
-      lines.push(shorten(summary, 1000));
-    }
-
     const topSources = result.sources.slice(0, maxSources);
-    if (topSources.length > 0) {
-      lines.push("Fontes principais:");
-      lines.push(
-        ...topSources.map((source, index) => `${index + 1}. ${shorten(source.title || source.url, 120)}\n   ${source.url}`)
-      );
-    }
+    const formatted = formatSearchAiReply({
+      query: normalizedQuery,
+      summary,
+      sources: topSources,
+      maxSources
+    });
 
     logSearchAi(input.logger, {
       action: "search",
@@ -124,7 +117,7 @@ export const executeSearchAi = async (input: {
       responseMode: "summarized"
     });
 
-    return [{ kind: "reply_text", text: lines.join("\n") }];
+    return [{ kind: "reply_text", text: formatted }];
   } catch (error) {
     const message = sanitizeErrorMessage(error);
     logSearchAi(input.logger, {

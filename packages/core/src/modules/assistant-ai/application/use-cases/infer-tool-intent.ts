@@ -1,7 +1,6 @@
-import { DateTime } from "luxon";
-import { addDurationToNow, parseDateTimeWithZone, parseDurationInput } from "../../../../time.js";
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ToolAction } from "../../../../pipeline/types.js";
+import { extractNaturalReminderMessage, parseNaturalReminderTimeFromText } from "../../../reminders/infrastructure/natural-reminder-parser.js";
 
 export type DetectedToolIntent = {
   action: ToolAction;
@@ -24,80 +23,14 @@ export const parseNaturalReminderTime = (
   text: string,
   ctx: PipelineContext
 ): { remindAt: Date; pretty: string } | null => {
-  const lower = text.toLowerCase();
-  const durationMatch = lower.match(/(?:daqui|dentro de|em)\s+(\d+)\s*(minutos|min|m|horas|hora|h|dias|dia|d)/i);
-  if (durationMatch) {
-    const amount = Number.parseInt(durationMatch[1] ?? "0", 10);
-    const unit = durationMatch[2] ?? "";
-    const token = unit.startsWith("m")
-      ? `${amount}m`
-      : unit.startsWith("h")
-        ? `${amount}h`
-        : `${amount}d`;
-    const duration = parseDurationInput(token);
-    if (duration) {
-      const { date, pretty } = addDurationToNow({ durationMs: duration.milliseconds, timezone: ctx.timezone, now: ctx.now });
-      return { remindAt: date, pretty };
-    }
-  }
-
-  const timeRegex = /(?:às|as|a[s]?)\s*(\d{1,2}(?::?\d{2})?)/i;
-  const explicitDateMatch = lower.match(/(\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?)/);
-  const hasTomorrow = /\bamanh[ãa]\b/.test(lower);
-  const hasToday = /\bhoje\b/.test(lower);
-
-  let dateToken: string | undefined;
-  if (hasTomorrow || hasToday) {
-    const base = DateTime.fromJSDate(ctx.now).setZone(ctx.timezone);
-    const dt = hasTomorrow ? base.plus({ days: 1 }) : base;
-    dateToken = dt.toFormat("dd-LL-yyyy");
-  } else if (explicitDateMatch?.[1]) {
-    dateToken = explicitDateMatch[1].replace(/\//g, "-");
-  }
-
-  let timeToken: string | undefined;
-  const explicitTime = timeRegex.exec(lower);
-  const looseTime = lower.match(/(\d{1,2}[:h]\d{1,2})/);
-  if (explicitTime?.[1]) timeToken = explicitTime[1].replace("h", ":");
-  else if (looseTime?.[1]) timeToken = looseTime[1].replace("h", ":");
-
-  if (dateToken) {
-    const parsed = parseDateTimeWithZone({
-      dateToken,
-      timeToken,
-      timezone: ctx.timezone,
-      now: ctx.now,
-      defaultTime: ctx.defaultReminderTime
-    });
-    if (parsed) return { remindAt: parsed.date, pretty: parsed.pretty };
-  }
-
-  if (timeToken) {
-    const todayToken = DateTime.fromJSDate(ctx.now).setZone(ctx.timezone).toFormat("dd-LL-yyyy");
-    const parsedToday = parseDateTimeWithZone({
-      dateToken: todayToken,
-      timeToken,
-      timezone: ctx.timezone,
-      now: ctx.now,
-      defaultTime: ctx.defaultReminderTime
-    });
-    if (parsedToday) {
-      if (parsedToday.date.getTime() <= ctx.now.getTime()) {
-        const tomorrowToken = DateTime.fromJSDate(ctx.now).setZone(ctx.timezone).plus({ days: 1 }).toFormat("dd-LL-yyyy");
-        const parsedTomorrow = parseDateTimeWithZone({
-          dateToken: tomorrowToken,
-          timeToken,
-          timezone: ctx.timezone,
-          now: ctx.now,
-          defaultTime: ctx.defaultReminderTime
-        });
-        if (parsedTomorrow) return { remindAt: parsedTomorrow.date, pretty: parsedTomorrow.pretty };
-      }
-      return { remindAt: parsedToday.date, pretty: parsedToday.pretty };
-    }
-  }
-
-  return null;
+  const parsed = parseNaturalReminderTimeFromText({
+    text,
+    now: ctx.now,
+    timezone: ctx.timezone,
+    defaultReminderTime: ctx.defaultReminderTime
+  });
+  if (!parsed) return null;
+  return { remindAt: parsed.remindAt, pretty: parsed.pretty };
 };
 
 export const promptForMissing = (action: ToolAction, field: string): string => {
@@ -168,7 +101,7 @@ export const inferToolIntent = (ctx: PipelineContext): DetectedToolIntent | null
     }
 
     const time = parseNaturalReminderTime(text, ctx);
-    const message = text.replace(/^(por favor\s+)?(me\s+)?(lembre|lembra)(-me)?\s*(de|que)?/i, "").trim();
+    const message = extractNaturalReminderMessage(text);
     const payload: Record<string, unknown> = { message, remindAt: time?.remindAt, pretty: time?.pretty };
     const missing: string[] = [];
     if (!payload.message) missing.push("message");

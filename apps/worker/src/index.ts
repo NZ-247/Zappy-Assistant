@@ -8,7 +8,7 @@ import {
 } from "@zappy/adapters";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
 import { createWaGatewayDispatchClient } from "./infrastructure/wa-gateway-dispatch-client.js";
-import { processReminderJob } from "./reminders/application/use-cases/process-reminder-job.js";
+import { processReminderJob, summarizeReminderJobError } from "./reminders/application/use-cases/process-reminder-job.js";
 import { processTimerJob } from "./timers/application/use-cases/process-timer-job.js";
 
 const env = loadEnv();
@@ -66,7 +66,7 @@ const worker = new Worker(
         logger.warn(withCategory("WARN", { action: "send_reminder", jobId: job.id }), "job send-reminder missing reminderId");
         return;
       }
-      await processReminderJob(reminderId, { logger, gatewayClient, metrics, auditTrail });
+      await processReminderJob(reminderId, { logger, gatewayClient, metrics, auditTrail, jobId: String(job.id ?? "") || undefined });
       return;
     }
 
@@ -86,7 +86,19 @@ const worker = new Worker(
 );
 
 worker.on("completed", (job) => logger.info(withCategory("QUEUE", { jobId: job.id }), "job completed"));
-worker.on("failed", (job, error) => logger.error(withCategory("ERROR", { jobId: job?.id, error }), "job failed"));
+worker.on("failed", (job, error) => {
+  const summarized = summarizeReminderJobError(error);
+  logger.error(
+    withCategory("ERROR", {
+      action: "queue_job_failed",
+      jobId: job?.id,
+      jobName: job?.name,
+      errorName: summarized.errorName,
+      operatorMessage: summarized.operatorMessage
+    }),
+    "job failed"
+  );
+});
 
 const shutdown = async () => {
   logger.info("shutting down worker");

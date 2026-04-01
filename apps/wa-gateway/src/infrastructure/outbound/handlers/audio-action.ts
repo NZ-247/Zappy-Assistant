@@ -5,6 +5,7 @@ import type {
   ExecuteOutboundActionsInput,
   OutboundScope
 } from "../types.js";
+import { resolveSpokenOperationalCommand } from "./spoken-command-routing.js";
 
 type AudioRuntimeAction = {
   kind: "audio_transcription";
@@ -118,8 +119,13 @@ const normalizeFailure = (error: unknown): { reason: string; userMessage: string
 type CommandCandidate = {
   commandText: string;
   confidence: number;
-  reason: "prefixed" | "spoken_slash" | "keyword_allowlist";
+  reason: string;
 };
+
+type CommandResolution =
+  | { kind: "candidate"; candidate: CommandCandidate }
+  | { kind: "follow_up"; text: string; reason: string }
+  | null;
 
 const stripLeadingCommandWord = (value: string): string => value.replace(/^[\s/]+/, "").trim();
 
@@ -136,20 +142,40 @@ const renderDispatchTemplate = (template: string, transcript: string): string =>
   return `${normalizedTemplate} ${normalizedTranscript}`.replace(/\s+/g, " ").trim();
 };
 
-const resolveCommandCandidate = (runtime: ExecuteOutboundActionsInput, transcript: string): CommandCandidate | null => {
+const resolveCommandCandidate = (runtime: ExecuteOutboundActionsInput, transcript: string): CommandResolution => {
   const trimmed = transcript.replace(/\s+/g, " ").trim();
   if (!trimmed) return null;
   const prefix = runtime.audioConfig.commandPrefix || runtime.commandPrefix || "/";
   const lower = trimmed.toLowerCase();
 
   if (trimmed.startsWith(prefix)) {
-    return { commandText: trimmed, confidence: 1, reason: "prefixed" };
+    return { kind: "candidate", candidate: { commandText: trimmed, confidence: 1, reason: "prefixed" } };
   }
 
   const spokenSlash = trimmed.match(/^(?:slash|barra)\s+(.+)$/i);
   if (spokenSlash?.[1]) {
     const body = stripLeadingCommandWord(spokenSlash[1]);
-    if (body) return { commandText: `${prefix}${body}`, confidence: 0.95, reason: "spoken_slash" };
+    if (body) {
+      return {
+        kind: "candidate",
+        candidate: { commandText: `${prefix}${body}`, confidence: 0.95, reason: "spoken_slash" }
+      };
+    }
+  }
+
+  const operational = resolveSpokenOperationalCommand({ transcript: trimmed, prefix });
+  if (operational?.kind === "follow_up") {
+    return { kind: "follow_up", text: operational.text, reason: operational.reason };
+  }
+  if (operational?.kind === "candidate") {
+    return {
+      kind: "candidate",
+      candidate: {
+        commandText: operational.commandText,
+        confidence: operational.confidence,
+        reason: operational.reason
+      }
+    };
   }
 
   const tokens = lower.split(/\s+/).filter(Boolean);
@@ -159,9 +185,12 @@ const resolveCommandCandidate = (runtime: ExecuteOutboundActionsInput, transcrip
   if (!allowlist.has(first)) return null;
   const confidence = tokens.length <= 4 ? 0.82 : 0.68;
   return {
-    commandText: `${prefix}${stripLeadingCommandWord(trimmed)}`,
-    confidence,
-    reason: "keyword_allowlist"
+    kind: "candidate",
+    candidate: {
+      commandText: `${prefix}${stripLeadingCommandWord(trimmed)}`,
+      confidence,
+      reason: "keyword_allowlist"
+    }
   };
 };
 
@@ -374,7 +403,31 @@ export const handleAudioOutboundAction = async (input: {
     }
 
     const allowDispatch = runtime.audioConfig.commandDispatchEnabled && typedAction.allowCommandDispatch !== false;
-    const candidate = allowDispatch ? resolveCommandCandidate(runtime, transcript) : null;
+    const commandResolution = allowDispatch ? resolveCommandCandidate(runtime, transcript) : null;
+    const candidate = commandResolution?.kind === "candidate" ? commandResolution.candidate : null;
+    if (commandResolution?.kind === "follow_up") {
+      runtime.logger.info?.(
+        runtime.withCategory("WA-OUT", {
+          ...logBase(runtime, { responseActionId, mediaType: source.mediaType }),
+          action: "dispatch_command",
+          status: "follow_up",
+          reason: commandResolution.reason,
+          transcriptPreview: safePreview(transcript, runtime.audioConfig.transcriptPreviewChars)
+        }),
+        "audio capability"
+      );
+      await sendTextAndPersist({
+        runtime,
+        to: target,
+        text: commandResolution.text,
+        actionName: "audio_transcription_follow_up",
+        scope,
+        responseActionId
+      });
+      await progress.success();
+      return true;
+    }
+
     if (candidate && candidate.confidence >= runtime.audioConfig.commandMinConfidence) {
       const dispatchResult = await runtime.dispatchTranscribedText({
         text: candidate.commandText,
@@ -456,7 +509,7 @@ export const handleAudioOutboundAction = async (input: {
         target,
         responseActionId,
         transcript,
-        askRephrase: candidate !== null
+        askRephrase: commandResolution !== null
       });
     }
     await progress.success();

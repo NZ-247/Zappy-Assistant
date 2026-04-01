@@ -1,4 +1,5 @@
 import { addDurationToNow, isTimeLike, parseDateTimeWithZone, parseDurationInput } from "../../../time.js";
+import { parseNaturalReminderInput } from "./natural-reminder-parser.js";
 
 export const parseReminderCommand = (
   text: string,
@@ -14,27 +15,44 @@ export const parseReminderCommand = (
   }
 
   const atMatch = text.match(/^reminder\s+at\s+(.+)$/i);
-  if (!atMatch) return null;
-
-  const tokens = atMatch[1].trim().split(/\s+/);
-  if (tokens.length < 2) return null;
-
-  const dateToken = tokens.shift()!;
-  let timeToken: string | undefined;
-  if (tokens.length >= 1 && isTimeLike(tokens[0])) {
-    timeToken = tokens.shift();
+  if (atMatch) {
+    const tokens = atMatch[1].trim().split(/\s+/);
+    if (tokens.length >= 2) {
+      const dateToken = tokens.shift()!;
+      let timeToken: string | undefined;
+      if (tokens.length >= 1 && isTimeLike(tokens[0])) {
+        timeToken = tokens.shift();
+      }
+      const message = tokens.join(" ").trim();
+      if (message) {
+        const parsed = parseDateTimeWithZone({
+          dateToken,
+          timeToken,
+          timezone: options.timezone,
+          now: options.now,
+          defaultTime: options.defaultReminderTime
+        });
+        if (parsed) {
+          return { remindAt: parsed.date, message, pretty: parsed.pretty };
+        }
+      }
+    }
   }
-  const message = tokens.join(" ").trim();
-  if (!message) return null;
 
-  const parsed = parseDateTimeWithZone({
-    dateToken,
-    timeToken,
-    timezone: options.timezone,
+  const naturalBody = text.replace(/^reminder\b/i, "").trim();
+  const natural = parseNaturalReminderInput({
+    text: naturalBody,
     now: options.now,
-    defaultTime: options.defaultReminderTime
+    timezone: options.timezone,
+    defaultReminderTime: options.defaultReminderTime
   });
-  if (!parsed) return null;
+  if (natural) {
+    return {
+      remindAt: natural.remindAt,
+      message: natural.message,
+      pretty: natural.pretty
+    };
+  }
 
-  return { remindAt: parsed.date, message, pretty: parsed.pretty };
+  return null;
 };
