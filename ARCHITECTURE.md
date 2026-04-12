@@ -219,3 +219,27 @@ Guardrail de UX aplicado nesta fase:
 - camada de resposta visível ao usuário usa resolução segura de nome de tratamento com fallback neutro (`você`)
 
 Este documento registra oficialmente a migração modular como encerrada na prática em **24/03/2026** e a base pronta para expansão de capabilities sem iniciar moderação nesta etapa.
+
+## 11. Governance Foundation (v1.6.2)
+
+Phase 1 do plano Admin adiciona a base oficial de governança em **shadow mode**:
+
+- `packages/core/src/modules/governance/*`
+  - contratos (`DecisionInput`, `DecisionResult`, `GovernancePort`)
+  - reason codes e diagnósticos de política
+  - use case `resolveGovernanceDecision`
+- `packages/adapters/src/governance/*`
+  - adapter transitório read-only
+  - composição de fontes existentes: feature flags, group settings, bot admins, consent e sinais runtime
+- `apps/assistant-api`
+  - endpoint read-only `GET /admin/v1/governance/snapshot`
+- `apps/wa-gateway`
+  - avaliação de decisão em shadow mode antes do roteamento normal
+  - logging estruturado de decisão/reasons/contexto seguro
+
+Regras de fase:
+
+- sem mudança de comportamento funcional ao usuário final
+- sem enforcement em runtime nesta etapa
+- sem acoplamento de regra de governança em transports/apps
+- base pronta para enforcement progressivo nas próximas fases do control plane

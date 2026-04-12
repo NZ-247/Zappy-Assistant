@@ -30,6 +30,7 @@ npm run prisma:generate
 - Optional official metadata/auth hints (probe enrichment only): `YOUTUBE_API_KEY`, `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_GRAPH_API_VERSION`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
+- Governance shadow mode: `GOVERNANCE_SHADOW_MODE` (default `true`) evaluates governance decisions for observability without enforcing behavior in runtime yet.
 
 ## Run
 
@@ -270,7 +271,7 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - resolver health fails after delegation:
   - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
-Version note: current release line is `v1.7.0`.
+Version note: current release line is `v1.6.2`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -284,6 +285,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
+- Governance Foundation (Phase 1, shadow mode): read-only decision evaluation + structured logs + admin snapshot endpoint (`GET /admin/v1/governance/snapshot`) with no enforcement yet.
 - Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe` (`/tr`, `/tss`), `/tts`, `/trl`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.

@@ -1,5 +1,27 @@
 # Changelog
 
+## V1.6.2 - 2026-04-12
+- Added Governance Foundation (Phase 1, shadow mode) with modular core decision layer:
+  - new `packages/core/src/modules/governance/*`
+  - `DecisionInput`, `DecisionResult`, reason codes, diagnostics, and `resolveGovernanceDecision`
+- Added transitional read-only governance adapter composition in `packages/adapters/src/governance/*`:
+  - composes existing feature flags, group settings, bot-admin signals, and consent state
+  - no behavioral enforcement yet
+- Added Admin read-only governance snapshot endpoint:
+  - `GET /admin/v1/governance/snapshot`
+  - returns evaluated decision + snapshot payload for debugging/future Admin UI
+- Added WA Gateway shadow-mode integration:
+  - governance decision is evaluated and logged before normal routing
+  - decision is not enforced yet (current runtime behavior unchanged)
+- Added structured observability for governance shadow decisions:
+  - decision, reason codes, context summary, and explicit `shadowMode=true`
+- Added test coverage for:
+  - governance use-case outcomes (`core`)
+  - read-only governance adapter composition (`adapters`)
+  - snapshot endpoint response (`assistant-api`)
+  - shadow-mode logging seam (`wa-gateway`)
+- Bumped workspace/project versions to `1.6.2`.
+
 ## V1.5.0 - 2026-03-25
 - Hardened startup/dependency resilience for production runtime:
   - deterministic dependency checks (Docker state + health + TCP connectivity)

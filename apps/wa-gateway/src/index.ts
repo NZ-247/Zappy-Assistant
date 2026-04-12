@@ -38,7 +38,8 @@ import {
   conversationMemoryRepository,
   consentRepository,
   groupAccessRepository,
-  botAdminRepository
+  botAdminRepository,
+  governancePort
 } from "@zappy/adapters";
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
 import { createLogger, loadEnv, printStartupBanner, withCategory, type InternalGatewaySendTextRequest } from "@zappy/shared";
@@ -52,6 +53,7 @@ import { createBaileysRuntimeLogger } from "./infrastructure/baileys-runtime-log
 import { executeOutboundActions } from "./infrastructure/outbound-actions.js";
 import { createGroupParticipantsUpdateHandler } from "./inbound/group-participants-handler.js";
 import { createMessagesUpsertHandler } from "./inbound/messages-upsert-handler.js";
+import { createGovernanceShadowEvaluator } from "./inbound/governance-shadow.js";
 import { wireInboundEvents } from "./inbound/event-wiring.js";
 import { createWhatsAppConnector } from "./bootstrap/connect-whatsapp.js";
 
@@ -160,6 +162,7 @@ const mediaDownloadAdapter = env.DOWNLOADS_MODULE_ENABLED
 const audioCommandAllowlist = env.AUDIO_COMMAND_ALLOWLIST.split(",")
   .map((item) => item.trim())
   .filter(Boolean);
+const governanceShadowMode = env.GOVERNANCE_SHADOW_MODE;
 const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
 const muteAdapter = createMuteAdapter(redis);
 const auditTrail = createAuditTrail();
@@ -195,7 +198,8 @@ printStartupBanner(logger, {
     internalDispatchPort: env.WA_GATEWAY_INTERNAL_PORT,
     mediaResolverBaseUrl: env.MEDIA_RESOLVER_API_BASE_URL,
     inboundClaimTtlSeconds: INBOUND_MESSAGE_CLAIM_TTL_SECONDS,
-    inboundStartupSession: INBOUND_STARTUP_SESSION_ID
+    inboundStartupSession: INBOUND_STARTUP_SESSION_ID,
+    governanceShadowMode
   }
 });
 
@@ -419,6 +423,14 @@ const botAdminStatusService = createBotAdminStatusService({
   findPersistedGroup: async (waGroupId: string) => prisma.group.findUnique({ where: { waGroupId } })
 });
 const { resolveSenderGroupAdmin, refreshBotAdminState } = botAdminStatusService;
+const evaluateGovernanceShadowDecision = createGovernanceShadowEvaluator({
+  governancePort,
+  logger,
+  withCategory,
+  commandPrefix: env.BOT_PREFIX,
+  enabled: governanceShadowMode,
+  consentTermsVersion: env.CONSENT_TERMS_VERSION
+});
 
 const getSocket = () => socket;
 
@@ -480,6 +492,7 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
   logger,
   withCategory,
   executeOutboundActions,
+  evaluateGovernanceShadowDecision,
   outboundRuntime: {
     sendWithReplyFallback,
     persistOutboundMessage,

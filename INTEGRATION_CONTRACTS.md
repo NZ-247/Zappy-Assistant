@@ -202,6 +202,73 @@ conversation diagnostics
 
 recent activity panel
 
+3.6 GET /admin/v1/governance/snapshot
+Purpose
+
+Read-only governance evaluation snapshot for a requested subject/context.
+
+Notes
+
+Shadow mode only in v1.6.2:
+
+decision is evaluated and returned for observability/debugging
+
+no live runtime enforcement is applied by this endpoint
+
+Required query params
+
+tenantId
+
+waUserId
+
+Optional query params
+
+waGroupId, scope, capability, route, routeKey, commandName, requiredRole
+
+requiresBotAdmin, requiresGroupAdmin, senderIsGroupAdmin
+
+botIsGroupAdmin, botAdminCheckFailed, botAdminStatusSource
+
+permissionRole, relationshipProfile
+
+consentStatus, consentRequired, consentBypass, termsVersion
+
+messageKind, rawMessageType, ingressSource, isBotMentioned, isReplyToBot
+
+Example
+
+GET /admin/v1/governance/snapshot?tenantId=t1&waUserId=5511999999999@s.whatsapp.net&waGroupId=1203@g.us&scope=group&capability=command.hidetag&requiresBotAdmin=true
+
+Example response shape
+
+{
+  "schemaVersion": "governance.snapshot.v1",
+  "governanceVersion": "v1.6.2",
+  "shadowMode": true,
+  "input": {
+    "tenant": { "id": "t1" },
+    "user": { "waUserId": "5511999999999@s.whatsapp.net" },
+    "context": { "scope": "group", "isGroup": true, "routeKey": "admin.snapshot" },
+    "request": { "capability": "command.hidetag", "requiresBotAdmin": true }
+  },
+  "decision": {
+    "decision": "allow",
+    "allow": true,
+    "blockedByPolicy": false,
+    "blocked_by_policy": false,
+    "reasonCodes": ["ALLOW_POLICY_PASSED"],
+    "allowedCapabilities": ["conversation.direct", "conversation.group"]
+  }
+}
+
+UI use
+
+governance debug panel
+
+policy diagnostics view
+
+future admin-ui governance screen foundation
+
 4. UI page mapping
 4.1 Status page
 

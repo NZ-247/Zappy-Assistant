@@ -43,6 +43,7 @@ import {
   markGatewayHeartbeat,
   markWorkerHeartbeat
 } from "./status/repository.js";
+import { createReadOnlyGovernancePort } from "./governance/read-only-governance-port.js";
 
 export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -933,6 +934,36 @@ export const botAdminRepository = createBotAdminRepository({
   writeAudit,
   resolveCanonicalUserIdentity,
   findUserForTenant
+});
+
+export const governancePort = createReadOnlyGovernancePort({
+  resolveFlags: async (input) => coreFlagsRepository.resolveFlags(input),
+  readGroup: async (input) => {
+    const group = await prisma.group.findUnique({
+      where: { waGroupId: input.waGroupId },
+      select: {
+        tenantId: true,
+        waGroupId: true,
+        name: true,
+        allowed: true,
+        chatMode: true,
+        botIsAdmin: true,
+        botAdminCheckedAt: true
+      }
+    });
+    if (!group || group.tenantId !== input.tenantId) return null;
+    return {
+      tenantId: group.tenantId,
+      waGroupId: group.waGroupId,
+      name: group.name,
+      allowed: group.allowed,
+      chatMode: group.chatMode === "OFF" ? "off" : "on",
+      botIsAdmin: group.botIsAdmin,
+      botAdminCheckedAt: group.botAdminCheckedAt
+    };
+  },
+  isBotAdmin: async (input) => botAdminRepository.isAdmin(input),
+  getConsent: async (input) => consentRepository.getConsent(input)
 });
 
 export const createStatusPort = (deps: {

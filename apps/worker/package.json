@@ -1,6 +1,6 @@
 {
   "name": "@zappy/worker",
-  "version": "1.6.0",
+  "version": "1.6.2",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -13,8 +13,8 @@
     "test": "node --test --import tsx ./test/*.test.ts"
   },
   "dependencies": {
-    "@zappy/adapters": "1.6.0",
-    "@zappy/shared": "1.6.0",
+    "@zappy/adapters": "1.6.2",
+    "@zappy/shared": "1.6.2",
     "bullmq": "^5.40.3",
     "@prisma/client": "^6.4.1"
   },

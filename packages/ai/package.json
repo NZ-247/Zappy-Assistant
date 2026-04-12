@@ -1,6 +1,6 @@
 {
   "name": "@zappy/ai",
-  "version": "1.6.0",
+  "version": "1.6.2",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -11,6 +11,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@zappy/core": "1.6.0"
+    "@zappy/core": "1.6.2"
   }
 }

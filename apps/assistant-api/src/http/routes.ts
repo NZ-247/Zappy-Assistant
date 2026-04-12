@@ -3,10 +3,12 @@ import {
   commandLogRepository,
   featureFlagRepository,
   getGatewayHeartbeat,
+  governancePort as fallbackGovernancePort,
   getRecentMessages,
   getWorkerHeartbeat,
   triggerRepository
 } from "@zappy/adapters";
+import { resolveGovernanceDecision, type DecisionInput, type GovernanceRequiredRole } from "@zappy/core";
 import { featureFlagSchema, triggerSchema } from "@zappy/shared";
 import { checkDatabaseHealth, checkRedisHealth } from "../bootstrap/startup-status.js";
 import { registerAdminAuthHook } from "./auth-hook.js";
@@ -19,6 +21,105 @@ interface AssistantApiHttpApp {
   put: (route: string, handler: (...args: any[]) => Promise<unknown> | unknown) => unknown;
   delete: (route: string, handler: (...args: any[]) => Promise<unknown> | unknown) => unknown;
 }
+
+type GovernanceSnapshotQuery = {
+  tenantId?: string;
+  waUserId?: string;
+  waGroupId?: string;
+  scope?: string;
+  capability?: string;
+  routeKey?: string;
+  route?: string;
+  commandName?: string;
+  requiredRole?: GovernanceRequiredRole;
+  requiresBotAdmin?: string;
+  requiresGroupAdmin?: string;
+  senderIsGroupAdmin?: string;
+  botIsGroupAdmin?: string;
+  botAdminCheckFailed?: string;
+  botAdminStatusSource?: string;
+  permissionRole?: string;
+  relationshipProfile?: string;
+  consentStatus?: "PENDING" | "ACCEPTED" | "DECLINED" | "UNKNOWN";
+  consentRequired?: string;
+  consentBypass?: string;
+  termsVersion?: string;
+  messageKind?: string;
+  rawMessageType?: string;
+  ingressSource?: string;
+  isBotMentioned?: string;
+  isReplyToBot?: string;
+};
+
+const parseBoolean = (value?: string): boolean | undefined => {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+};
+
+const parseScope = (query: GovernanceSnapshotQuery): "private" | "group" => {
+  if (query.scope === "group") return "group";
+  if (query.scope === "private") return "private";
+  return query.waGroupId ? "group" : "private";
+};
+
+const buildGovernanceDecisionInput = (query: GovernanceSnapshotQuery): DecisionInput | null => {
+  if (!query.tenantId || !query.waUserId) return null;
+  const scope = parseScope(query);
+  const isGroup = scope === "group";
+  const requiredRole = query.requiredRole as GovernanceRequiredRole | undefined;
+  const relationshipProfile = query.relationshipProfile as DecisionInput["user"]["relationshipProfile"];
+
+  return {
+    tenant: {
+      id: query.tenantId
+    },
+    user: {
+      waUserId: query.waUserId,
+      permissionRole: query.permissionRole,
+      relationshipProfile,
+      senderIsGroupAdmin: parseBoolean(query.senderIsGroupAdmin) ?? null
+    },
+    group: query.waGroupId
+      ? {
+          waGroupId: query.waGroupId
+        }
+      : undefined,
+    context: {
+      scope,
+      isGroup,
+      routeKey: query.routeKey ?? "admin.snapshot"
+    },
+    consent: {
+      status: query.consentStatus,
+      termsVersion: query.termsVersion,
+      required: parseBoolean(query.consentRequired),
+      bypass: parseBoolean(query.consentBypass)
+    },
+    request: {
+      capability: (query.capability ?? (isGroup ? "conversation.group" : "conversation.direct")).trim().toLowerCase(),
+      commandName: query.commandName,
+      requiredRole,
+      requiresBotAdmin: parseBoolean(query.requiresBotAdmin),
+      requiresGroupAdmin: parseBoolean(query.requiresGroupAdmin),
+      route: query.route
+    },
+    message: {
+      kind: query.messageKind,
+      rawMessageType: query.rawMessageType,
+      ingressSource: query.ingressSource,
+      isBotMentioned: parseBoolean(query.isBotMentioned),
+      isReplyToBot: parseBoolean(query.isReplyToBot)
+    },
+    runtimePolicySignals: {
+      botIsGroupAdmin: parseBoolean(query.botIsGroupAdmin),
+      botAdminCheckFailed: parseBoolean(query.botAdminCheckFailed),
+      botAdminStatusSource: query.botAdminStatusSource
+    }
+  };
+};
 
 export const registerAssistantApiRoutes = (app: AssistantApiHttpApp, runtime: AssistantApiRuntime): void => {
   registerAdminAuthHook(app, runtime.env.ADMIN_API_TOKEN);
@@ -71,6 +172,28 @@ export const registerAssistantApiRoutes = (app: AssistantApiHttpApp, runtime: As
   });
 
   app.get("/admin/metrics/summary", async () => runtime.metrics.getSnapshot());
+
+  app.get("/admin/v1/governance/snapshot", async (request, reply) => {
+    const query = request.query as GovernanceSnapshotQuery;
+    const input = buildGovernanceDecisionInput(query);
+
+    if (!input) {
+      return reply.code(400).send({
+        error: "Missing required query params: tenantId, waUserId"
+      });
+    }
+
+    const governance = runtime.governancePort ?? fallbackGovernancePort;
+    const decision = await resolveGovernanceDecision(governance, input);
+
+    return {
+      schemaVersion: "governance.snapshot.v1",
+      governanceVersion: "v1.6.2",
+      shadowMode: true,
+      input,
+      decision
+    };
+  });
 
   app.get("/admin/status", async () => {
     const [gateway, worker, dbOk, redisOk, jobCounts] = await Promise.all([

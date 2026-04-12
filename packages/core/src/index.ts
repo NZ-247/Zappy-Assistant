@@ -263,6 +263,7 @@ export type {
   DownloadProviderPort,
   DownloadProviderRouterPort
 } from "./modules/downloads/ports/download-provider.port.js";
+export * from "./modules/governance/index.js";
 
 export class Orchestrator {
   private readonly ports: CorePorts;

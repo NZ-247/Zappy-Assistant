@@ -1,4 +1,4 @@
-import type { InboundMessageEvent, Orchestrator } from "@zappy/core";
+import type { InboundMessageEvent, Orchestrator, RelationshipProfile } from "@zappy/core";
 import { createHash, randomUUID } from "node:crypto";
 import { createCommandReactionAckLifecycle } from "../infrastructure/command-reaction-ack.js";
 
@@ -68,6 +68,12 @@ interface MessagesUpsertHandlerDeps {
   };
   withCategory: (category: any, payload?: Record<string, unknown>) => unknown;
   executeOutboundActions: (input: any) => Promise<void>;
+  evaluateGovernanceShadowDecision?: (input: {
+    event: InboundMessageEvent;
+    text: string;
+    permissionRole?: string | null;
+    relationshipProfile?: RelationshipProfile | null;
+  }) => Promise<void>;
   outboundRuntime: {
     sendWithReplyFallback: (input: { to: string; content: any; quotedMessage?: any; logContext: Record<string, unknown> }) => Promise<any>;
     persistOutboundMessage: (input: any) => Promise<unknown>;
@@ -397,6 +403,19 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         messageKey,
         executionId
       };
+      const canonical = context.canonicalIdentity;
+      const relationshipProfile = context.relationshipProfile ?? canonical?.relationshipProfile;
+      const permissionRole = context.user.permissionRole ?? canonical?.permissionRole ?? context.user.role;
+      const normalizedPhone = canonical?.phoneNumber ? canonical.phoneNumber.replace(/\D/g, "") : undefined;
+
+      if (deps.evaluateGovernanceShadowDecision) {
+        await deps.evaluateGovernanceShadowDecision({
+          event,
+          text,
+          permissionRole,
+          relationshipProfile
+        });
+      }
 
       const persisted = await deps.persistInboundMessage({
         ...event,
@@ -405,10 +424,6 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         rawJson: message
       });
       event.conversationId = persisted.conversationId;
-      const canonical = context.canonicalIdentity;
-      const relationshipProfile = context.relationshipProfile ?? canonical?.relationshipProfile;
-      const permissionRole = context.user.permissionRole ?? canonical?.permissionRole ?? context.user.role;
-      const normalizedPhone = canonical?.phoneNumber ? canonical.phoneNumber.replace(/\D/g, "") : undefined;
       deps.logger.info(
         deps.withCategory("WA-IN", {
           tenantId: event.tenantId,
