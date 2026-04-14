@@ -11,6 +11,24 @@ export interface GovernanceGroupSnapshotSource {
   botAdminCheckedAt?: Date | null;
 }
 
+export interface GovernanceUserAccessSnapshotSource {
+  tenantId: string;
+  waUserId: string;
+  status: "PENDING" | "APPROVED" | "BLOCKED";
+  tier: "FREE" | "BASIC" | "PRO" | "ROOT";
+  approvedBy?: string | null;
+  approvedAt?: Date | null;
+}
+
+export interface GovernanceGroupAccessSnapshotSource {
+  tenantId: string;
+  waGroupId: string;
+  status: "PENDING" | "APPROVED" | "BLOCKED";
+  tier: "FREE" | "BASIC" | "PRO" | "ROOT";
+  approvedBy?: string | null;
+  approvedAt?: Date | null;
+}
+
 export interface GovernanceReadOnlySources {
   resolveFlags: (input: { tenantId: string; waGroupId?: string; waUserId: string }) => Promise<Record<string, string>>;
   readGroup: (input: { tenantId: string; waGroupId: string }) => Promise<GovernanceGroupSnapshotSource | null>;
@@ -19,6 +37,8 @@ export interface GovernanceReadOnlySources {
     status: ConsentStatus;
     termsVersion: string;
   } | null>;
+  readUserAccess?: (input: { tenantId: string; waUserId: string }) => Promise<GovernanceUserAccessSnapshotSource | null>;
+  readGroupAccess?: (input: { tenantId: string; waGroupId: string; groupName?: string | null }) => Promise<GovernanceGroupAccessSnapshotSource | null>;
   now?: () => Date;
 }
 
@@ -34,13 +54,26 @@ const isPrivilegedPermissionRole = (permissionRole?: string | null): boolean => 
   return normalized === "ROOT" || normalized === "DONO" || normalized === "OWNER";
 };
 
+type GovernanceAccessStatus = GovernancePolicySnapshot["access"]["effective"]["status"];
+type GovernanceLicenseTier = GovernancePolicySnapshot["access"]["effective"]["tier"];
+
+const toGovernanceAccessStatus = (value?: string | null): GovernanceAccessStatus => {
+  if (value === "PENDING" || value === "APPROVED" || value === "BLOCKED") return value;
+  return "UNKNOWN";
+};
+
+const toGovernanceLicenseTier = (value?: string | null): GovernanceLicenseTier => {
+  if (value === "FREE" || value === "BASIC" || value === "PRO" || value === "ROOT") return value;
+  return "UNKNOWN";
+};
+
 export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources): GovernancePort => {
   return {
     getSnapshot: async (input: DecisionInput): Promise<GovernancePolicySnapshot> => {
       const { tenant, user } = input;
       const waGroupId = input.group?.waGroupId;
 
-      const [featureFlags, group, isBotAdmin, consent] = await Promise.all([
+      const [featureFlags, group, isBotAdmin, consent, userAccess, groupAccess] = await Promise.all([
         sources.resolveFlags({ tenantId: tenant.id, waGroupId, waUserId: user.waUserId }),
         waGroupId ? sources.readGroup({ tenantId: tenant.id, waGroupId }) : Promise.resolve(null),
         sources.isBotAdmin({ tenantId: tenant.id, waUserId: user.waUserId }),
@@ -48,7 +81,20 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
           tenantId: tenant.id,
           waUserId: user.waUserId,
           termsVersion: input.consent?.termsVersion ?? undefined
-        })
+        }),
+        sources.readUserAccess
+          ? sources.readUserAccess({
+              tenantId: tenant.id,
+              waUserId: user.waUserId
+            })
+          : Promise.resolve(null),
+        waGroupId && sources.readGroupAccess
+          ? sources.readGroupAccess({
+              tenantId: tenant.id,
+              waGroupId,
+              groupName: input.group?.name
+            })
+          : Promise.resolve(null)
       ]);
 
       const isPrivileged =
@@ -60,6 +106,41 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
         ...(input.runtimePolicySignals ?? {}),
         senderIsGroupAdmin: input.user.senderIsGroupAdmin ?? null
       };
+
+      const userAccessSnapshot = {
+        exists: Boolean(userAccess),
+        status: toGovernanceAccessStatus(userAccess?.status),
+        tier: toGovernanceLicenseTier(userAccess?.tier),
+        approvedBy: userAccess?.approvedBy ?? null,
+        approvedAt: userAccess?.approvedAt ?? null,
+        source: (userAccess ? "persisted" : "default") as "persisted" | "default"
+      };
+      const groupAccessSnapshot = {
+        exists: Boolean(groupAccess),
+        status: toGovernanceAccessStatus(groupAccess?.status),
+        tier: toGovernanceLicenseTier(groupAccess?.tier),
+        approvedBy: groupAccess?.approvedBy ?? null,
+        approvedAt: groupAccess?.approvedAt ?? null,
+        source: (groupAccess ? "persisted" : "default") as "persisted" | "default"
+      };
+      const useGroupAccess = input.context.scope === "group" && groupAccessSnapshot.exists;
+      const effectiveAccess = useGroupAccess
+        ? {
+            source: "group" as const,
+            status: groupAccessSnapshot.status,
+            tier: groupAccessSnapshot.tier
+          }
+        : userAccessSnapshot.exists
+          ? {
+              source: "user" as const,
+              status: userAccessSnapshot.status,
+              tier: userAccessSnapshot.tier
+            }
+          : {
+              source: "none" as const,
+              status: "UNKNOWN" as const,
+              tier: "UNKNOWN" as const
+            };
 
       return {
         evaluatedAt: sources.now?.() ?? new Date(),
@@ -85,6 +166,11 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
           exists: Boolean(consent),
           status: consent?.status ?? "UNKNOWN",
           termsVersion: consent?.termsVersion ?? input.consent?.termsVersion ?? null
+        },
+        access: {
+          user: userAccessSnapshot,
+          group: groupAccessSnapshot,
+          effective: effectiveAccess
         },
         runtimePolicySignals
       };

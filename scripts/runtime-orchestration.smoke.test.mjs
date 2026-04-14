@@ -219,18 +219,18 @@ const startDetachedPortServer = async ({ port, marker = "smoke-marker" }) => {
 
 const allocateRootServicePorts = async () => {
   const adminUiPort = await getFreePort();
-  const assistantApiPort = await getFreePort();
+  const adminApiPort = await getFreePort();
   const waGatewayPort = await getFreePort();
   const mediaResolverPort = await getFreePort();
 
   return {
     ADMIN_UI_PORT: String(adminUiPort),
-    ADMIN_API_PORT: String(assistantApiPort),
+    ADMIN_API_PORT: String(adminApiPort),
     WA_GATEWAY_INTERNAL_PORT: String(waGatewayPort),
     MEDIA_RESOLVER_API_PORT: String(mediaResolverPort),
     values: {
       adminUiPort,
-      assistantApiPort,
+      adminApiPort,
       waGatewayPort,
       mediaResolverPort
     }
@@ -524,7 +524,7 @@ test("start precheck fails on unknown process occupying a root app port", async 
   const project = createTempProject();
   const ports = await allocateRootServicePorts();
   const holder = await startDetachedPortServer({
-    port: ports.values.assistantApiPort,
+    port: ports.values.adminApiPort,
     marker: "unrelated-process"
   });
   t.after(() => holder.stop());
@@ -544,7 +544,7 @@ test("start precheck fails on unknown process occupying a root app port", async 
   assert.notEqual(result.status, 0, toOutput(result));
   assert.match(
     toOutput(result),
-    new RegExp(`\\[app-precheck\\] service=assistant-api port=${ports.values.assistantApiPort} status=port_conflict_unknown_process`)
+    new RegExp(`\\[app-precheck\\] service=admin-api port=${ports.values.adminApiPort} status=port_conflict_unknown_process`)
   );
 });
 
@@ -552,7 +552,7 @@ test("stop reconciles root app ports with already_stopped vs still_busy_unknown_
   const project = createTempProject();
   const ports = await allocateRootServicePorts();
   const holder = await startDetachedPortServer({
-    port: ports.values.assistantApiPort,
+    port: ports.values.adminApiPort,
     marker: "unknown-holder"
   });
   t.after(() => holder.stop());
@@ -588,7 +588,7 @@ test("stop reconciles root app ports with already_stopped vs still_busy_unknown_
   assert.match(
     output,
     new RegExp(
-      `\\[stop-reconcile\\] service=assistant-api port=${ports.values.assistantApiPort} status=port_still_busy_unknown_process`
+      `\\[stop-reconcile\\] service=admin-api port=${ports.values.adminApiPort} status=port_still_busy_unknown_process`
     )
   );
   assert.match(output, new RegExp(`\\[stop-reconcile\\] service=admin-ui port=${ports.values.adminUiPort} status=already_stopped`));
@@ -670,7 +670,7 @@ test("stop --cleanup-ports skips non-zappy process owners safely", async (t) => 
   const project = createTempProject();
   const ports = await allocateRootServicePorts();
   const holder = await startDetachedPortServer({
-    port: ports.values.assistantApiPort,
+    port: ports.values.adminApiPort,
     marker: "unrelated-process"
   });
   t.after(() => holder.stop());
@@ -690,15 +690,15 @@ test("stop --cleanup-ports skips non-zappy process owners safely", async (t) => 
   assert.match(
     output,
     new RegExp(
-      `\\[cleanup\\] phase=owner service=assistant-api port=${ports.values.assistantApiPort} pid=\\d+ classification=non_zappy_or_uncertain`
+      `\\[cleanup\\] phase=owner service=admin-api port=${ports.values.adminApiPort} pid=\\d+ classification=non_zappy_or_uncertain`
     )
   );
   assert.match(
     output,
-    new RegExp(`\\[cleanup\\] phase=skip service=assistant-api port=${ports.values.assistantApiPort} pid=\\d+ status=skipped_non_zappy_process`)
+    new RegExp(`\\[cleanup\\] phase=skip service=admin-api port=${ports.values.adminApiPort} pid=\\d+ status=skipped_non_zappy_process`)
   );
-  assert.match(output, new RegExp(`\\[cleanup\\] phase=port service=assistant-api port=${ports.values.assistantApiPort} status=still_busy`));
-  assert.equal(await probeTcpPort(ports.values.assistantApiPort, 500), true);
+  assert.match(output, new RegExp(`\\[cleanup\\] phase=port service=admin-api port=${ports.values.adminApiPort} status=still_busy`));
+  assert.equal(await probeTcpPort(ports.values.adminApiPort, 500), true);
 });
 
 test("start clears stale state and still runs port precheck reconciliation", async () => {
@@ -712,7 +712,7 @@ test("start clears stale state and still runs port precheck reconciliation", asy
         mode: "dev",
         supervisorPid: 999999,
         startedAt: new Date().toISOString(),
-        services: [{ name: "assistant-api", pid: 999999 }]
+        services: [{ name: "admin-api", pid: 999999 }]
       },
       null,
       2
@@ -737,7 +737,7 @@ test("start clears stale state and still runs port precheck reconciliation", asy
   assert.match(output, /\[state\] mode=dev status=stale_pid_state_cleared/);
   assert.match(
     output,
-    new RegExp(`\\[app-precheck\\] service=assistant-api port=${ports.values.assistantApiPort} status=ready_to_start`)
+    new RegExp(`\\[app-precheck\\] service=admin-api port=${ports.values.adminApiPort} status=ready_to_start`)
   );
 });
 

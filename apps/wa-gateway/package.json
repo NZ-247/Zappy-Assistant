@@ -1,6 +1,6 @@
 {
   "name": "@zappy/wa-gateway",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@zappy/adapters": "1.6.2",
-    "@zappy/ai": "1.6.2",
-    "@zappy/core": "1.6.2",
-    "@zappy/shared": "1.6.2",
+    "@zappy/adapters": "1.6.3",
+    "@zappy/ai": "1.6.3",
+    "@zappy/core": "1.6.3",
+    "@zappy/shared": "1.6.3",
     "baileys": "^6.7.7",
     "node-webpmux": "^3.2.1",
     "qrcode-terminal": "^0.12.0"

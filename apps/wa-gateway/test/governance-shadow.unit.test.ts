@@ -36,6 +36,29 @@ test("governance shadow evaluator logs structured decision in shadow mode", asyn
           status: "ACCEPTED",
           termsVersion: "2026-03"
         },
+        access: {
+          user: {
+            exists: true,
+            status: "PENDING",
+            tier: "FREE",
+            approvedBy: null,
+            approvedAt: null,
+            source: "persisted"
+          },
+          group: {
+            exists: true,
+            status: "PENDING",
+            tier: "FREE",
+            approvedBy: null,
+            approvedAt: null,
+            source: "persisted"
+          },
+          effective: {
+            source: "group",
+            status: "PENDING",
+            tier: "FREE"
+          }
+        },
         runtimePolicySignals: { botIsGroupAdmin: false }
       })
     } as any,

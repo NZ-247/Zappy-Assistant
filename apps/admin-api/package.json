@@ -1,5 +1,5 @@
 {
-  "name": "@zappy/core",
+  "name": "@zappy/admin-api",
   "version": "1.6.3",
   "private": true,
   "type": "module",
@@ -7,16 +7,20 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsc -w -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --import tsx ./test/*.test.ts"
   },
   "dependencies": {
+    "@zappy/adapters": "1.6.3",
+    "@zappy/core": "1.6.3",
     "@zappy/shared": "1.6.3",
-    "luxon": "^3.7.2",
-    "expr-eval": "^2.0.2"
+    "fastify": "^5.2.1",
+    "bullmq": "^5.40.3",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@types/luxon": "^3.7.1"
+    "tsx": "^4.19.2"
   }
 }

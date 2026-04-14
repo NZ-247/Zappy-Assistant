@@ -209,7 +209,7 @@ Read-only governance evaluation snapshot for a requested subject/context.
 
 Notes
 
-Shadow mode only in v1.6.2:
+Shadow mode only in v1.6.3:
 
 decision is evaluated and returned for observability/debugging
 
@@ -243,7 +243,7 @@ Example response shape
 
 {
   "schemaVersion": "governance.snapshot.v1",
-  "governanceVersion": "v1.6.2",
+  "governanceVersion": "v1.6.3",
   "shadowMode": true,
   "input": {
     "tenant": { "id": "t1" },
@@ -268,6 +268,47 @@ governance debug panel
 policy diagnostics view
 
 future admin-ui governance screen foundation
+
+3.7 Admin Governance Persistence Endpoints (v1.6.3)
+
+Purpose
+
+Expose persisted approvals, license tiers, usage visibility, and administrative audit trail.
+
+Endpoints
+
+Users
+
+- `GET /admin/v1/users`
+- `GET /admin/v1/users/:waUserId`
+- `PATCH /admin/v1/users/:waUserId/access`
+
+Groups
+
+- `GET /admin/v1/groups`
+- `GET /admin/v1/groups/:waGroupId`
+- `PATCH /admin/v1/groups/:waGroupId/access`
+
+Licenses
+
+- `GET /admin/v1/licenses/plans`
+- `PATCH /admin/v1/users/:waUserId/license`
+- `PATCH /admin/v1/groups/:waGroupId/license`
+
+Usage
+
+- `GET /admin/v1/usage/users/:waUserId`
+- `GET /admin/v1/usage/groups/:waGroupId`
+
+Audit
+
+- `GET /admin/v1/audit`
+
+Default materialization policy
+
+- first-seen private users are materialized with `status=PENDING`, `tier=FREE`
+- first-seen groups are materialized with `status=PENDING`, `tier=FREE`
+- admin mutation endpoints append records to `ApprovalAudit`
 
 4. UI page mapping
 4.1 Status page

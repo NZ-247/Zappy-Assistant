@@ -189,8 +189,8 @@ const dependencyDefinitions = [
 
 const services = [
   {
-    name: "assistant-api",
-    workspace: "@zappy/assistant-api",
+    name: "admin-api",
+    workspace: "@zappy/admin-api",
     appPort: {
       envVar: "ADMIN_API_PORT",
       defaultPort: 3333
@@ -271,7 +271,7 @@ const servicePrefixColor = (name) => {
       return ANSI.colors.green;
     case "worker":
       return ANSI.colors.yellow;
-    case "assistant-api":
+    case "admin-api":
       return ANSI.colors.blue;
     case "media-resolver-api":
       return ANSI.colors.cyan;

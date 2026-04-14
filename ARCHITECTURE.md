@@ -41,7 +41,7 @@ Objetivo permanente:
 ### `apps/wa-gateway`
 Responsável por ingress/egress WhatsApp (Baileys), normalização de eventos e execução de ações de plataforma.
 
-### `apps/assistant-api`
+### `apps/admin-api`
 Responsável por endpoints administrativos, status, métricas, filas e auditoria.
 
 ### `apps/worker`
@@ -69,7 +69,7 @@ Regras:
 - setup/runtime Python pertence ao módulo externo (`scripts/bootstrap.sh`, `scripts/run.sh`), não ao root
 
 ### `apps/admin-ui`
-Consome apenas `assistant-api`, sem lógica de domínio embarcada.
+Consome apenas `admin-api`, sem lógica de domínio embarcada.
 
 ### Pacotes compartilhados
 - `packages/core`: pipeline de aplicação, orquestração e dispatch
@@ -169,6 +169,7 @@ Itens encerrados com extração incremental e sem mudança funcional intencional
 - `apps/wa-gateway/src/infrastructure/outbound-actions.ts` -> extraído para dispatcher + handlers por `action.kind`
 - `packages/shared/src/index.ts` -> transformado em barrel com separação `env`/`logging`/`contracts`
 - `apps/assistant-api/src/index.ts` -> reduzido a composition root com bootstrap/rotas em módulos
+- `apps/admin-api/src/index.ts` -> novo control plane dedicado com rotas administrativas versionadas
 
 Referência detalhada:
 - `docs/residual-technical-backlog.md`
@@ -243,3 +244,22 @@ Regras de fase:
 - sem enforcement em runtime nesta etapa
 - sem acoplamento de regra de governança em transports/apps
 - base pronta para enforcement progressivo nas próximas fases do control plane
+
+## 12. Admin API Foundation (v1.6.3)
+
+Phase 2 do plano Admin adiciona a primeira base persistida do control plane:
+
+- novo app dedicado `apps/admin-api`
+  - guard de autenticação para rotas `/admin*`
+  - endpoint de saúde (`GET /health`)
+  - estrutura versionada `/admin/v1/*`
+- novas entidades persistidas de governança administrativa:
+  - `UserAccess`
+  - `GroupAccess`
+  - `LicensePlan`
+  - `UsageCounter`
+  - `ApprovalAudit`
+- adapter de governança refinado para ler estado persistido de aprovação/tier:
+  - materialização segura no primeiro contato (`status=PENDING`, `tier=FREE`)
+  - decisão continua em shadow mode, sem enforcement global forçado nesta fase
+- endpoints v1 para aprovações/licenças/uso/auditoria, com payloads admin-friendly e versionados.

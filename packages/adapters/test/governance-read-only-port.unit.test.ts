@@ -48,6 +48,22 @@ test("read-only governance adapter composes existing policy sources into snapsho
       status: "ACCEPTED",
       termsVersion: "2026-03"
     }),
+    readUserAccess: async () => ({
+      tenantId: "tenant-1",
+      waUserId: "5511999999999@s.whatsapp.net",
+      status: "APPROVED",
+      tier: "PRO",
+      approvedBy: "ops-admin",
+      approvedAt: new Date("2026-04-12T08:00:00.000Z")
+    }),
+    readGroupAccess: async () => ({
+      tenantId: "tenant-1",
+      waGroupId: "120363426095846827@g.us",
+      status: "PENDING",
+      tier: "FREE",
+      approvedBy: null,
+      approvedAt: null
+    }),
     now: () => new Date("2026-04-12T12:00:00.000Z")
   });
 
@@ -60,6 +76,10 @@ test("read-only governance adapter composes existing policy sources into snapsho
   assert.equal(snapshot.group.allowed, true);
   assert.equal(snapshot.actor.isBotAdmin, true);
   assert.equal(snapshot.consent.status, "ACCEPTED");
+  assert.equal(snapshot.access.user.status, "APPROVED");
+  assert.equal(snapshot.access.user.tier, "PRO");
+  assert.equal(snapshot.access.group.status, "PENDING");
+  assert.equal(snapshot.access.effective.source, "group");
   assert.equal(snapshot.runtimePolicySignals.botAdminCheckFailed, true);
   assert.equal(snapshot.evaluatedAt.toISOString(), "2026-04-12T12:00:00.000Z");
 });
@@ -81,4 +101,6 @@ test("read-only governance adapter returns unknown consent when no record exists
   assert.equal(snapshot.scope, "private");
   assert.equal(snapshot.group.exists, false);
   assert.equal(snapshot.consent.status, "UNKNOWN");
+  assert.equal(snapshot.access.effective.source, "none");
+  assert.equal(snapshot.access.effective.status, "UNKNOWN");
 });

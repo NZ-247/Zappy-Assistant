@@ -2,6 +2,8 @@ import type { ConsentStatus, RelationshipProfile } from "../../../pipeline/types
 
 export type GovernanceContextScope = "private" | "group";
 export type GovernanceDecision = "allow" | "deny";
+export type GovernanceAccessStatus = "PENDING" | "APPROVED" | "BLOCKED" | "UNKNOWN";
+export type GovernanceLicenseTier = "FREE" | "BASIC" | "PRO" | "ROOT" | "UNKNOWN";
 
 export type GovernanceRequiredRole = "member" | "admin" | "root" | "group_admin" | "privileged";
 
@@ -78,6 +80,29 @@ export interface GovernancePolicySnapshot {
     exists: boolean;
     status: ConsentStatus | "UNKNOWN";
     termsVersion?: string | null;
+  };
+  access: {
+    user: {
+      exists: boolean;
+      status: GovernanceAccessStatus;
+      tier: GovernanceLicenseTier;
+      approvedBy?: string | null;
+      approvedAt?: Date | null;
+      source: "persisted" | "default";
+    };
+    group: {
+      exists: boolean;
+      status: GovernanceAccessStatus;
+      tier: GovernanceLicenseTier;
+      approvedBy?: string | null;
+      approvedAt?: Date | null;
+      source: "persisted" | "default";
+    };
+    effective: {
+      source: "user" | "group" | "none";
+      status: GovernanceAccessStatus;
+      tier: GovernanceLicenseTier;
+    };
   };
   runtimePolicySignals: Record<string, unknown>;
 }

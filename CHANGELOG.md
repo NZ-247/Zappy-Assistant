@@ -1,5 +1,43 @@
 # Changelog
 
+## V1.6.3 - 2026-04-14
+- Added a dedicated control-plane app `apps/admin-api` with versioned admin routes under `/admin/v1/*`.
+- Added persisted governance/admin entities to Prisma:
+  - `UserAccess`
+  - `GroupAccess`
+  - `LicensePlan`
+  - `UsageCounter`
+  - `ApprovalAudit`
+- Added admin authentication guard improvements for control-plane routes (`Authorization: Bearer` + `x-admin-token` fallback).
+- Added v1 admin endpoints for approvals, licenses, usage visibility, and approval audit trail:
+  - `GET /admin/v1/users`
+  - `GET /admin/v1/users/:waUserId`
+  - `PATCH /admin/v1/users/:waUserId/access`
+  - `GET /admin/v1/groups`
+  - `GET /admin/v1/groups/:waGroupId`
+  - `PATCH /admin/v1/groups/:waGroupId/access`
+  - `GET /admin/v1/licenses/plans`
+  - `PATCH /admin/v1/users/:waUserId/license`
+  - `PATCH /admin/v1/groups/:waGroupId/license`
+  - `GET /admin/v1/usage/users/:waUserId`
+  - `GET /admin/v1/usage/groups/:waGroupId`
+  - `GET /admin/v1/audit`
+  - `GET /admin/v1/status`
+- Kept compatibility endpoints for existing admin consumers (`/admin/status`, `/admin/flags`, `/admin/triggers`, `/admin/messages`, `/admin/commands`, `/admin/queues`, `/admin/metrics/summary`).
+- Refined governance read-only adapter to compose persisted access/tier state alongside transitional sources:
+  - first-seen materialization for users/groups with safe defaults (`status=PENDING`, `tier=FREE`)
+  - decision placeholders now resolve real approval/licensing snapshot states in shadow mode.
+- Updated runtime orchestration to boot `admin-api` as the root admin service on `ADMIN_API_PORT`.
+- Added tests for:
+  - admin-api route auth and response shape
+  - approval/block flow
+  - user/group license assignment flow
+  - audit trail creation on admin mutations
+  - usage endpoint response shape
+  - governance adapter persisted approval/tier composition
+  - governance decision placeholder mapping from snapshot access state
+- Bumped workspace/project versions to `1.6.3`.
+
 ## V1.6.2 - 2026-04-12
 - Added Governance Foundation (Phase 1, shadow mode) with modular core decision layer:
   - new `packages/core/src/modules/governance/*`

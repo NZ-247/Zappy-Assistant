@@ -304,6 +304,23 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     }
   }
 
+  const effectiveAccess = snapshot.access.effective;
+  const approvalState =
+    effectiveAccess.status === "APPROVED"
+      ? "approved"
+      : effectiveAccess.status === "PENDING"
+        ? "pending"
+        : effectiveAccess.status === "BLOCKED"
+          ? "rejected"
+          : "not_required";
+  const licensingState =
+    effectiveAccess.status === "BLOCKED"
+      ? "blocked"
+      : effectiveAccess.tier === "UNKNOWN"
+        ? "not_evaluated"
+        : "active";
+  const effectiveApprovedBy = snapshot.access.effective.source === "group" ? snapshot.access.group.approvedBy : snapshot.access.user.approvedBy;
+
   const decision: DecisionResult = {
     decision: allow ? "allow" : "deny",
     allow,
@@ -313,15 +330,15 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     reasonCodes: [...acc.reasonCodes],
     diagnostics: acc.diagnostics,
     approval: {
-      required: false,
-      state: "not_required",
+      required: approvalState !== "not_required",
+      state: approvalState,
       requestedBy: null,
-      approvedBy: null,
+      approvedBy: effectiveApprovedBy ?? null,
       referenceId: null
     },
     licensing: {
-      state: "not_evaluated",
-      planId: null,
+      state: licensingState,
+      planId: effectiveAccess.tier === "UNKNOWN" ? null : effectiveAccess.tier,
       quota: {
         limit: null,
         used: null,

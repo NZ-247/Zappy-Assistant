@@ -36,6 +36,35 @@ const buildRuntime = () =>
           status: "ACCEPTED",
           termsVersion: "2026-03"
         },
+        access: {
+          user: {
+            exists: true,
+            status: "PENDING",
+            tier: "FREE",
+            approvedBy: null,
+            approvedAt: null,
+            source: "persisted"
+          },
+          group: {
+            exists: Boolean(input.group),
+            status: input.group ? "PENDING" : "UNKNOWN",
+            tier: input.group ? "FREE" : "UNKNOWN",
+            approvedBy: null,
+            approvedAt: null,
+            source: input.group ? "persisted" : "default"
+          },
+          effective: input.group
+            ? {
+                source: "group",
+                status: "PENDING",
+                tier: "FREE"
+              }
+            : {
+                source: "user",
+                status: "PENDING",
+                tier: "FREE"
+              }
+        },
         runtimePolicySignals: input.runtimePolicySignals ?? {}
       })
     },

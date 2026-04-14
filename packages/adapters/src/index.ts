@@ -44,6 +44,7 @@ import {
   markWorkerHeartbeat
 } from "./status/repository.js";
 import { createReadOnlyGovernancePort } from "./governance/read-only-governance-port.js";
+import { createAdminGovernanceRepository } from "./admin/repository.js";
 
 export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -936,6 +937,12 @@ export const botAdminRepository = createBotAdminRepository({
   findUserForTenant
 });
 
+export const adminGovernanceRepository = createAdminGovernanceRepository({
+  prisma,
+  writeAudit,
+  defaultTenantName: process.env.DEFAULT_TENANT_NAME
+});
+
 export const governancePort = createReadOnlyGovernancePort({
   resolveFlags: async (input) => coreFlagsRepository.resolveFlags(input),
   readGroup: async (input) => {
@@ -963,7 +970,18 @@ export const governancePort = createReadOnlyGovernancePort({
     };
   },
   isBotAdmin: async (input) => botAdminRepository.isAdmin(input),
-  getConsent: async (input) => consentRepository.getConsent(input)
+  getConsent: async (input) => consentRepository.getConsent(input),
+  readUserAccess: async (input) =>
+    adminGovernanceRepository.getOrMaterializeUserAccess({
+      tenantId: input.tenantId,
+      waUserId: input.waUserId
+    }),
+  readGroupAccess: async (input) =>
+    adminGovernanceRepository.getOrMaterializeGroupAccess({
+      tenantId: input.tenantId,
+      waGroupId: input.waGroupId,
+      groupName: input.groupName
+    })
 });
 
 export const createStatusPort = (deps: {

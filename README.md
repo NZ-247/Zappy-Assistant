@@ -69,7 +69,7 @@ Dependency discovery before any compose-up includes:
 
 - PostgreSQL: `5432`
 - Redis: `6379`
-- `assistant-api`: `3333` (`ADMIN_API_PORT`)
+- `admin-api`: `3333` (`ADMIN_API_PORT`)
 - `wa-gateway` internal endpoint: `3334` (`WA_GATEWAY_INTERNAL_PORT`)
 - `media-resolver-api`: `3335` (`MEDIA_RESOLVER_API_PORT`)
 - `admin-ui`: `8080` (`ADMIN_UI_PORT`)
@@ -84,7 +84,7 @@ Preferred local command:
 npm run start:dev -- --infra=auto
 ```
 
-Root app startup behavior now includes pre-start reconciliation for `admin-ui` (`8080`), `assistant-api` (`3333`), `wa-gateway` (`3334`), and `media-resolver-api` (`3335`):
+Root app startup behavior now includes pre-start reconciliation for `admin-ui` (`8080`), `admin-api` (`3333`), `wa-gateway` (`3334`), and `media-resolver-api` (`3335`):
 
 - `[app-precheck] ... status=ready_to_start` -> service spawn continues.
 - `[app-precheck] ... status=already_running_same_service` -> duplicate spawn is skipped (`[app-start-skip] ...`).
@@ -271,7 +271,7 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - resolver health fails after delegation:
   - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
-Version note: current release line is `v1.6.2`.
+Version note: current release line is `v1.6.3`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -286,6 +286,12 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
 - Governance Foundation (Phase 1, shadow mode): read-only decision evaluation + structured logs + admin snapshot endpoint (`GET /admin/v1/governance/snapshot`) with no enforcement yet.
+- Admin control-plane API (`apps/admin-api`) now persists and exposes governance administrative state:
+  - approvals: `/admin/v1/users/:waUserId/access`, `/admin/v1/groups/:waGroupId/access`
+  - licensing: `/admin/v1/licenses/plans`, `/admin/v1/users/:waUserId/license`, `/admin/v1/groups/:waGroupId/license`
+  - usage visibility: `/admin/v1/usage/users/:waUserId`, `/admin/v1/usage/groups/:waGroupId`
+  - approval audit trail: `/admin/v1/audit`
+  - safe defaults for first-seen entities: `status=PENDING`, `tier=FREE`
 - Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe` (`/tr`, `/tss`), `/tts`, `/trl`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
@@ -353,7 +359,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Status command aggregates gateway/worker heartbeats, DB/Redis checks, and counts for tasks/reminders/timers.
 - Trigger priority, cooldown, template variables.
 - Reminder and timer jobs via BullMQ with idempotent worker.
-- Admin API + UI for flags, triggers, status, logs, and message feed.
+- Admin API + UI for flags, triggers, status, logs, usage, approvals, and message feed.
 - Services.NET onboarding/consent gate for common users (SIM/NÃO) with link (`CONSENT_LINK`), pending reminder state, and privileged bypass (creator_root, mother_privileged, owners/admins).
 - Relationship-aware personas with resolver:
   - creator_root (`556699064658`) and mother_privileged (`556692283438`) get tailored tone, initiative, and deeper memory; other profiles map to delegated_owner/admin/member/external_contact.

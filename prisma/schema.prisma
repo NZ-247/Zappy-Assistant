@@ -47,6 +47,24 @@ enum ConsentStatus {
   DECLINED
 }
 
+enum AccessStatus {
+  PENDING
+  APPROVED
+  BLOCKED
+}
+
+enum LicenseTier {
+  FREE
+  BASIC
+  PRO
+  ROOT
+}
+
+enum AccessSubjectType {
+  USER
+  GROUP
+}
+
 enum ChatMode {
   ON
   OFF
@@ -111,6 +129,8 @@ model Tenant {
   notes         Note[]
   timers        Timer[]
   botAdmins     BotAdmin[]
+  userAccessEntries UserAccess[]
+  groupAccessEntries GroupAccess[]
 
   @@index([name])
 }
@@ -427,5 +447,85 @@ model AuditLog {
   createdAt DateTime    @default(now())
 
   @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+model UserAccess {
+  id          String       @id @default(uuid())
+  tenantId    String
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  waUserId    String
+  phoneNumber String?
+  displayName String?
+  status      AccessStatus @default(PENDING)
+  tier        LicenseTier  @default(FREE)
+  approvedBy  String?
+  approvedAt  DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([tenantId, waUserId])
+  @@index([tenantId])
+  @@index([status])
+  @@index([tier])
+}
+
+model GroupAccess {
+  id         String       @id @default(uuid())
+  tenantId   String
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  waGroupId  String
+  groupName  String?
+  status     AccessStatus @default(PENDING)
+  tier       LicenseTier  @default(FREE)
+  approvedBy String?
+  approvedAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@unique([tenantId, waGroupId])
+  @@index([tenantId])
+  @@index([status])
+  @@index([tier])
+}
+
+model LicensePlan {
+  id                 String      @id @default(uuid())
+  tier               LicenseTier @unique
+  displayName        String
+  description        String?
+  capabilityDefaults Json?
+  active             Boolean     @default(true)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+}
+
+model UsageCounter {
+  id          String            @id @default(uuid())
+  subjectType AccessSubjectType
+  subjectId   String
+  bucket      String
+  periodKey   String
+  count       Int               @default(0)
+  metadata    Json?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@unique([subjectType, subjectId, bucket, periodKey])
+  @@index([subjectType, subjectId])
+  @@index([bucket, periodKey])
+}
+
+model ApprovalAudit {
+  id          String            @id @default(uuid())
+  subjectType AccessSubjectType
+  subjectId   String
+  action      String
+  actor       String
+  before      Json?
+  after       Json?
+  createdAt   DateTime          @default(now())
+
+  @@index([subjectType, subjectId, createdAt])
   @@index([createdAt])
 }

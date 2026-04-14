@@ -103,8 +103,8 @@ const rootAppPortServices = [
     }
   },
   {
-    name: "assistant-api",
-    workspace: "@zappy/assistant-api",
+    name: "admin-api",
+    workspace: "@zappy/admin-api",
     port: {
       envVar: "ADMIN_API_PORT",
       defaultPort: 3333
