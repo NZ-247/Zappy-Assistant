@@ -209,7 +209,7 @@ Read-only governance evaluation snapshot for a requested subject/context.
 
 Notes
 
-Shadow mode only in v1.6.3:
+Shadow mode in v1.7.0:
 
 decision is evaluated and returned for observability/debugging
 
@@ -243,7 +243,7 @@ Example response shape
 
 {
   "schemaVersion": "governance.snapshot.v1",
-  "governanceVersion": "v1.6.3",
+  "governanceVersion": "v1.7.0",
   "shadowMode": true,
   "input": {
     "tenant": { "id": "t1" },
@@ -269,7 +269,7 @@ policy diagnostics view
 
 future admin-ui governance screen foundation
 
-3.7 Admin Governance Persistence Endpoints (v1.6.3)
+3.7 Admin Governance Persistence Endpoints (v1.7.0)
 
 Purpose
 
@@ -310,90 +310,140 @@ Default materialization policy
 - first-seen groups are materialized with `status=PENDING`, `tier=FREE`
 - admin mutation endpoints append records to `ApprovalAudit`
 
-4. UI page mapping
-4.1 Status page
+3.8 Admin Jobs/Status Extensions (v1.7.0)
+
+Purpose
+
+Support the Admin UI MVP dashboard and jobs/reminders operations without moving policy/business logic to frontend.
+
+Endpoints
+
+- `GET /admin/v1/status` (schema `admin.status.v2`)
+- `GET /admin/v1/reminders`
+- `POST /admin/v1/reminders/:reminderId/retry`
+
+Status (`admin.status.v2`) notable fields
+
+- `projectVersion`
+- `services.gateway|worker|adminApi|mediaResolverApi|assistantApi`
+- `db`, `redis`, `llm`
+- `queue`
+- `reminders` summary
+- `resolver` summary
+- `failures` summary (`queueFailedJobs`, `failedReminders`, `recentFailedReminders`)
+- `warnings` (degraded dependencies / stale heartbeat / partial availability)
+
+Reminder retry policy
+
+- retry endpoint is safe and restricted to reminders currently in `FAILED`
+- successful retry re-schedules the reminder and enqueues `send-reminder`
+- invalid-state retries return conflict (`409`)
+
+4. UI page mapping (Admin UI MVP v1.7.0)
+4.1 Dashboard page
 
 Uses:
 
-/admin/status
+- `/admin/v1/status`
 
-/admin/metrics/summary
+- `/admin/metrics/summary`
 
 Widgets:
 
-gateway status
+service cards for wa-gateway, worker, admin-api, media-resolver-api, assistant-api (optional)
 
-worker status
+infra cards for postgres/redis
 
-bot status
+current project version
 
-DB/Redis status
+resolver health summary
 
-LLM enabled/model
+jobs/reminders summary
 
-queue mini-summary
+recent failure/warning summary
 
-top-level counters
-
-4.2 Queues page
+4.2 Users page
 
 Uses:
 
-/admin/queues
+- `GET /admin/v1/users`
+- `PATCH /admin/v1/users/:waUserId/access`
+- `PATCH /admin/v1/users/:waUserId/license`
+- `GET /admin/v1/usage/users/:waUserId` (details/usage panel)
 
 Widgets:
 
-queues table
+list + search/filter
 
-badges for waiting/active/failed
+status badge (`PENDING|APPROVED|BLOCKED`)
 
-optional alert if failed > 0
+tier badge (`FREE|BASIC|PRO|ROOT`)
 
-4.3 Commands page
+actions: approve / block / change tier
+
+optional detail panel/modal
+
+4.3 Groups page
 
 Uses:
 
-/admin/commands
+- `GET /admin/v1/groups`
+- `PATCH /admin/v1/groups/:waGroupId/access`
+- `PATCH /admin/v1/groups/:waGroupId/license`
+- `GET /admin/v1/usage/groups/:waGroupId` (details/usage panel)
 
 Widgets:
 
-command audit table
+list + search/filter
 
-columns:
+status badge
 
-timestamp
+tier badge
 
-user
+actions: approve / block / change tier
 
-command
-
-summary
-
-status
-
-4.4 Messages page
+4.4 Licenses/Plans page
 
 Uses:
 
-/admin/messages
+- `GET /admin/v1/licenses/plans`
 
 Widgets:
 
-message activity feed/table
+tier cards/table
 
-columns:
+plan metadata (`displayName`, `description`, `active`, capability defaults)
 
-timestamp
+4.5 Audit page
 
-direction
+Uses:
 
-user
+- `GET /admin/v1/audit`
 
-group/private
+Widgets:
 
-preview
+actor, timestamp, subject, action
 
-type
+before/after summary where available
+
+subject filters where practical
+
+4.6 Jobs/Reminders page
+
+Uses:
+
+- `GET /admin/v1/reminders`
+- `POST /admin/v1/reminders/:reminderId/retry`
+
+Widgets:
+
+reminder/job list
+
+status filters
+
+failed reminder inspection
+
+retry action when status is `FAILED`
 
 5. UI state requirements
 
@@ -413,15 +463,19 @@ no messages yet
 
 no queues configured
 
+no users/groups/reminders/plans/audit records
+
 Error state
 
 Examples:
 
 unauthorized
 
-failed to fetch
+network or upstream unavailable
 
 backend unavailable
+
+partial backend availability (degraded services)
 
 Offline state
 
@@ -445,6 +499,10 @@ ADMIN_API_PORT
 
 ADMIN_UI_PORT
 
+ADMIN_API_BASE_URL
+
+ASSISTANT_API_BASE_URL (optional, for dashboard aggregation)
+
 LLM_ENABLED
 
 OPENAI_MODEL
@@ -456,8 +514,6 @@ Not all need dedicated endpoints immediately, but these are relevant system sett
 Potential future endpoints/pages:
 
 group settings
-
-reminders list
 
 tasks list
 

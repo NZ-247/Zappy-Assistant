@@ -45,6 +45,7 @@ import {
 } from "./status/repository.js";
 import { createReadOnlyGovernancePort } from "./governance/read-only-governance-port.js";
 import { createAdminGovernanceRepository } from "./admin/repository.js";
+import { createAdminJobsRepository } from "./admin/jobs-repository.js";
 
 export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -941,6 +942,10 @@ export const adminGovernanceRepository = createAdminGovernanceRepository({
   prisma,
   writeAudit,
   defaultTenantName: process.env.DEFAULT_TENANT_NAME
+});
+
+export const adminJobsRepository = createAdminJobsRepository({
+  prisma
 });
 
 export const governancePort = createReadOnlyGovernancePort({

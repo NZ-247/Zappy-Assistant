@@ -1,5 +1,6 @@
 import {
   adminGovernanceRepository,
+  adminJobsRepository,
   createMetricsRecorder,
   createQueue,
   createRedisConnection,
@@ -20,7 +21,8 @@ export const createAdminApiRuntime = () => {
     metrics,
     queue,
     governancePort,
-    adminGovernanceRepository
+    adminGovernanceRepository,
+    adminJobsRepository
   };
 };
 

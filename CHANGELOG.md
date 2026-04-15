@@ -1,5 +1,43 @@
 # Changelog
 
+## V1.7.0 - 2026-04-15
+- Delivered the first browser-based Admin UI MVP (`apps/admin-ui`) as a real control-plane interface (presentation-only) consuming `admin-api`.
+- Replaced legacy static utility pages with a unified Admin UI experience featuring:
+  - Dashboard
+  - Users
+  - Groups
+  - Licenses/Plans
+  - Audit
+  - Jobs/Reminders
+- Added Admin UI session/config handling for:
+  - configurable Admin API base URL
+  - configurable admin token
+  - actor/tenant context for mutation calls
+- Added robust admin-facing UI states for:
+  - loading
+  - empty datasets
+  - unauthorized token/session
+  - network/upstream failures
+  - partial backend availability
+- Added `admin-ui` same-origin proxy route (`/ui-api/*`) and config route (`/ui-config`) to avoid opaque browser fetch failures and provide consistent error surfaces.
+- Expanded `admin-api` control-plane contracts for Admin UI MVP:
+  - richer `GET /admin/v1/status` payload (`admin.status.v2`) with project/service health, resolver summary, reminders/jobs summary, warnings, and recent failure snapshot
+  - `GET /admin/v1/reminders`
+  - `POST /admin/v1/reminders/:reminderId/retry` (safe retry for failed reminders)
+- Added adapter-level jobs/reminders admin repository in `packages/adapters` for control-plane reminder visibility and retry orchestration.
+- Added health route support to `media-resolver-api` (`GET /health`) for dashboard service checks.
+- Added integration coverage for:
+  - admin-ui proxy fetch flows to admin-api
+  - approve/block round-trips
+  - tier assignment round-trips
+  - audit visibility after admin mutations
+  - dashboard data loading with degraded dependencies
+  - jobs/reminders rendering + retry flow
+- Added/expanded backend tests for:
+  - status payload shape (`admin.status.v2`)
+  - reminders listing/retry endpoints
+- Bumped workspace/project versions to `1.7.0`.
+
 ## V1.6.3 - 2026-04-14
 - Added a dedicated control-plane app `apps/admin-api` with versioned admin routes under `/admin/v1/*`.
 - Added persisted governance/admin entities to Prisma:

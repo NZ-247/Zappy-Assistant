@@ -1,6 +1,6 @@
 {
   "name": "@zappy/assistant-api",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -13,9 +13,9 @@
     "test": "node --test --import tsx ./test/*.test.ts"
   },
   "dependencies": {
-    "@zappy/adapters": "1.6.3",
-    "@zappy/core": "1.6.3",
-    "@zappy/shared": "1.6.3",
+    "@zappy/adapters": "1.7.0",
+    "@zappy/core": "1.7.0",
+    "@zappy/shared": "1.7.0",
     "fastify": "^5.2.1",
     "bullmq": "^5.40.3"
   },

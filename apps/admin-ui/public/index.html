@@ -1,12 +1,86 @@
-<!doctype html><html><head><title>Flags</title></head><body>
-<h1>Feature Flags</h1>
-<a href="/">Flags</a> | <a href="/triggers">Triggers</a> | <a href="/status">Status</a> | <a href="/messages">Messages</a> | <a href="/commands">Commands</a> | <a href="/queues">Queues</a> | <a href="/logs">Audit</a>
-<div><input id="apiBase" placeholder="API Base" /><input id="token" placeholder="Admin token" /><button onclick="saveSettings()">Save</button></div>
-<div>
-<input id="key" placeholder="key" /><input id="description" placeholder="description" /><input id="value" placeholder='value e.g. "on"/json' />
-<select id="scope"><option>GLOBAL</option><option>TENANT</option><option>GROUP</option><option>USER</option></select>
-<input id="tenantId" placeholder="tenantId (optional)" /><input id="groupId" placeholder="groupId (optional)" /><input id="userId" placeholder="userId (optional)" />
-<label>enabled <input id="enabled" type="checkbox" checked /></label>
-<button onclick="createFlag()">Create</button><button onclick="loadFlags()">Refresh</button>
-</div>
-<pre id="data"></pre><script src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zappy Admin UI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="background-glow" aria-hidden="true"></div>
+    <div class="background-grid" aria-hidden="true"></div>
+
+    <div id="app" class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Zappy Assistant</p>
+          <h1>Admin Control Plane</h1>
+        </div>
+        <div class="header-meta">
+          <span id="ui-version-badge" class="chip">UI</span>
+          <span id="session-badge" class="chip chip-alert">Session not configured</span>
+        </div>
+      </header>
+
+      <section class="config-panel">
+        <h2>Connection</h2>
+        <div class="config-grid">
+          <label>
+            <span>Admin API Base URL</span>
+            <input id="config-api-base" type="url" placeholder="http://localhost:3333" />
+          </label>
+          <label>
+            <span>Admin Token</span>
+            <input id="config-token" type="password" placeholder="Bearer token" />
+          </label>
+          <label>
+            <span>Actor (audit)</span>
+            <input id="config-actor" type="text" placeholder="ops-admin" />
+          </label>
+          <label>
+            <span>Tenant (optional)</span>
+            <input id="config-tenant" type="text" placeholder="tenant-1" />
+          </label>
+        </div>
+        <div class="config-actions">
+          <button id="save-config-btn" class="btn btn-primary" type="button">Save Session</button>
+          <button id="test-connection-btn" class="btn" type="button">Test Connection</button>
+          <button id="clear-config-btn" class="btn btn-ghost" type="button">Clear</button>
+        </div>
+        <p id="config-feedback" class="feedback" aria-live="polite"></p>
+      </section>
+
+      <nav class="view-nav" aria-label="Admin sections">
+        <button class="nav-btn is-active" data-view="dashboard" type="button">Dashboard</button>
+        <button class="nav-btn" data-view="users" type="button">Users</button>
+        <button class="nav-btn" data-view="groups" type="button">Groups</button>
+        <button class="nav-btn" data-view="licenses" type="button">Licenses</button>
+        <button class="nav-btn" data-view="audit" type="button">Audit</button>
+        <button class="nav-btn" data-view="jobs" type="button">Jobs & Reminders</button>
+      </nav>
+
+      <section id="global-message" class="global-message hidden" role="status" aria-live="polite"></section>
+      <main id="view-root" class="view-root"></main>
+    </div>
+
+    <template id="loading-template">
+      <div class="state-card state-loading">Loading admin data...</div>
+    </template>
+
+    <template id="empty-template">
+      <div class="state-card state-empty">No records found for the current filter.</div>
+    </template>
+
+    <template id="error-template">
+      <div class="state-card state-error"></div>
+    </template>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

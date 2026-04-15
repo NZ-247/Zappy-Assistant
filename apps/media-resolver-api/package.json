@@ -1,6 +1,6 @@
 {
   "name": "@zappy/media-resolver-api",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -12,9 +12,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@zappy/adapters": "1.6.3",
-    "@zappy/core": "1.6.3",
-    "@zappy/shared": "1.6.3"
+    "@zappy/adapters": "1.7.0",
+    "@zappy/core": "1.7.0",
+    "@zappy/shared": "1.7.0"
   },
   "devDependencies": {
     "tsx": "^4.19.2"

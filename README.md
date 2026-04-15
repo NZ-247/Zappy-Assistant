@@ -13,6 +13,8 @@ npm run prisma:generate
 - `LLM_ENABLED=false` skips the LLM fallback and keeps commands/triggers active.
 - `BOT_TIMEZONE` (default `America/Cuiaba`) controls all reminder parsing/formatting.
 - `BOT_PREFIX` (default `/`) is the global command prefix; parsing/help text respect this value.
+- `ADMIN_API_BASE_URL` seeds Admin UI default control-plane target (default `http://localhost:3333`).
+- Optional `ASSISTANT_API_BASE_URL` allows `admin-api` status aggregation to report assistant-api health if that runtime is still enabled.
 - Logging env overrides: `LOG_FORMAT`, `LOG_LEVEL`, `LOG_PRETTY_MODE`, `LOG_COLORIZE`, `LOG_VERBOSE_FIELDS` (runtime mode still applies sane defaults).
 - Replay/backlog guard is multi-layered: startup watermark + dedupe claim (`remoteJid + waMessageId`) + stale age guard. Main knobs: `INBOUND_MAX_MESSAGE_AGE_SECONDS` (default `30`), `INBOUND_STARTUP_WATERMARK_TOLERANCE_SECONDS` (default `5`), `INBOUND_MISSING_TIMESTAMP_STARTUP_GRACE_SECONDS` (default `15`), `INBOUND_MESSAGE_CLAIM_TTL_SECONDS` (default `172800`).
 - `STICKER_MAX_VIDEO_SECONDS` (default `10`) limits short-video sticker generation; videos above this threshold are rejected with friendly feedback.
@@ -271,7 +273,7 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - resolver health fails after delegation:
   - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
-Version note: current release line is `v1.6.3`.
+Version note: current release line is `v1.7.0`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -359,7 +361,12 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Status command aggregates gateway/worker heartbeats, DB/Redis checks, and counts for tasks/reminders/timers.
 - Trigger priority, cooldown, template variables.
 - Reminder and timer jobs via BullMQ with idempotent worker.
-- Admin API + UI for flags, triggers, status, logs, usage, approvals, and message feed.
+- Admin control-plane stack (`admin-api` + `admin-ui` MVP):
+  - Dashboard health/summary view for `wa-gateway`, `worker`, `admin-api`, `media-resolver-api`, optional `assistant-api`, Redis/Postgres, queue/reminders, and recent failures.
+  - Users/Groups operations with approve, block, and tier assignment flows backed by persisted governance entities.
+  - Licenses/Plans catalog with capability metadata visibility.
+  - Audit history view with actor/subject/action/timestamp and before/after summaries where available.
+  - Jobs/Reminders view with failed reminder inspection and safe retry action.
 - Services.NET onboarding/consent gate for common users (SIM/NÃO) with link (`CONSENT_LINK`), pending reminder state, and privileged bypass (creator_root, mother_privileged, owners/admins).
 - Relationship-aware personas with resolver:
   - creator_root (`556699064658`) and mother_privileged (`556692283438`) get tailored tone, initiative, and deeper memory; other profiles map to delegated_owner/admin/member/external_contact.

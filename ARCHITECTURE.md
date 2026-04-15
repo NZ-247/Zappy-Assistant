@@ -263,3 +263,40 @@ Phase 2 do plano Admin adiciona a primeira base persistida do control plane:
   - materialização segura no primeiro contato (`status=PENDING`, `tier=FREE`)
   - decisão continua em shadow mode, sem enforcement global forçado nesta fase
 - endpoints v1 para aprovações/licenças/uso/auditoria, com payloads admin-friendly e versionados.
+
+## 13. Admin UI MVP (v1.7.0)
+
+Phase 3 do plano Admin entrega o primeiro painel operacional navegável no browser:
+
+- `apps/admin-ui` consolidado como interface presentation-only do control plane
+- consumo exclusivo de `admin-api` (sem lógica de domínio/política no frontend)
+- páginas MVP:
+  - Dashboard
+  - Users
+  - Groups
+  - Licenses/Plans
+  - Audit
+  - Jobs/Reminders
+- UX operacional com estados explícitos:
+  - loading
+  - empty
+  - unauthorized/token inválido
+  - network/upstream unavailable
+  - backend parcial/degradado
+
+Evoluções de backend para suportar o MVP sem quebrar fronteiras:
+
+- `admin-api` status expandido para `admin.status.v2` com:
+  - health por serviço (gateway/worker/admin-api/media-resolver/assistant-api opcional)
+  - resumo de queue/reminders
+  - resumo de falhas recentes e warnings
+  - versão corrente do projeto
+- novos endpoints de jobs/reminders administrativos:
+  - `GET /admin/v1/reminders`
+  - `POST /admin/v1/reminders/:reminderId/retry` (retry seguro para `FAILED`)
+- `media-resolver-api` expõe `GET /health` para observabilidade do dashboard
+
+Decisão arquitetural chave da fase:
+
+- manter a inteligência administrativa no `admin-api` e adapters
+- permitir ao `admin-ui` apenas orquestrar leitura/escrita via contratos HTTP estáveis

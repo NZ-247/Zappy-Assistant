@@ -46,6 +46,15 @@ export const startInternalMediaResolverApi = (deps: InternalMediaResolverApiDeps
     const method = request.method ?? "GET";
     const path = request.url ? new URL(request.url, "http://localhost").pathname : "/";
 
+    if (method === "GET" && path === "/health") {
+      writeJson(reply, 200, {
+        ok: true,
+        service: "media-resolver-api",
+        checkedAt: new Date().toISOString()
+      });
+      return;
+    }
+
     if (method !== "POST" || path !== INTERNAL_MEDIA_RESOLVER_RESOLVE_PATH) {
       writeJson(reply, 404, { ok: false, error: "Not found", code: "NOT_FOUND" });
       return;

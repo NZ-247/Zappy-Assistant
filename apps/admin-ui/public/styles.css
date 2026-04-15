@@ -1,0 +1,475 @@
+:root {
+  --bg: #0f1a23;
+  --bg-soft: #182734;
+  --surface: #11293d;
+  --surface-soft: #183348;
+  --surface-hover: #20435e;
+  --text: #e8f3ff;
+  --text-dim: #9cb8cf;
+  --ok: #3dd08c;
+  --warn: #f0b75a;
+  --bad: #ef6666;
+  --info: #56b4f1;
+  --border: rgba(165, 197, 224, 0.22);
+  --shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 20% 20%, #1b3d57 0%, transparent 40%), radial-gradient(circle at 80% 0%, #2f4d2b 0%, transparent 42%),
+    linear-gradient(160deg, #0d141d 0%, #111f2d 45%, #10263b 100%);
+}
+
+.background-glow,
+.background-grid {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -2;
+}
+
+.background-grid {
+  z-index: -1;
+  opacity: 0.15;
+  background-image: linear-gradient(rgba(163, 210, 241, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(163, 210, 241, 0.22) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.15), transparent 75%);
+}
+
+.background-glow::before,
+.background-glow::after {
+  content: "";
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  filter: blur(56px);
+  opacity: 0.45;
+  animation: drift 16s ease-in-out infinite alternate;
+}
+
+.background-glow::before {
+  top: -80px;
+  left: -80px;
+  background: #266da0;
+}
+
+.background-glow::after {
+  right: -120px;
+  bottom: -120px;
+  background: #53823f;
+  animation-delay: 1.2s;
+}
+
+@keyframes drift {
+  from {
+    transform: translateY(0px) scale(1);
+  }
+
+  to {
+    transform: translateY(24px) scale(1.06);
+  }
+}
+
+.app-shell {
+  width: min(1180px, calc(100vw - 2rem));
+  margin: 1.25rem auto 2rem;
+  padding: 1rem;
+}
+
+.app-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.75rem;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  margin-top: 0.2rem;
+  font-size: clamp(1.4rem, 4vw, 2.1rem);
+  line-height: 1.15;
+}
+
+.header-meta {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.8rem;
+}
+
+.chip-alert {
+  border-color: rgba(240, 183, 90, 0.6);
+  color: #ffe2b3;
+}
+
+.chip-ok {
+  border-color: rgba(61, 208, 140, 0.75);
+  color: #c8ffdf;
+}
+
+.config-panel,
+.view-root,
+.global-message {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(18, 37, 54, 0.9), rgba(12, 29, 44, 0.9));
+  box-shadow: var(--shadow);
+}
+
+.config-panel {
+  padding: 1rem;
+}
+
+.config-panel h2 {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.7rem;
+}
+
+.config-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+input,
+select,
+button {
+  font-family: inherit;
+}
+
+input,
+select {
+  border: 1px solid rgba(152, 190, 221, 0.3);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  color: var(--text);
+  background: rgba(10, 18, 29, 0.7);
+}
+
+input::placeholder {
+  color: rgba(198, 221, 242, 0.5);
+}
+
+.config-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.btn {
+  border-radius: 10px;
+  border: 1px solid rgba(171, 204, 232, 0.35);
+  background: rgba(38, 78, 110, 0.45);
+  color: var(--text);
+  padding: 0.48rem 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+
+.btn:hover {
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #20679a, #2b8e6e);
+  border-color: transparent;
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.btn-danger {
+  background: rgba(141, 46, 46, 0.45);
+  border-color: rgba(222, 120, 120, 0.6);
+}
+
+.feedback {
+  margin-top: 0.5rem;
+  min-height: 1.2rem;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.view-nav {
+  margin: 1rem 0 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.nav-btn {
+  border: 1px solid rgba(139, 182, 214, 0.4);
+  border-radius: 10px;
+  background: rgba(9, 22, 34, 0.78);
+  color: var(--text-dim);
+  padding: 0.45rem 0.65rem;
+  cursor: pointer;
+}
+
+.nav-btn.is-active {
+  color: #f4fbff;
+  background: linear-gradient(135deg, rgba(51, 113, 160, 0.8), rgba(62, 141, 94, 0.7));
+}
+
+.global-message {
+  margin-bottom: 0.75rem;
+  padding: 0.7rem 0.85rem;
+  border-left: 4px solid var(--info);
+  font-size: 0.95rem;
+}
+
+.global-message.warn {
+  border-left-color: var(--warn);
+}
+
+.global-message.error {
+  border-left-color: var(--bad);
+}
+
+.hidden {
+  display: none;
+}
+
+.view-root {
+  padding: 1rem;
+  animation: reveal 0.26s ease;
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.state-card {
+  border-radius: 12px;
+  border: 1px dashed rgba(170, 205, 232, 0.35);
+  padding: 1rem;
+  color: var(--text-dim);
+}
+
+.state-error {
+  color: #ffd2d2;
+  border-color: rgba(239, 102, 102, 0.6);
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.7rem;
+  margin-bottom: 1rem;
+}
+
+.info-card {
+  border: 1px solid rgba(165, 201, 229, 0.25);
+  background: rgba(9, 22, 34, 0.72);
+  border-radius: 12px;
+  padding: 0.8rem;
+}
+
+.info-card h3 {
+  font-size: 0.84rem;
+  color: var(--text-dim);
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metric {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.subtext {
+  margin-top: 0.35rem;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.56rem;
+  font-size: 0.72rem;
+  border: 1px solid transparent;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badge.status-approved,
+.badge.health-ok,
+.badge.tier-root {
+  background: rgba(50, 145, 89, 0.2);
+  border-color: rgba(83, 199, 126, 0.6);
+  color: #c5ffd9;
+}
+
+.badge.status-pending,
+.badge.health-warn,
+.badge.tier-pro,
+.badge.tier-basic {
+  background: rgba(179, 121, 28, 0.22);
+  border-color: rgba(240, 183, 90, 0.65);
+  color: #ffe4af;
+}
+
+.badge.status-blocked,
+.badge.health-bad,
+.badge.tier-free {
+  background: rgba(157, 45, 45, 0.2);
+  border-color: rgba(239, 102, 102, 0.65);
+  color: #ffd4d4;
+}
+
+.tools-row {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+
+.tools-row input,
+.tools-row select {
+  max-width: 280px;
+}
+
+.table-wrap {
+  overflow: auto;
+  border: 1px solid rgba(157, 199, 229, 0.2);
+  border-radius: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+th,
+td {
+  padding: 0.55rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(143, 184, 214, 0.16);
+  vertical-align: top;
+  font-size: 0.86rem;
+}
+
+th {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+}
+
+tr:hover td {
+  background: rgba(35, 74, 104, 0.16);
+}
+
+.inline-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  font-size: 0.78rem;
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  color: #d9ebf9;
+  background: rgba(6, 16, 25, 0.7);
+  border-radius: 10px;
+  padding: 0.6rem;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  font-size: 0.76rem;
+}
+
+@media (max-width: 860px) {
+  .app-shell {
+    width: calc(100vw - 1rem);
+    margin-top: 0.75rem;
+    padding: 0.5rem;
+  }
+
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .view-root {
+    padding: 0.7rem;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  table {
+    min-width: 620px;
+  }
+}

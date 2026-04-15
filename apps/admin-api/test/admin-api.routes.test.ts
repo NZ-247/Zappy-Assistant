@@ -7,8 +7,38 @@ const buildRuntime = () => {
   const users = new Map<string, any>();
   const groups = new Map<string, any>();
   const audit: any[] = [];
+  const reminders = new Map<string, any>();
 
   const nowIso = () => new Date("2026-04-14T12:00:00.000Z").toISOString();
+
+  reminders.set("r-failed-1", {
+    id: "r-failed-1",
+    tenantId: "tenant-1",
+    waUserId: "u-123",
+    waGroupId: null,
+    publicId: "RMD001",
+    sequence: 1,
+    message: "Failed reminder",
+    remindAt: new Date("2026-04-14T11:00:00.000Z"),
+    status: "FAILED",
+    sentMessageId: null,
+    createdAt: new Date("2026-04-14T10:00:00.000Z"),
+    updatedAt: new Date("2026-04-14T11:10:00.000Z")
+  });
+  reminders.set("r-scheduled-1", {
+    id: "r-scheduled-1",
+    tenantId: "tenant-1",
+    waUserId: "u-456",
+    waGroupId: null,
+    publicId: "RMD002",
+    sequence: 2,
+    message: "Scheduled reminder",
+    remindAt: new Date("2026-04-14T15:00:00.000Z"),
+    status: "SCHEDULED",
+    sentMessageId: null,
+    createdAt: new Date("2026-04-14T10:00:00.000Z"),
+    updatedAt: new Date("2026-04-14T10:30:00.000Z")
+  });
 
   const ensureUser = (waUserId: string) => {
     const existing = users.get(waUserId);
@@ -155,6 +185,51 @@ const buildRuntime = () => {
     listApprovalAudit: async () => audit
   };
 
+  const jobsRepository = {
+    listReminders: async ({ tenantId, status, limit }: { tenantId?: string; status?: string; limit?: number } = {}) =>
+      Array.from(reminders.values())
+        .filter((item) => (!tenantId || item.tenantId === tenantId) && (!status || item.status === status))
+        .slice(0, limit ?? 100),
+    getReminder: async ({ reminderId, tenantId }: { reminderId: string; tenantId?: string }) => {
+      const item = reminders.get(reminderId);
+      if (!item) return null;
+      if (tenantId && item.tenantId !== tenantId) return null;
+      return item;
+    },
+    markReminderForRetry: async ({ reminderId }: { reminderId: string }) => {
+      const current = reminders.get(reminderId);
+      if (!current) return null;
+      const next = { ...current, status: "SCHEDULED", updatedAt: new Date(nowIso()) };
+      reminders.set(reminderId, next);
+      return next;
+    },
+    setReminderStatus: async ({ reminderId, status }: { reminderId: string; status: string }) => {
+      const current = reminders.get(reminderId);
+      if (!current) return null;
+      const next = { ...current, status, updatedAt: new Date(nowIso()) };
+      reminders.set(reminderId, next);
+      return next;
+    },
+    getReminderStatusCounts: async () => {
+      const counts = {
+        SCHEDULED: 0,
+        SENT: 0,
+        FAILED: 0,
+        CANCELED: 0
+      } as Record<string, number>;
+
+      for (const item of reminders.values()) {
+        counts[item.status] = (counts[item.status] ?? 0) + 1;
+      }
+
+      return counts;
+    },
+    listRecentFailedReminders: async ({ limit }: { limit?: number } = {}) =>
+      Array.from(reminders.values())
+        .filter((item) => item.status === "FAILED")
+        .slice(0, limit ?? 5)
+  };
+
   return {
     env: {
       ADMIN_API_TOKEN: "test-token",
@@ -210,15 +285,19 @@ const buildRuntime = () => {
     },
     queue: {
       name: "reminders",
-      getJobCounts: async () => ({ waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 })
+      getJobCounts: async () => ({ waiting: 0, active: 0, completed: 0, failed: 1, delayed: 0 }),
+      remove: async () => undefined,
+      add: async (_name: string, _data: unknown, _opts: unknown) => ({ id: "job-retry-1" })
     },
     metrics: {
       getSnapshot: async () => ({})
     },
     redis: {
-      ping: async () => "PONG"
+      ping: async () => "PONG",
+      get: async () => null
     },
-    adminGovernanceRepository: repository
+    adminGovernanceRepository: repository,
+    adminJobsRepository: jobsRepository
   } as any;
 };
 
@@ -362,6 +441,67 @@ test("usage endpoints return stable admin-facing shape", async () => {
   const groupPayload = groupUsage.json();
   assert.equal(groupPayload.schemaVersion, "admin.usage.group.v1");
   assert.equal(groupPayload.subjectType, "GROUP");
+
+  await app.close();
+});
+
+test("status endpoint returns dashboard-ready health summary", async () => {
+  const app = Fastify();
+  registerAdminApiRoutes(app as any, buildRuntime());
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/admin/v1/status",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = response.json();
+  assert.equal(payload.schemaVersion, "admin.status.v2");
+  assert.equal(payload.version, "1.7.0");
+  assert.equal(typeof payload.services.gateway.online, "boolean");
+  assert.equal(typeof payload.reminders.FAILED, "number");
+  assert.equal(Array.isArray(payload.failures.recentFailedReminders), true);
+
+  await app.close();
+});
+
+test("failed reminders can be listed and retried", async () => {
+  const app = Fastify();
+  registerAdminApiRoutes(app as any, buildRuntime());
+
+  const listResponse = await app.inject({
+    method: "GET",
+    url: "/admin/v1/reminders?status=FAILED",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+
+  assert.equal(listResponse.statusCode, 200);
+  const listPayload = listResponse.json();
+  assert.equal(listPayload.schemaVersion, "admin.reminders.v1");
+  assert.equal(listPayload.count >= 1, true);
+  assert.equal(listPayload.items[0].status, "FAILED");
+
+  const retryResponse = await app.inject({
+    method: "POST",
+    url: "/admin/v1/reminders/r-failed-1/retry",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      actor: "ops-admin"
+    }
+  });
+
+  assert.equal(retryResponse.statusCode, 200);
+  const retryPayload = retryResponse.json();
+  assert.equal(retryPayload.schemaVersion, "admin.reminder.retry.v1");
+  assert.equal(retryPayload.item.status, "SCHEDULED");
+  assert.equal(retryPayload.queue.jobId, "job-retry-1");
 
   await app.close();
 });
