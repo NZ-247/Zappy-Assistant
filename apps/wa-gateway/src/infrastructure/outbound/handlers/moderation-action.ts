@@ -1,6 +1,9 @@
 import { buildActionLogContext, logOutbound, sendTextAndPersist } from "../context.js";
 import type { ExecuteOutboundActionsInput } from "../types.js";
-import { prepareWhatsAppAudioForSend } from "./wa-audio-send-pipeline.js";
+import {
+  normalizeAssistantAudioToVoiceNote,
+  VoiceNoteNormalizationError
+} from "./wa-audio-send-pipeline.js";
 
 type HidetagContentKind =
   | "text"
@@ -200,6 +203,7 @@ export const handleModerationOutboundAction = async (input: {
             persistedText = actionText || quotedCaption || "[hidetag imagem]";
           } else if (hidetagKind === "reply_audio") {
             const mimeType = quotedMessage?.audioMessage?.mimetype || "audio/ogg; codecs=opus";
+            const sourceFlow = "hidetag_reply_audio";
             runtime.logger.info?.(
               runtime.withCategory("WA-OUT", {
                 action: "hidetag",
@@ -208,33 +212,37 @@ export const handleModerationOutboundAction = async (input: {
                 waGroupId: runtime.event.waGroupId,
                 quotedAudioPtt: quotedMessage?.audioMessage?.ptt === true,
                 requestedHidetagKind: hidetagKind,
-                requestedPtt: true
+                requestedPtt: true,
+                sourceFlow
               }),
               "hidetag audio preparation started"
             );
 
-            const preparedAudio = await prepareWhatsAppAudioForSend({
-              audioBuffer: mediaBuffer,
-              mimeType,
-              requestPtt: true
-            });
-
-            if (preparedAudio.ptt) {
+            try {
+              const preparedAudio = await normalizeAssistantAudioToVoiceNote({
+                audioBuffer: mediaBuffer,
+                mimeType,
+                sourceFlow
+              });
               runtime.logger.info?.(
                 runtime.withCategory("WA-OUT", {
                   action: "send_ptt",
                   status: "success",
                   responseActionId,
                   waGroupId: runtime.event.waGroupId,
-                  requestedPtt: true,
-                  finalPtt: true,
                   requestedMimeType: mimeType,
                   finalMimeType: preparedAudio.mimeType,
-                  transcodedToPtt: preparedAudio.transcodedToPtt,
-                  inputContainer: preparedAudio.inputProbe.container,
-                  inputCodecGuess: preparedAudio.inputProbe.codecGuess,
-                  outputContainer: preparedAudio.outputProbe.container,
-                  outputCodecGuess: preparedAudio.outputProbe.codecGuess
+                  inputMimeTypeHint: preparedAudio.diagnostics.inputMimeTypeHint,
+                  inputContainerHint: preparedAudio.diagnostics.inputProbe.container,
+                  inputCodecHint: preparedAudio.diagnostics.inputProbe.codecGuess,
+                  outputContainerHint: preparedAudio.diagnostics.outputProbe.container,
+                  outputCodecHint: preparedAudio.diagnostics.outputProbe.codecGuess,
+                  outputBytes: preparedAudio.diagnostics.outputProbe.byteLength,
+                  ptt: true,
+                  sourceFlow,
+                  transcodedForVoiceNote: preparedAudio.diagnostics.transcoded,
+                  canonicalNormalizationUsed: true,
+                  canonicalPipeline: preparedAudio.diagnostics.canonicalPipeline
                 }),
                 "hidetag voice note sent"
               );
@@ -245,24 +253,32 @@ export const handleModerationOutboundAction = async (input: {
                 contextInfo: hiddenContext
               };
               persistedText = actionText || "[hidetag voz]";
-            } else {
+            } catch (error) {
+              const normalizedErrorReason =
+                error instanceof VoiceNoteNormalizationError ? error.reason : "voice_note_normalization_failed";
+              const diagnosticInputProbe =
+                error instanceof VoiceNoteNormalizationError ? error.diagnostics.inputProbe : undefined;
+              const diagnosticInputMimeHint =
+                error instanceof VoiceNoteNormalizationError ? error.diagnostics.inputMimeTypeHint : mimeType;
               runtime.logger.warn?.(
                 runtime.withCategory("WA-OUT", {
                   action: "send_ptt",
                   status: "failure",
                   responseActionId,
                   waGroupId: runtime.event.waGroupId,
-                  requestedPtt: true,
-                  finalPtt: false,
                   requestedMimeType: mimeType,
-                  finalMimeType: preparedAudio.mimeType,
-                  reason: preparedAudio.transcodeReason ?? "ptt_transcode_failed",
-                  inputContainer: preparedAudio.inputProbe.container,
-                  inputCodecGuess: preparedAudio.inputProbe.codecGuess
+                  inputMimeTypeHint: diagnosticInputMimeHint,
+                  inputContainerHint: diagnosticInputProbe?.container,
+                  inputCodecHint: diagnosticInputProbe?.codecGuess,
+                  inputBytes: diagnosticInputProbe?.byteLength,
+                  reason: normalizedErrorReason,
+                  ptt: true,
+                  sourceFlow,
+                  canonicalNormalizationUsed: true
                 }),
                 "hidetag voice note preparation failed"
               );
-              replyText = "Nao consegui converter esse audio para voz agora. Tente novamente.";
+              replyText = "Nao consegui normalizar esse audio para voice note agora. Tente novamente.";
               success = false;
               resultLabel = "hidetag_audio_ptt_failed";
             }

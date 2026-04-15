@@ -135,6 +135,7 @@ test("hidetag replied sticker is resent as bot-originated sticker with hidden me
 test("hidetag replied audio is resent as bot-originated voice note with hidden mentions", async () => {
   const sentPayloads: any[] = [];
   const downloadCalls: any[] = [];
+  const logs: Array<{ level: "info" | "warn" | "debug"; payload: any; message?: string }> = [];
 
   const runtime: any = buildBaseRuntime({
     action: {
@@ -151,7 +152,8 @@ test("hidetag replied audio is resent as bot-originated voice note with hidden m
     },
     sentPayloads,
     downloadCalls,
-    downloadedMediaBuffer: Buffer.concat([Buffer.from("OggS"), Buffer.alloc(512, 1)])
+    downloadedMediaBuffer: Buffer.concat([Buffer.from("OggS"), Buffer.alloc(512, 1)]),
+    logs
   });
 
   await executeOutboundActions(runtime);
@@ -162,6 +164,7 @@ test("hidetag replied audio is resent as bot-originated voice note with hidden m
   assert.equal(sentPayloads[0]?.ptt, true);
   assert.equal(sentPayloads[0]?.mimetype, "audio/ogg; codecs=opus");
   assert.deepEqual(sentPayloads[0]?.contextInfo?.mentionedJid, ["111@s.whatsapp.net", "222@s.whatsapp.net"]);
+  assert.ok(logs.some((entry) => entry.level === "info" && entry.payload?.action === "send_ptt" && entry.payload?.canonicalNormalizationUsed === true));
 });
 
 test("hidetag replied audio sends concise failure when voice-note preparation fails", async () => {
@@ -192,7 +195,7 @@ test("hidetag replied audio sends concise failure when voice-note preparation fa
   assert.equal(downloadCalls.length, 1);
   assert.equal(sentPayloads.length, 1);
   assert.equal(typeof sentPayloads[0]?.text, "string");
-  assert.match(sentPayloads[0]?.text, /converter esse audio para voz/i);
+  assert.match(sentPayloads[0]?.text, /normalizar esse audio para voice note/i);
   assert.ok(
     logs.some(
       (entry) => entry.level === "warn" && entry.payload?.action === "send_ptt" && entry.payload?.status === "failure"

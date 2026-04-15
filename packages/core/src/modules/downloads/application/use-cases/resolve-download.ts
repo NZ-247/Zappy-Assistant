@@ -134,7 +134,9 @@ export const resolveMediaDownload = async (input: {
           audioBase64: asset.bufferBase64,
           mimeType: asset.mimeType,
           fileName: asset.fileName,
-          caption
+          caption,
+          ptt: true,
+          capability: "download"
         }
       ];
     }

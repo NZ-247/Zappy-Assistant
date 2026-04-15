@@ -313,7 +313,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - Também aceita uso por resposta: responda um texto e envie `/tts` (ou `/tts |<destino>|<voz>`).
   - Quando origem e destino diferem, o texto é traduzido antes da síntese; se a tradução falhar, o áudio não é gerado.
   - Saída padrão como voice note/PTT (`TTS_SEND_AS_PTT=true`) com recodificação final para `OGG/Opus` no gateway (mimetype final `audio/ogg; codecs=opus`).
-  - Limitações: qualidade de tradução depende do provider/model configurado; textos muito longos respeitam `TTS_MAX_TEXT_CHARS`; para PTT 100% compatível o host deve ter `ffmpeg` disponível (sem isso o gateway faz fallback para áudio comum).
+  - Limitações: qualidade de tradução depende do provider/model configurado; textos muito longos respeitam `TTS_MAX_TEXT_CHARS`; para PTT 100% compatível o host deve ter `ffmpeg` disponível (sem isso o envio de áudio é abortado com erro claro, sem fallback para áudio comum).
 - Translation module:
   - `/trl <texto>` traduz com detecção automática de idioma e saída curta para WhatsApp.
   - Alvo padrão: origem `pt*` -> `en`; demais origens -> `pt`.

@@ -1,6 +1,10 @@
 import { sendTextAndPersist } from "../context.js";
 import type { ExecuteOutboundActionsInput } from "../types.js";
-import { prepareWhatsAppAudioForSend } from "./wa-audio-send-pipeline.js";
+import {
+  type NormalizedAssistantVoiceNote,
+  normalizeAssistantAudioToVoiceNote,
+  VoiceNoteNormalizationError
+} from "./wa-audio-send-pipeline.js";
 
 const IMAGE_FETCH_TIMEOUT_MS = 12_000;
 const IMAGE_FETCH_MAX_BYTES = 8 * 1024 * 1024;
@@ -20,6 +24,12 @@ const normalizeMimeType = (value?: string | null): string => {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized) return "";
   return normalized.split(";")[0]?.trim() ?? "";
+};
+
+const normalizeSourceFlow = (value?: unknown): string => {
+  if (typeof value !== "string") return "assistant_audio";
+  const normalized = value.replace(/\s+/g, "_").trim().toLowerCase();
+  return normalized || "assistant_audio";
 };
 
 const hasLikelyImageSignature = (bytes: Buffer): boolean => {
@@ -218,8 +228,10 @@ export const handleBasicOutboundAction = async (input: {
 
   if (action.kind === "reply_audio") {
     let audioBuffer: Buffer;
+    const sourceFlow = normalizeSourceFlow(action.capability ?? "assistant_audio");
     const audioLogBase = {
-      capability: action.capability ?? "tts",
+      capability: sourceFlow,
+      sourceFlow,
       responseActionId,
       tenantId: runtime.event.tenantId,
       waGroupId: runtime.event.waGroupId,
@@ -231,17 +243,16 @@ export const handleBasicOutboundAction = async (input: {
     try {
       audioBuffer = Buffer.from(action.audioBase64, "base64");
     } catch {
-      if (action.ptt) {
-        runtime.logger.info?.(
-          runtime.withCategory("WA-OUT", {
-            action: "send_ptt",
-            status: "failure",
-            reason: "invalid_base64",
-            ...audioLogBase
-          }),
-          "voice message failed"
-        );
-      }
+      runtime.logger.info?.(
+        runtime.withCategory("WA-OUT", {
+          action: "send_ptt",
+          status: "failure",
+          reason: "invalid_base64",
+          canonicalNormalizationUsed: true,
+          ...audioLogBase
+        }),
+        "voice note normalization failed"
+      );
       await sendTextAndPersist({
         runtime,
         to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
@@ -254,17 +265,16 @@ export const handleBasicOutboundAction = async (input: {
     }
 
     if (!audioBuffer.length) {
-      if (action.ptt) {
-        runtime.logger.info?.(
-          runtime.withCategory("WA-OUT", {
-            action: "send_ptt",
-            status: "failure",
-            reason: "empty_audio_payload",
-            ...audioLogBase
-          }),
-          "voice message failed"
-        );
-      }
+      runtime.logger.info?.(
+        runtime.withCategory("WA-OUT", {
+          action: "send_ptt",
+          status: "failure",
+          reason: "empty_audio_payload",
+          canonicalNormalizationUsed: true,
+          ...audioLogBase
+        }),
+        "voice note normalization failed"
+      );
       await sendTextAndPersist({
         runtime,
         to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
@@ -277,28 +287,48 @@ export const handleBasicOutboundAction = async (input: {
     }
 
     const requestedMimeType = typeof action.mimeType === "string" && action.mimeType.trim() ? action.mimeType.trim() : "application/octet-stream";
-    const prepared = await prepareWhatsAppAudioForSend({
-      audioBuffer,
-      mimeType: requestedMimeType,
-      requestPtt: Boolean(action.ptt)
-    });
+    let preparedVoiceNote: NormalizedAssistantVoiceNote;
 
-    if (action.ptt && !prepared.ptt) {
+    try {
+      preparedVoiceNote = await normalizeAssistantAudioToVoiceNote({
+        audioBuffer,
+        mimeType: requestedMimeType,
+        sourceFlow
+      });
+    } catch (error) {
+      const normalizedErrorReason =
+        error instanceof VoiceNoteNormalizationError ? error.reason : normalizeErrorReason(error, "voice_note_normalization_failed");
+      const diagnosticInputProbe =
+        error instanceof VoiceNoteNormalizationError ? error.diagnostics.inputProbe : undefined;
+      const diagnosticInputMimeHint =
+        error instanceof VoiceNoteNormalizationError ? error.diagnostics.inputMimeTypeHint : requestedMimeType;
+
       runtime.logger.warn?.(
         runtime.withCategory("WA-OUT", {
           action: "send_ptt",
-          status: "fallback_audio",
-          reason: prepared.transcodeReason ?? "ptt_transcode_failed",
+          status: "failure",
+          reason: normalizedErrorReason,
           requestedMimeType,
-          requestedPtt: true,
-          finalPtt: false,
-          inputContainer: prepared.inputProbe.container,
-          inputCodecGuess: prepared.inputProbe.codecGuess,
-          inputBytes: prepared.inputProbe.byteLength,
+          inputMimeTypeHint: diagnosticInputMimeHint,
+          inputContainerHint: diagnosticInputProbe?.container,
+          inputCodecHint: diagnosticInputProbe?.codecGuess,
+          inputBytes: diagnosticInputProbe?.byteLength,
+          ptt: true,
+          canonicalNormalizationUsed: true,
           ...audioLogBase
         }),
-        "voice message transcoding failed; sending standard audio instead"
+        "voice note normalization failed"
       );
+
+      await sendTextAndPersist({
+        runtime,
+        to: runtime.isGroup ? runtime.remoteJid : runtime.waUserId,
+        text: "Nao consegui normalizar esse audio para voice note agora. Tente novamente.",
+        actionName: "reply_audio_error",
+        scope: runtime.isGroup ? "group" : "direct",
+        responseActionId
+      });
+      return true;
     }
 
     await sendTextAndPersist({
@@ -309,37 +339,33 @@ export const handleBasicOutboundAction = async (input: {
       scope: runtime.isGroup ? "group" : "direct",
       responseActionId,
       content: {
-        audio: prepared.audioBuffer,
-        mimetype: prepared.mimeType,
-        ptt: prepared.ptt,
+        audio: preparedVoiceNote.audioBuffer,
+        mimetype: preparedVoiceNote.mimeType,
+        ptt: true,
         fileName: action.fileName
       }
     });
 
-    if (action.ptt) {
-      const actionName = prepared.ptt ? "send_ptt" : "send_audio_fallback";
-      const status = prepared.ptt ? "success" : "fallback";
-      const logMessage = prepared.ptt ? "voice message sent" : "voice note sent as regular audio fallback";
-      runtime.logger.info?.(
-        runtime.withCategory("WA-OUT", {
-          action: actionName,
-          status,
-          requestedPtt: true,
-          finalPtt: prepared.ptt,
-          requestedMimeType,
-          finalMimeType: prepared.mimeType,
-          inputContainer: prepared.inputProbe.container,
-          inputCodecGuess: prepared.inputProbe.codecGuess,
-          outputContainer: prepared.outputProbe.container,
-          outputCodecGuess: prepared.outputProbe.codecGuess,
-          outputBytes: prepared.outputProbe.byteLength,
-          transcodedToPtt: prepared.transcodedToPtt,
-          transcodeReason: prepared.transcodeReason,
-          ...audioLogBase
-        }),
-        logMessage
-      );
-    }
+    runtime.logger.info?.(
+      runtime.withCategory("WA-OUT", {
+        action: "send_ptt",
+        status: "success",
+        requestedMimeType,
+        finalMimeType: preparedVoiceNote.mimeType,
+        inputMimeTypeHint: preparedVoiceNote.diagnostics.inputMimeTypeHint,
+        inputContainerHint: preparedVoiceNote.diagnostics.inputProbe.container,
+        inputCodecHint: preparedVoiceNote.diagnostics.inputProbe.codecGuess,
+        outputContainerHint: preparedVoiceNote.diagnostics.outputProbe.container,
+        outputCodecHint: preparedVoiceNote.diagnostics.outputProbe.codecGuess,
+        outputBytes: preparedVoiceNote.diagnostics.outputProbe.byteLength,
+        ptt: true,
+        transcodedForVoiceNote: preparedVoiceNote.diagnostics.transcoded,
+        canonicalNormalizationUsed: true,
+        canonicalPipeline: preparedVoiceNote.diagnostics.canonicalPipeline,
+        ...audioLogBase
+      }),
+      "voice note sent"
+    );
 
     return true;
   }

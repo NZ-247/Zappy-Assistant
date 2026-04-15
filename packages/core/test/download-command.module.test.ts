@@ -120,3 +120,36 @@ test("/dl login-required result returns concise login message", async () => {
   assert.equal(actions?.[0]?.kind, "reply_text");
   assert.match((actions?.[0] as any).text, /login|acesso/i);
 });
+
+test("/dl audio asset emits reply_audio with explicit voice-note intent metadata", async () => {
+  const actions = await handleDownloadCommand({
+    commandKey: "dl",
+    cmd: "dl yt https://youtube.com/watch?v=abc123",
+    ctx: {
+      event: {
+        tenantId: "tenant_test",
+        waUserId: "556699999999@s.whatsapp.net"
+      }
+    } as any,
+    deps: {
+      config: { enabled: true },
+      mediaDownload: {
+        resolve: async () => ({
+          provider: "yt",
+          status: "ready",
+          title: "Track test",
+          asset: {
+            kind: "audio",
+            mimeType: "audio/mpeg",
+            fileName: "track.mp3",
+            bufferBase64: Buffer.from("audio").toString("base64")
+          }
+        })
+      }
+    }
+  });
+
+  assert.equal(actions?.[0]?.kind, "reply_audio");
+  assert.equal((actions?.[0] as any)?.ptt, true);
+  assert.equal((actions?.[0] as any)?.capability, "download");
+});
