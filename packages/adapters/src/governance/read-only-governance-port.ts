@@ -1,5 +1,12 @@
 import type { ConsentStatus } from "@zappy/core";
-import type { DecisionInput, GovernancePolicySnapshot, GovernancePort, RelationshipProfile } from "@zappy/core";
+import type {
+  DecisionInput,
+  GovernancePolicySnapshot,
+  GovernancePort,
+  GovernanceQuotaConsumeInput,
+  GovernanceQuotaConsumeResult,
+  RelationshipProfile
+} from "@zappy/core";
 
 export interface GovernanceGroupSnapshotSource {
   tenantId: string;
@@ -39,6 +46,7 @@ export interface GovernanceReadOnlySources {
   } | null>;
   readUserAccess?: (input: { tenantId: string; waUserId: string }) => Promise<GovernanceUserAccessSnapshotSource | null>;
   readGroupAccess?: (input: { tenantId: string; waGroupId: string; groupName?: string | null }) => Promise<GovernanceGroupAccessSnapshotSource | null>;
+  consumeQuota?: (input: GovernanceQuotaConsumeInput) => Promise<GovernanceQuotaConsumeResult>;
   now?: () => Date;
 }
 
@@ -68,7 +76,7 @@ const toGovernanceLicenseTier = (value?: string | null): GovernanceLicenseTier =
 };
 
 export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources): GovernancePort => {
-  return {
+  const port: GovernancePort = {
     getSnapshot: async (input: DecisionInput): Promise<GovernancePolicySnapshot> => {
       const { tenant, user } = input;
       const waGroupId = input.group?.waGroupId;
@@ -176,4 +184,10 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
       };
     }
   };
+
+  if (sources.consumeQuota) {
+    port.consumeQuota = async (input) => sources.consumeQuota!(input);
+  }
+
+  return port;
 };

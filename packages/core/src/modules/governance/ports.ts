@@ -6,5 +6,7 @@ export type {
   GovernanceReasonCode,
   GovernancePolicyDiagnostic,
   GovernancePolicySnapshot,
-  GovernanceRequiredRole
+  GovernanceRequiredRole,
+  GovernanceQuotaConsumeInput,
+  GovernanceQuotaConsumeResult
 } from "./domain/governance-decision.js";

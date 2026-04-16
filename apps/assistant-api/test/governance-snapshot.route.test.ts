@@ -93,7 +93,7 @@ test("GET /admin/v1/governance/snapshot returns evaluated decision payload", asy
   assert.equal(response.statusCode, 200);
   const payload = response.json();
   assert.equal(payload.schemaVersion, "governance.snapshot.v1");
-  assert.equal(payload.shadowMode, true);
+  assert.equal(payload.shadowMode, false);
   assert.equal(payload.input.tenant.id, "t1");
   assert.equal(typeof payload.decision.allow, "boolean");
 

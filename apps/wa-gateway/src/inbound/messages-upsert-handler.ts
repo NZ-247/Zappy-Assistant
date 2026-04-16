@@ -68,12 +68,23 @@ interface MessagesUpsertHandlerDeps {
   };
   withCategory: (category: any, payload?: Record<string, unknown>) => unknown;
   executeOutboundActions: (input: any) => Promise<void>;
-  evaluateGovernanceShadowDecision?: (input: {
+  evaluateGovernanceDecision?: (input: {
     event: InboundMessageEvent;
     text: string;
     permissionRole?: string | null;
     relationshipProfile?: RelationshipProfile | null;
-  }) => Promise<void>;
+  }) => Promise<{
+    evaluated: boolean;
+    blocked: boolean;
+    denyText?: string;
+    capability?: string;
+    route?: string;
+    decision?: {
+      reasonCodes?: string[];
+      approval?: { state?: string };
+      licensing?: { planId?: string | null; quota?: { limit?: number | null; used?: number | null; remaining?: number | null } };
+    };
+  }>;
   outboundRuntime: {
     sendWithReplyFallback: (input: { to: string; content: any; quotedMessage?: any; logContext: Record<string, unknown> }) => Promise<any>;
     persistOutboundMessage: (input: any) => Promise<unknown>;
@@ -408,14 +419,14 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const permissionRole = context.user.permissionRole ?? canonical?.permissionRole ?? context.user.role;
       const normalizedPhone = canonical?.phoneNumber ? canonical.phoneNumber.replace(/\D/g, "") : undefined;
 
-      if (deps.evaluateGovernanceShadowDecision) {
-        await deps.evaluateGovernanceShadowDecision({
-          event,
-          text,
-          permissionRole,
-          relationshipProfile
-        });
-      }
+      const governanceEvaluation = deps.evaluateGovernanceDecision
+        ? await deps.evaluateGovernanceDecision({
+            event,
+            text,
+            permissionRole,
+            relationshipProfile
+          })
+        : undefined;
 
       const persisted = await deps.persistInboundMessage({
         ...event,
@@ -424,6 +435,82 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         rawJson: message
       });
       event.conversationId = persisted.conversationId;
+
+      if (governanceEvaluation?.blocked) {
+        deps.logger.info(
+          deps.withCategory("WA-IN", {
+            status: "governance_enforcement_short_circuit",
+            tenantId: event.tenantId,
+            waGroupId: event.waGroupId,
+            waUserId: event.waUserId,
+            waMessageId: event.waMessageId,
+            executionId: event.executionId,
+            capability: governanceEvaluation.capability,
+            route: governanceEvaluation.route,
+            reasonCodes: governanceEvaluation.decision?.reasonCodes,
+            approvalState: governanceEvaluation.decision?.approval?.state,
+            planId: governanceEvaluation.decision?.licensing?.planId,
+            quotaLimit: governanceEvaluation.decision?.licensing?.quota?.limit,
+            quotaUsed: governanceEvaluation.decision?.licensing?.quota?.used
+          }),
+          "governance enforcement short-circuited inbound execution"
+        );
+
+        await deps.executeOutboundActions({
+          actions: [{ kind: "reply_text", text: governanceEvaluation.denyText ?? "Esta ação não está disponível pelas políticas atuais." }],
+          isGroup,
+          remoteJid,
+          waUserId,
+          event,
+          message,
+          context,
+          contextInfo,
+          quotedWaMessageId,
+          quotedWaUserId,
+          canonical,
+          normalizedPhone,
+          relationshipProfile,
+          permissionRole,
+          timezone: deps.env.BOT_TIMEZONE,
+          commandPrefix: deps.outboundRuntime.commandPrefix,
+          progressReactions: deps.outboundRuntime.progressReactions,
+          audioConfig: deps.outboundRuntime.audioConfig,
+          speechToText: deps.outboundRuntime.speechToText,
+          dispatchTranscribedText: async () => ({ hadResponses: false }),
+          sendWithReplyFallback: deps.outboundRuntime.sendWithReplyFallback,
+          persistOutboundMessage: deps.outboundRuntime.persistOutboundMessage,
+          queueAdapter: deps.outboundRuntime.queueAdapter,
+          groupAccessRepository: deps.outboundRuntime.groupAccessRepository,
+          muteAdapter: deps.outboundRuntime.muteAdapter,
+          attemptGroupAdminAction: deps.outboundRuntime.attemptGroupAdminAction,
+          getSocket: deps.getSocket,
+          downloadMediaMessage: deps.outboundRuntime.downloadMediaMessage,
+          baileysLogger: deps.outboundRuntime.baileysLogger,
+          normalizeJid: deps.normalizeJid,
+          logger: deps.logger,
+          withCategory: deps.withCategory,
+          metrics: deps.outboundRuntime.metrics,
+          auditTrail: deps.outboundRuntime.auditTrail,
+          stickerMaxVideoSeconds: deps.outboundRuntime.stickerMaxVideoSeconds
+        });
+        continue;
+      }
+
+      if (governanceEvaluation?.evaluated) {
+        deps.logger.debug(
+          deps.withCategory("WA-IN", {
+            status: "governance_evaluation_pass",
+            tenantId: event.tenantId,
+            waGroupId: event.waGroupId,
+            waUserId: event.waUserId,
+            waMessageId: event.waMessageId,
+            executionId: event.executionId,
+            capability: governanceEvaluation.capability,
+            route: governanceEvaluation.route
+          }),
+          "governance evaluated and allowed"
+        );
+      }
       deps.logger.info(
         deps.withCategory("WA-IN", {
           tenantId: event.tenantId,

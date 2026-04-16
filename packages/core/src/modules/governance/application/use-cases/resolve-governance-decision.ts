@@ -1,6 +1,7 @@
 import type {
   DecisionInput,
   DecisionResult,
+  GovernanceLicenseTier,
   GovernancePolicyDiagnostic,
   GovernanceReasonCode,
   GovernanceRequiredRole
@@ -29,6 +30,37 @@ const DEFAULT_ALLOWED_CAPABILITIES = [
   "media.download"
 ];
 
+const DEFAULT_FREE_DIRECT_CHAT_LIMIT = 30;
+const FREE_DIRECT_CHAT_QUOTA_BUCKET = "conversation.direct.free.daily";
+
+const TIER_CAPABILITY_ALIASES = new Map<string, string>([
+  ["conversation", "conversation.direct"],
+  ["conversation.direct", "conversation.direct"],
+  ["conversation.group", "conversation.group"],
+  ["search.basic", "search.basic"],
+  ["search.web", "search.basic"],
+  ["web-search", "search.basic"],
+  ["search", "search.basic"],
+  ["image.basic", "image.basic"],
+  ["search.image", "image.basic"],
+  ["image-search", "image.basic"],
+  ["tts.basic", "tts.basic"],
+  ["tts", "tts.basic"],
+  ["transcribe.basic", "transcribe.basic"],
+  ["audio.transcribe", "transcribe.basic"],
+  ["search_ai.premium", "search_ai.premium"],
+  ["search.ai", "search_ai.premium"],
+  ["search-ai", "search_ai.premium"],
+  ["download.premium", "download.premium"],
+  ["media.download", "download.premium"],
+  ["downloads", "download.premium"]
+]);
+
+const FREE_TIER_CAPABILITIES = new Set(["conversation.direct", "conversation.group", "search.basic", "image.basic", "tts.basic", "transcribe.basic"]);
+const BASIC_TIER_CAPABILITIES = new Set([...FREE_TIER_CAPABILITIES]);
+const PRO_TIER_CAPABILITIES = new Set([...BASIC_TIER_CAPABILITIES, "search_ai.premium", "download.premium"]);
+const TIER_GATED_CAPABILITIES = new Set([...PRO_TIER_CAPABILITIES]);
+
 const normalizeRole = (value?: string | null): string => (value ?? "").trim().toLowerCase();
 
 const parseBooleanFlag = (value?: string): boolean | undefined => {
@@ -39,7 +71,28 @@ const parseBooleanFlag = (value?: string): boolean | undefined => {
   return undefined;
 };
 
+const parsePositiveInt = (value?: string): number | undefined => {
+  if (value === undefined) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
+};
+
 const normalizeCapabilitySlug = (capability: string): string => capability.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+const normalizeTierCapability = (capability: string): string => {
+  const normalized = capability.trim().toLowerCase();
+  return TIER_CAPABILITY_ALIASES.get(normalized) ?? normalized;
+};
+
+const tierAllowsCapability = (tier: GovernanceLicenseTier, capability: string): boolean => {
+  if (!TIER_GATED_CAPABILITIES.has(capability)) return true;
+  if (tier === "ROOT") return true;
+  if (tier === "PRO") return PRO_TIER_CAPABILITIES.has(capability);
+  if (tier === "BASIC") return BASIC_TIER_CAPABILITIES.has(capability);
+  if (tier === "FREE") return FREE_TIER_CAPABILITIES.has(capability);
+  return true;
+};
 
 const buildFeatureFlagIndex = (flags: Record<string, string>): Map<string, string> => {
   const out = new Map<string, string>();
@@ -75,6 +128,21 @@ const resolveDenyAllFlag = (flagIndex: Map<string, string>): boolean => {
   }
   return false;
 };
+
+const resolveFreeDirectChatLimit = (input: { flagIndex: Map<string, string>; runtimePolicySignals: Record<string, unknown> }): number => {
+  const fromRuntime = Number.parseInt(String(input.runtimePolicySignals.freeDirectChatLimit ?? ""), 10);
+  if (Number.isFinite(fromRuntime) && fromRuntime > 0) return fromRuntime;
+
+  const keys = ["quota.free_direct_chat.limit", "governance.quota.free_direct_chat.limit", "quota.free_chat.limit", "governance.quota.free_chat.limit"];
+  for (const key of keys) {
+    const parsed = parsePositiveInt(input.flagIndex.get(key));
+    if (parsed !== undefined) return parsed;
+  }
+
+  return DEFAULT_FREE_DIRECT_CHAT_LIMIT;
+};
+
+const buildDailyPeriodKey = (date: Date): string => date.toISOString().slice(0, 10);
 
 const resolveAllowedCapabilities = (featureFlags: Record<string, string>): string[] => {
   const flagIndex = buildFeatureFlagIndex(featureFlags);
@@ -144,6 +212,8 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
   const flagIndex = buildFeatureFlagIndex(snapshot.featureFlags);
   const allowedCapabilities = resolveAllowedCapabilities(snapshot.featureFlags);
   const capability = input.request.capability.trim().toLowerCase();
+  const tierCapability = normalizeTierCapability(capability);
+  const effectiveAccess = snapshot.access.effective;
 
   const derived = {
     isPrivileged: Boolean(input.user.isPrivileged ?? snapshot.actor.isPrivileged),
@@ -170,6 +240,51 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
         error: snapshot.runtimePolicySignals.botAdminCheckError
       }
     });
+  }
+
+  if (effectiveAccess.status === "BLOCKED") {
+    addDiagnostic(
+      acc,
+      {
+        code: "DENY_ACCESS_BLOCKED",
+        severity: "error",
+        message: "Access is blocked for this subject.",
+        context: {
+          source: effectiveAccess.source
+        }
+      },
+      { isDeny: true }
+    );
+  } else if (effectiveAccess.status === "PENDING") {
+    addDiagnostic(
+      acc,
+      {
+        code: "DENY_ACCESS_PENDING",
+        severity: "warn",
+        message: "Access is pending approval for this subject.",
+        context: {
+          source: effectiveAccess.source
+        }
+      },
+      { isDeny: true }
+    );
+  }
+
+  if (!tierAllowsCapability(effectiveAccess.tier, tierCapability)) {
+    addDiagnostic(
+      acc,
+      {
+        code: "DENY_LICENSE_CAPABILITY",
+        severity: "error",
+        message: "Capability is not available for the current license tier.",
+        context: {
+          capability,
+          normalizedCapability: tierCapability,
+          tier: effectiveAccess.tier
+        }
+      },
+      { isDeny: true }
+    );
   }
 
   if (resolveDenyAllFlag(flagIndex)) {
@@ -287,6 +402,66 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     );
   }
 
+  const quotaSnapshot: NonNullable<DecisionResult["licensing"]["quota"]> = {
+    limit: null,
+    used: null,
+    remaining: null,
+    bucket: null,
+    periodKey: null,
+    reasonCode: null
+  };
+  const skipQuotaConsumption = snapshot.runtimePolicySignals.skipQuotaConsumption === true;
+
+  if (!skipQuotaConsumption && acc.denyCodes.size === 0 && tierCapability === "conversation.direct" && input.context.scope === "private" && effectiveAccess.tier === "FREE") {
+    const limit = resolveFreeDirectChatLimit({
+      flagIndex,
+      runtimePolicySignals: snapshot.runtimePolicySignals
+    });
+    const periodKey = buildDailyPeriodKey(snapshot.evaluatedAt);
+    quotaSnapshot.limit = limit;
+    quotaSnapshot.bucket = FREE_DIRECT_CHAT_QUOTA_BUCKET;
+    quotaSnapshot.periodKey = periodKey;
+
+    if (governancePort.consumeQuota) {
+      const quotaResult = await governancePort.consumeQuota({
+        tenantId: snapshot.tenantId,
+        waUserId: snapshot.waUserId,
+        waGroupId: snapshot.waGroupId,
+        capability: tierCapability,
+        limit,
+        periodKey,
+        bucket: FREE_DIRECT_CHAT_QUOTA_BUCKET,
+        metadata: {
+          scope: snapshot.scope,
+          capability: tierCapability
+        }
+      });
+
+      quotaSnapshot.used = quotaResult.used;
+      quotaSnapshot.remaining = quotaResult.remaining;
+
+      if (!quotaResult.allowed) {
+        quotaSnapshot.reasonCode = "DENY_QUOTA_LIMIT";
+        addDiagnostic(
+          acc,
+          {
+            code: "DENY_QUOTA_LIMIT",
+            severity: "warn",
+            message: "Quota limit reached for this capability and period.",
+            context: {
+              bucket: quotaResult.bucket,
+              periodKey: quotaResult.periodKey,
+              limit: quotaResult.limit,
+              used: quotaResult.used,
+              remaining: quotaResult.remaining
+            }
+          },
+          { isDeny: true }
+        );
+      }
+    }
+  }
+
   const allow = acc.denyCodes.size === 0;
   if (allow) {
     if (derived.isPrivileged) {
@@ -304,7 +479,6 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     }
   }
 
-  const effectiveAccess = snapshot.access.effective;
   const approvalState =
     effectiveAccess.status === "APPROVED"
       ? "approved"
@@ -339,11 +513,7 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     licensing: {
       state: licensingState,
       planId: effectiveAccess.tier === "UNKNOWN" ? null : effectiveAccess.tier,
-      quota: {
-        limit: null,
-        used: null,
-        remaining: null
-      }
+      quota: quotaSnapshot
     },
     fallback: {
       mode: allow ? "none" : "route_default",

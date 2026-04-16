@@ -112,6 +112,10 @@ export type GovernanceReasonCode =
   | "ALLOW_PRIVILEGED_OVERRIDE"
   | "DENY_TENANT_POLICY"
   | "DENY_CAPABILITY_DISABLED"
+  | "DENY_ACCESS_PENDING"
+  | "DENY_ACCESS_BLOCKED"
+  | "DENY_LICENSE_CAPABILITY"
+  | "DENY_QUOTA_LIMIT"
   | "DENY_GROUP_NOT_ALLOWED"
   | "DENY_GROUP_CHAT_OFF"
   | "DENY_CONSENT_REQUIRED"
@@ -119,6 +123,26 @@ export type GovernanceReasonCode =
   | "DENY_GROUP_ADMIN_REQUIRED"
   | "DENY_REQUESTER_ROLE"
   | "DIAGNOSTIC_RUNTIME_BOT_ADMIN_CHECK_FAILED";
+
+export interface GovernanceQuotaConsumeInput {
+  tenantId: string;
+  waUserId: string;
+  waGroupId?: string;
+  capability: string;
+  limit: number;
+  periodKey: string;
+  bucket: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface GovernanceQuotaConsumeResult {
+  allowed: boolean;
+  limit: number;
+  used: number;
+  remaining: number;
+  bucket: string;
+  periodKey: string;
+}
 
 export interface GovernancePolicyDiagnostic {
   code: GovernanceReasonCode;
@@ -149,6 +173,9 @@ export interface DecisionResult {
       limit?: number | null;
       used?: number | null;
       remaining?: number | null;
+      bucket?: string | null;
+      periodKey?: string | null;
+      reasonCode?: GovernanceReasonCode | null;
     };
   };
   fallback: {

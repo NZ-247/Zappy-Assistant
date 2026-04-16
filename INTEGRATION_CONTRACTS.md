@@ -209,11 +209,11 @@ Read-only governance evaluation snapshot for a requested subject/context.
 
 Notes
 
-Shadow mode in v1.7.0:
+Runtime-aware snapshot in v1.7.1:
 
 decision is evaluated and returned for observability/debugging
 
-no live runtime enforcement is applied by this endpoint
+this endpoint remains read-only (no side-effecting runtime enforcement action is applied here)
 
 Required query params
 
@@ -243,8 +243,8 @@ Example response shape
 
 {
   "schemaVersion": "governance.snapshot.v1",
-  "governanceVersion": "v1.7.0",
-  "shadowMode": true,
+  "governanceVersion": "v1.7.1",
+  "shadowMode": false,
   "input": {
     "tenant": { "id": "t1" },
     "user": { "waUserId": "5511999999999@s.whatsapp.net" },

@@ -301,3 +301,30 @@ Decisão arquitetural chave da fase:
 
 - manter a inteligência administrativa no `admin-api` e adapters
 - permitir ao `admin-ui` apenas orquestrar leitura/escrita via contratos HTTP estáveis
+
+## 14. Runtime Enforcement Phase 1 (v1.7.1)
+
+Phase 4 inicia enforcement real e incremental em runtime usando estado persistido do control plane, mantendo a decisão centralizada no core:
+
+- `packages/core/src/modules/governance/*`
+  - `resolveGovernanceDecision` passa a aplicar:
+    - enforcement de acesso (`PENDING`, `APPROVED`, `BLOCKED`)
+    - gating inicial por tier/capability (`FREE`, `BASIC`, `PRO`, `ROOT`)
+    - hook inicial de quota (`FREE` direct-chat)
+  - reason codes e diagnósticos agora representam bloqueios de acesso/licença/quota para consumo uniforme por runtimes
+- `packages/adapters/src/governance/*` + `packages/adapters/src/index.ts`
+  - `GovernancePort` ganha hook opcional `consumeQuota`
+  - contador persistido em `UsageCounter` passa a ser usado no bucket inicial de conversa direta FREE
+- `apps/wa-gateway`
+  - deixa de ser apenas shadow-only e aplica short-circuit antes de command/AI para decisões negadas no escopo desta fase
+  - mantém shadow telemetry opcional para observabilidade contínua (`GOVERNANCE_SHADOW_MODE`)
+  - adiciona toggle explícito de enforcement (`GOVERNANCE_ENFORCEMENT_ENABLED`)
+- `apps/worker`
+  - reminders/timers revalidam política no momento da execução
+  - execução negada por política atual falha de forma explícita e auditável
+
+Guardrails de rollout da fase:
+
+- enforcement limitado apenas às capabilities definidas nesta versão (sem “big bang”)
+- features fora do escopo continuam com comportamento estável anterior
+- apps de runtime consomem decisão de governança; não duplicam regra de política

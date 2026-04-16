@@ -1,4 +1,5 @@
 import {
+  AccessSubjectType,
   AuditAction,
   MatchType,
   PrismaClient,
@@ -986,7 +987,39 @@ export const governancePort = createReadOnlyGovernancePort({
       tenantId: input.tenantId,
       waGroupId: input.waGroupId,
       groupName: input.groupName
-    })
+    }),
+  consumeQuota: async (input) => {
+    const metadata = input.metadata ? (input.metadata as Prisma.JsonObject) : undefined;
+    const counter = await prisma.usageCounter.upsert({
+      where: {
+        subjectType_subjectId_bucket_periodKey: {
+          subjectType: AccessSubjectType.USER,
+          subjectId: input.waUserId,
+          bucket: input.bucket,
+          periodKey: input.periodKey
+        }
+      },
+      create: {
+        subjectType: AccessSubjectType.USER,
+        subjectId: input.waUserId,
+        bucket: input.bucket,
+        periodKey: input.periodKey,
+        count: 1,
+        metadata
+      },
+      update: metadata ? { count: { increment: 1 }, metadata } : { count: { increment: 1 } }
+    });
+
+    const used = counter.count;
+    return {
+      allowed: used <= input.limit,
+      limit: input.limit,
+      used,
+      remaining: Math.max(0, input.limit - used),
+      bucket: input.bucket,
+      periodKey: input.periodKey
+    };
+  }
 });
 
 export const createStatusPort = (deps: {

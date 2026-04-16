@@ -5,6 +5,7 @@ import {
   updateReminderStatus
 } from "@zappy/adapters";
 import { ReminderStatus } from "@prisma/client";
+import { resolveGovernanceDecision, type GovernancePort } from "@zappy/core";
 import { withCategory } from "@zappy/shared";
 import type { WaGatewayDispatchClient } from "../../../infrastructure/wa-gateway-dispatch-client.js";
 import { resolveAsyncJobRecipient } from "../../../infrastructure/recipient-resolution.js";
@@ -18,6 +19,7 @@ type LoggerLike = {
 type ReminderProcessingStage =
   | "load_reminder"
   | "resolve_recipient"
+  | "governance_check"
   | "dispatch_gateway"
   | "mark_sent_status"
   | "persist_outbound"
@@ -60,6 +62,8 @@ const failureCategoryByStage = (stage: ReminderProcessingStage): string => {
       return "reminder_lookup_failed";
     case "resolve_recipient":
       return "recipient_resolution_failed";
+    case "governance_check":
+      return "governance_execution_denied";
     case "dispatch_gateway":
       return "gateway_dispatch_failed";
     case "mark_sent_status":
@@ -106,6 +110,7 @@ export const buildReminderFailureLogPayload = (input: {
 export interface ReminderJobDeps {
   logger: LoggerLike;
   gatewayClient: WaGatewayDispatchClient;
+  governancePort?: GovernancePort;
   metrics: { increment: (metric: "reminders_sent_total", by?: number) => Promise<void> };
   auditTrail: {
     record: (input: {
@@ -167,6 +172,63 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
 
   try {
     if (!recipient.resolvedRecipient) throw new Error("Reminder has no recipient");
+
+    if (deps.governancePort) {
+      stage = "governance_check";
+      const governanceWaUserId =
+        reminder.waUserId ?? (recipient.resolvedRecipient && !recipient.resolvedRecipient.endsWith("@g.us") ? recipient.resolvedRecipient : "unknown@s.whatsapp.net");
+      const governanceDecision = await resolveGovernanceDecision(deps.governancePort, {
+        tenant: { id: tenantId },
+        user: { waUserId: governanceWaUserId },
+        group: reminder.waGroupId
+          ? {
+              waGroupId: reminder.waGroupId
+            }
+          : undefined,
+        context: {
+          scope: reminder.waGroupId ? "group" : "private",
+          isGroup: Boolean(reminder.waGroupId),
+          routeKey: "worker.send_reminder"
+        },
+        consent: {
+          bypass: true,
+          required: false
+        },
+        request: {
+          capability: reminder.waGroupId ? "conversation.group" : "conversation.direct",
+          route: "worker.send_reminder"
+        },
+        runtimePolicySignals: {
+          source: "worker",
+          jobType: "send-reminder",
+          jobId: deps.jobId,
+          skipQuotaConsumption: true
+        }
+      });
+
+      if (!governanceDecision.allow) {
+        const denyReason = governanceDecision.reasonCodes.join(",") || "unknown";
+        deps.logger.warn?.(
+          withCategory("WARN", {
+            action: "send_reminder",
+            status: "worker_governance_execution_denied",
+            tenantId,
+            reminderId: reminder.id,
+            reminderPublicId: reminder.publicId ?? reminder.id,
+            referenceId,
+            jobId: deps.jobId,
+            waUserId: governanceWaUserId,
+            waGroupId: reminder.waGroupId ?? undefined,
+            reasonCodes: governanceDecision.reasonCodes,
+            approvalState: governanceDecision.approval.state,
+            planId: governanceDecision.licensing.planId,
+            quota: governanceDecision.licensing.quota
+          }),
+          "worker reminder execution denied by current policy"
+        );
+        throw new Error(`worker_governance_execution_denied:${denyReason}`);
+      }
+    }
 
     stage = "dispatch_gateway";
     deps.logger.info(withCategory("WA-OUT", { ...logContext, waMessageId: null, stage }), "dispatching reminder");
@@ -253,4 +315,3 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
     throw error;
   }
 };
-

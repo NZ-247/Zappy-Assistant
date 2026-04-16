@@ -116,7 +116,8 @@ const buildGovernanceDecisionInput = (query: GovernanceSnapshotQuery): DecisionI
     runtimePolicySignals: {
       botIsGroupAdmin: parseBoolean(query.botIsGroupAdmin),
       botAdminCheckFailed: parseBoolean(query.botAdminCheckFailed),
-      botAdminStatusSource: query.botAdminStatusSource
+      botAdminStatusSource: query.botAdminStatusSource,
+      skipQuotaConsumption: true
     }
   };
 };
@@ -188,8 +189,8 @@ export const registerAssistantApiRoutes = (app: AssistantApiHttpApp, runtime: As
 
     return {
       schemaVersion: "governance.snapshot.v1",
-      governanceVersion: "v1.7.0",
-      shadowMode: true,
+      governanceVersion: "v1.7.1",
+      shadowMode: false,
       input,
       decision
     };

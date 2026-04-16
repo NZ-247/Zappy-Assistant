@@ -117,6 +117,8 @@ const envSchema = z.object({
   DEFAULT_BOT_NAME: z.string().default("Zappy"),
   ASSISTANT_MODE_DEFAULT: z.enum(["off", "professional", "fun", "mixed"]).default("professional"),
   FUN_MODE_DEFAULT: z.enum(["off", "on"]).default("off"),
+  GOVERNANCE_FREE_DIRECT_CHAT_LIMIT: z.coerce.number().int().min(1).default(30),
+  GOVERNANCE_ENFORCEMENT_ENABLED: z.coerce.boolean().default(true),
   GOVERNANCE_SHADOW_MODE: z.coerce.boolean().default(true),
   CONSENT_TERMS_VERSION: z.string().default("2026-03"),
   CONSENT_LINK: z.string().default("https://services.net.br/politicas"),

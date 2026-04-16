@@ -1,5 +1,43 @@
 # Changelog
 
+## V1.7.1 - 2026-04-16
+- Activated first runtime governance enforcement phase (incremental rollout) using persisted admin/governance state.
+- Runtime now enforces access status in live behavior:
+  - `APPROVED` continues normal execution
+  - `PENDING` is denied with pending-approval response
+  - `BLOCKED` is denied with explicit blocked response
+- Added initial license-tier capability gating in centralized core decision logic:
+  - `FREE`, `BASIC`, `PRO`, `ROOT` support with `ROOT` bypass
+  - initial capability enforcement for:
+    - `conversation.direct`
+    - `search.basic`
+    - `image.basic`
+    - `tts.basic`
+    - `transcribe.basic`
+    - `search_ai.premium`
+    - `download.premium`
+- Added first quota-enforcement hook (FREE direct-chat limit) with persisted usage counters and governance reason-code output.
+- Promoted WA Gateway governance from shadow-only to runtime-enforced mode (with optional shadow telemetry retained):
+  - deny/limit short-circuit happens before command/AI execution
+  - clear user-facing deny messages for access/tier/quota decisions
+- Added worker execution-time governance re-check for async jobs:
+  - reminders and timers now re-evaluate current policy before dispatch
+  - denied executions fail safely with structured policy-denied logging
+- Expanded governance observability with concise, correlated logs for:
+  - enforcement apply/deny
+  - reason codes and capability denials
+  - quota denials
+  - worker execution denials
+- Added tests covering:
+  - approved allow
+  - blocked deny
+  - pending deny state
+  - FREE premium deny
+  - PRO premium allow
+  - FREE chat limit deny
+  - worker re-check deny after policy change
+- Bumped workspace/project versions to `1.7.1`.
+
 ## V1.7.0 - 2026-04-15
 - Delivered the first browser-based Admin UI MVP (`apps/admin-ui`) as a real control-plane interface (presentation-only) consuming `admin-api`.
 - Replaced legacy static utility pages with a unified Admin UI experience featuring:

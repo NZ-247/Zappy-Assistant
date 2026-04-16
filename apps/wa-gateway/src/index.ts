@@ -53,7 +53,7 @@ import { createBaileysRuntimeLogger } from "./infrastructure/baileys-runtime-log
 import { executeOutboundActions } from "./infrastructure/outbound-actions.js";
 import { createGroupParticipantsUpdateHandler } from "./inbound/group-participants-handler.js";
 import { createMessagesUpsertHandler } from "./inbound/messages-upsert-handler.js";
-import { createGovernanceShadowEvaluator } from "./inbound/governance-shadow.js";
+import { createGovernanceRuntimeEvaluator } from "./inbound/governance-shadow.js";
 import { wireInboundEvents } from "./inbound/event-wiring.js";
 import { createWhatsAppConnector } from "./bootstrap/connect-whatsapp.js";
 
@@ -163,6 +163,7 @@ const audioCommandAllowlist = env.AUDIO_COMMAND_ALLOWLIST.split(",")
   .map((item) => item.trim())
   .filter(Boolean);
 const governanceShadowMode = env.GOVERNANCE_SHADOW_MODE;
+const governanceEnforcementEnabled = env.GOVERNANCE_ENFORCEMENT_ENABLED;
 const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
 const muteAdapter = createMuteAdapter(redis);
 const auditTrail = createAuditTrail();
@@ -199,7 +200,8 @@ printStartupBanner(logger, {
     mediaResolverBaseUrl: env.MEDIA_RESOLVER_API_BASE_URL,
     inboundClaimTtlSeconds: INBOUND_MESSAGE_CLAIM_TTL_SECONDS,
     inboundStartupSession: INBOUND_STARTUP_SESSION_ID,
-    governanceShadowMode
+    governanceShadowMode,
+    governanceEnforcementEnabled
   }
 });
 
@@ -423,13 +425,15 @@ const botAdminStatusService = createBotAdminStatusService({
   findPersistedGroup: async (waGroupId: string) => prisma.group.findUnique({ where: { waGroupId } })
 });
 const { resolveSenderGroupAdmin, refreshBotAdminState } = botAdminStatusService;
-const evaluateGovernanceShadowDecision = createGovernanceShadowEvaluator({
+const evaluateGovernanceDecision = createGovernanceRuntimeEvaluator({
   governancePort,
   logger,
   withCategory,
   commandPrefix: env.BOT_PREFIX,
-  enabled: governanceShadowMode,
-  consentTermsVersion: env.CONSENT_TERMS_VERSION
+  consentTermsVersion: env.CONSENT_TERMS_VERSION,
+  freeDirectChatLimit: env.GOVERNANCE_FREE_DIRECT_CHAT_LIMIT,
+  shadowEnabled: governanceShadowMode,
+  enforcementEnabled: governanceEnforcementEnabled
 });
 
 const getSocket = () => socket;
@@ -492,7 +496,7 @@ const handleMessagesUpsert = createMessagesUpsertHandler({
   logger,
   withCategory,
   executeOutboundActions,
-  evaluateGovernanceShadowDecision,
+  evaluateGovernanceDecision,
   outboundRuntime: {
     sendWithReplyFallback,
     persistOutboundMessage,

@@ -4,7 +4,8 @@ import {
   markWorkerHeartbeat,
   prisma,
   createMetricsRecorder,
-  createAuditTrail
+  createAuditTrail,
+  governancePort
 } from "@zappy/adapters";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
 import { createWaGatewayDispatchClient } from "./infrastructure/wa-gateway-dispatch-client.js";
@@ -66,7 +67,14 @@ const worker = new Worker(
         logger.warn(withCategory("WARN", { action: "send_reminder", jobId: job.id }), "job send-reminder missing reminderId");
         return;
       }
-      await processReminderJob(reminderId, { logger, gatewayClient, metrics, auditTrail, jobId: String(job.id ?? "") || undefined });
+      await processReminderJob(reminderId, {
+        logger,
+        gatewayClient,
+        governancePort,
+        metrics,
+        auditTrail,
+        jobId: String(job.id ?? "") || undefined
+      });
       return;
     }
 
@@ -76,7 +84,7 @@ const worker = new Worker(
         logger.warn(withCategory("WARN", { action: "fire_timer", jobId: job.id }), "job fire-timer missing timerId");
         return;
       }
-      await processTimerJob(timerId, { logger, gatewayClient });
+      await processTimerJob(timerId, { logger, gatewayClient, governancePort });
       return;
     }
 
