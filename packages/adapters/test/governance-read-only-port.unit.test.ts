@@ -84,12 +84,28 @@ test("read-only governance adapter composes existing policy sources into snapsho
   assert.equal(snapshot.evaluatedAt.toISOString(), "2026-04-12T12:00:00.000Z");
 });
 
-test("read-only governance adapter returns unknown consent when no record exists", async () => {
+test("private scope keeps user as primary policy subject", async () => {
   const port = createReadOnlyGovernancePort({
     resolveFlags: async () => ({}),
     readGroup: async () => null,
     isBotAdmin: async () => false,
-    getConsent: async () => null
+    getConsent: async () => null,
+    readUserAccess: async () => ({
+      tenantId: "tenant-1",
+      waUserId: "5511999999999@s.whatsapp.net",
+      status: "APPROVED",
+      tier: "BASIC",
+      approvedBy: "ops-admin",
+      approvedAt: new Date("2026-04-12T08:00:00.000Z")
+    }),
+    readGroupAccess: async () => ({
+      tenantId: "tenant-1",
+      waGroupId: "120363426095846827@g.us",
+      status: "BLOCKED",
+      tier: "PRO",
+      approvedBy: "ops-admin",
+      approvedAt: new Date("2026-04-12T08:00:00.000Z")
+    })
   });
 
   const snapshot = await port.getSnapshot({
@@ -101,6 +117,32 @@ test("read-only governance adapter returns unknown consent when no record exists
   assert.equal(snapshot.scope, "private");
   assert.equal(snapshot.group.exists, false);
   assert.equal(snapshot.consent.status, "UNKNOWN");
-  assert.equal(snapshot.access.effective.source, "none");
+  assert.equal(snapshot.access.effective.source, "user");
+  assert.equal(snapshot.access.effective.status, "APPROVED");
+});
+
+test("group scope keeps group as primary policy subject even when user access exists", async () => {
+  const port = createReadOnlyGovernancePort({
+    resolveFlags: async () => ({}),
+    readGroup: async () => null,
+    isBotAdmin: async () => false,
+    getConsent: async () => null,
+    readUserAccess: async () => ({
+      tenantId: "tenant-1",
+      waUserId: "5511999999999@s.whatsapp.net",
+      status: "APPROVED",
+      tier: "ROOT",
+      approvedBy: "ops-admin",
+      approvedAt: new Date("2026-04-12T08:00:00.000Z")
+    }),
+    readGroupAccess: async () => null
+  });
+
+  const snapshot = await port.getSnapshot(baseInput);
+
+  assert.equal(snapshot.scope, "group");
+  assert.equal(snapshot.access.user.status, "APPROVED");
+  assert.equal(snapshot.access.effective.source, "group");
   assert.equal(snapshot.access.effective.status, "UNKNOWN");
+  assert.equal(snapshot.access.effective.tier, "UNKNOWN");
 });

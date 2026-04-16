@@ -482,7 +482,8 @@ export const createAdminUiApp = ({
     const filtered = state.users.filter((item) => {
       const needle = state.filters.usersSearch.trim().toLowerCase();
       if (!needle) return true;
-      return [item.waUserId, item.displayName, item.phoneNumber].some((value) => String(value || "").toLowerCase().includes(needle));
+      return [item.waUserId, item.displayName, item.phoneNumber, item.permissionRole, item.authorityRole]
+        .some((value) => String(value || "").toLowerCase().includes(needle));
     });
 
     if (!filtered.length) return renderEmpty("No users match this filter.");
@@ -503,6 +504,7 @@ export const createAdminUiApp = ({
               <th>User</th>
               <th>Status</th>
               <th>Tier</th>
+              <th>Authority</th>
               <th>Updated</th>
               <th>Actions</th>
             </tr>
@@ -517,6 +519,12 @@ export const createAdminUiApp = ({
                 </td>
                 <td><span class="badge ${statusBadgeClass(item.status)}">${escapeHtml(item.status)}</span></td>
                 <td><span class="badge ${`tier-${String(item.tier || "").toLowerCase()}`}">${escapeHtml(item.tier)}</span></td>
+                <td>
+                  <span class="badge ${`tier-${String((item.authorityRole || item.permissionRole || "member")).toLowerCase()}`}">${escapeHtml(
+                    item.authorityRole || String(item.permissionRole || "MEMBER").toUpperCase()
+                  )}</span>
+                  <div class="subtext">bot-admin: ${item.isBotAdmin ? "yes" : "no"}</div>
+                </td>
                 <td class="mono">${escapeHtml(toPrettyDate(item.updatedAt))}</td>
                 <td>
                   <div class="inline-actions">

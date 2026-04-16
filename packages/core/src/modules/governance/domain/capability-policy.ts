@@ -268,10 +268,13 @@ const resolveEffectiveBundleKeys = (input: {
   policy: GovernanceCapabilityPolicySnapshot;
   scope: CapabilityScope;
 }): string[] => {
-  const userBundles = (input.policy.assignments.user ?? []).map(normalizeBundleKey);
-  if (input.scope !== "group") return unique(userBundles);
+  if (input.scope !== "group") {
+    const userBundles = (input.policy.assignments.user ?? []).map(normalizeBundleKey);
+    return unique(userBundles);
+  }
+
   const groupBundles = (input.policy.assignments.group ?? []).map(normalizeBundleKey);
-  return unique([...groupBundles, ...userBundles]);
+  return unique(groupBundles);
 };
 
 const pickExplicitAllow = (input: {
@@ -283,7 +286,6 @@ const pickExplicitAllow = (input: {
     return input.userOverride === "allow" ? "user_override_allow" : null;
   }
 
-  if (input.userOverride === "allow") return "user_override_allow";
   if (input.groupOverride === "allow") return "group_override_allow";
   return null;
 };

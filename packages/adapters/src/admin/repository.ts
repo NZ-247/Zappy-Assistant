@@ -31,6 +31,9 @@ export interface UserAccessView {
   waUserId: string;
   phoneNumber?: string | null;
   displayName?: string | null;
+  permissionRole?: string | null;
+  authorityRole: "MEMBER" | "ADMIN" | "ROOT";
+  isBotAdmin: boolean;
   status: AccessStatusValue;
   tier: LicenseTierValue;
   approvedBy?: string | null;
@@ -171,24 +174,39 @@ const mapUserAccessRow = (row: {
   waUserId: string;
   phoneNumber: string | null;
   displayName: string | null;
+  permissionRole?: string | null;
+  isBotAdmin?: boolean;
   status: AccessStatus;
   tier: LicenseTier;
   approvedBy: string | null;
   approvedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
-}): UserAccessView => ({
-  tenantId: row.tenantId,
-  waUserId: row.waUserId,
-  phoneNumber: row.phoneNumber,
-  displayName: row.displayName,
-  status: row.status,
-  tier: row.tier,
-  approvedBy: row.approvedBy,
-  approvedAt: row.approvedAt,
-  createdAt: row.createdAt,
-  updatedAt: row.updatedAt
-});
+}): UserAccessView => {
+  const normalizedRole = (row.permissionRole ?? "").trim().toUpperCase();
+  const authorityRole: UserAccessView["authorityRole"] =
+    normalizedRole === "ROOT" || normalizedRole === "DONO" || normalizedRole === "OWNER"
+      ? "ROOT"
+      : normalizedRole === "ADMIN" || normalizedRole === "GROUP_ADMIN" || row.isBotAdmin
+        ? "ADMIN"
+        : "MEMBER";
+
+  return {
+    tenantId: row.tenantId,
+    waUserId: row.waUserId,
+    phoneNumber: row.phoneNumber,
+    displayName: row.displayName,
+    permissionRole: row.permissionRole ?? null,
+    authorityRole,
+    isBotAdmin: Boolean(row.isBotAdmin),
+    status: row.status,
+    tier: row.tier,
+    approvedBy: row.approvedBy,
+    approvedAt: row.approvedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt
+  };
+};
 
 const mapGroupAccessRow = (row: {
   tenantId: string;
@@ -345,6 +363,44 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     return deps.prisma.group.update({ where: { id: existing.id }, data: { name: input.groupName } });
   };
 
+  const resolveUserAuthorityMetadata = async (input: {
+    tenantId: string;
+    waUserId: string;
+    knownPermissionRole?: string | null;
+    knownLegacyRole?: string | null;
+  }): Promise<{
+    permissionRole: string | null;
+    isBotAdmin: boolean;
+  }> => {
+    const [user, botAdmin] = await Promise.all([
+      deps.prisma.user.findUnique({
+        where: { waUserId: input.waUserId },
+        select: {
+          tenantId: true,
+          permissionRole: true,
+          role: true
+        }
+      }),
+      deps.prisma.botAdmin.findUnique({
+        where: {
+          tenantId_waUserId: {
+            tenantId: input.tenantId,
+            waUserId: input.waUserId
+          }
+        },
+        select: { id: true }
+      })
+    ]);
+
+    const permissionRoleFromUser =
+      user && user.tenantId === input.tenantId ? user.permissionRole ?? user.role ?? null : null;
+
+    return {
+      permissionRole: permissionRoleFromUser ?? input.knownPermissionRole ?? input.knownLegacyRole ?? null,
+      isBotAdmin: Boolean(botAdmin)
+    };
+  };
+
   const ensureUserAccess = async (input: {
     tenantId?: string | null;
     waUserId: string;
@@ -380,7 +436,18 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
       }
     });
 
-    return mapUserAccessRow(row);
+    const authority = await resolveUserAuthorityMetadata({
+      tenantId,
+      waUserId: input.waUserId,
+      knownPermissionRole: user.permissionRole,
+      knownLegacyRole: user.role
+    });
+
+    return mapUserAccessRow({
+      ...row,
+      permissionRole: authority.permissionRole,
+      isBotAdmin: authority.isBotAdmin
+    });
   };
 
   const ensureGroupAccess = async (input: { tenantId?: string | null; waGroupId: string; groupName?: string | null }) => {
@@ -710,7 +777,17 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
       }
     });
 
-    return mapUserAccessRow(next);
+    const authority = await resolveUserAuthorityMetadata({
+      tenantId: current.tenantId,
+      waUserId: current.waUserId,
+      knownPermissionRole: current.permissionRole
+    });
+
+    return mapUserAccessRow({
+      ...next,
+      permissionRole: authority.permissionRole,
+      isBotAdmin: authority.isBotAdmin
+    });
   };
 
   const updateGroupAccessStatus = async (input: {
@@ -796,7 +873,17 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
       }
     });
 
-    return mapUserAccessRow(next);
+    const authority = await resolveUserAuthorityMetadata({
+      tenantId: current.tenantId,
+      waUserId: current.waUserId,
+      knownPermissionRole: current.permissionRole
+    });
+
+    return mapUserAccessRow({
+      ...next,
+      permissionRole: authority.permissionRole,
+      isBotAdmin: authority.isBotAdmin
+    });
   };
 
   const updateGroupLicense = async (input: {
@@ -1344,7 +1431,19 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
       },
       take: input.limit ?? 200
     });
-    return rows.map(mapUserAccessRow);
+    return Promise.all(
+      rows.map(async (row) => {
+        const authority = await resolveUserAuthorityMetadata({
+          tenantId: row.tenantId,
+          waUserId: row.waUserId
+        });
+        return mapUserAccessRow({
+          ...row,
+          permissionRole: authority.permissionRole,
+          isBotAdmin: authority.isBotAdmin
+        });
+      })
+    );
   };
 
   const listGroups = async (input: {

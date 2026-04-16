@@ -6,6 +6,7 @@ export type GovernanceAccessStatus = "PENDING" | "APPROVED" | "BLOCKED" | "UNKNO
 export type GovernanceLicenseTier = "FREE" | "BASIC" | "PRO" | "ROOT" | "UNKNOWN";
 
 export type GovernanceRequiredRole = "member" | "admin" | "root" | "group_admin" | "privileged";
+export type GovernanceActorRole = "MEMBER" | "ADMIN" | "ROOT";
 
 export type GovernanceCapabilityOverrideMode = "allow" | "deny";
 
@@ -120,6 +121,7 @@ export interface GovernancePolicySnapshot {
     isPrivileged: boolean;
     permissionRole?: string | null;
     relationshipProfile?: RelationshipProfile | null;
+    role?: GovernanceActorRole;
   };
   featureFlags: Record<string, string>;
   group: {
@@ -164,6 +166,7 @@ export interface GovernancePolicySnapshot {
 export type GovernanceReasonCode =
   | "ALLOW_POLICY_PASSED"
   | "ALLOW_PRIVILEGED_OVERRIDE"
+  | "ALLOW_ROOT_BYPASS"
   | "DENY_TENANT_POLICY"
   | "DENY_CAPABILITY_DISABLED"
   | "DENY_ACCESS_PENDING"

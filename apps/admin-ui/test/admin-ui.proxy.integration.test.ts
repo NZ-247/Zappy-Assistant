@@ -264,6 +264,41 @@ const buildMockAdminApi = async () => {
       }
     };
   });
+  app.get("/admin/v1/governance/snapshot", async (request) => {
+    const query = request.query as {
+      waGroupId?: string;
+      waUserId?: string;
+      scope?: string;
+      capability?: string;
+    };
+    const scope = query.scope === "group" ? "group" : "private";
+    const capability = query.capability || (scope === "group" ? "conversation.group" : "conversation.direct");
+    const group = query.waGroupId ? groups.get(query.waGroupId) : null;
+    const assigned = query.waGroupId ? Array.from(groupBundleAssignments.get(query.waGroupId) ?? new Set<string>()) : [];
+    const overrides = query.waGroupId
+      ? Object.fromEntries((groupOverrides.get(query.waGroupId) ?? new Map<string, "allow" | "deny">()).entries())
+      : {};
+
+    const tierAllowsHidetag = group?.tier === "PRO" || group?.tier === "ROOT";
+    const bundleAllowsHidetag = assigned.includes("moderation_tools");
+    const overrideMode = overrides["command.hidetag"];
+
+    const policyAllowForHidetag = overrideMode === "deny" ? false : tierAllowsHidetag || bundleAllowsHidetag;
+    const approved = scope !== "group" || group?.status === "APPROVED";
+    const allow = capability === "command.hidetag" ? approved && policyAllowForHidetag : approved;
+
+    return {
+      schemaVersion: "governance.snapshot.v1",
+      decision: {
+        allow,
+        capabilityPolicy: {
+          requested: capability,
+          denySource:
+            capability === "command.hidetag" && !policyAllowForHidetag ? (overrideMode === "deny" ? "explicit_override_deny" : "tier_default") : null
+        }
+      }
+    };
+  });
   app.put("/admin/v1/governance/users/:waUserId/bundles/:bundleKey", async (request) => {
     const params = request.params as { waUserId: string; bundleKey: string };
     const set = userBundleAssignments.get(params.waUserId) ?? new Set<string>();
@@ -436,6 +471,21 @@ test("admin-ui proxy supports admin-api round-trips for dashboard, users/groups,
   assert.equal(updateGroupTier.status, 200);
   assert.equal(updateGroupTier.payload.item.tier, "BASIC");
 
+  const reapproveGroup = await callUiProxy(uiBaseUrl, "/admin/v1/groups/g-100/access", {
+    method: "PATCH",
+    body: JSON.stringify({ status: "APPROVED", actor: "ops-admin" })
+  });
+  assert.equal(reapproveGroup.status, 200);
+  assert.equal(reapproveGroup.payload.item.status, "APPROVED");
+
+  const snapshotBeforeBundle = await callUiProxy(
+    uiBaseUrl,
+    "/admin/v1/governance/snapshot?tenantId=tenant-1&waUserId=u-100&waGroupId=g-100&scope=group&capability=command.hidetag"
+  );
+  assert.equal(snapshotBeforeBundle.status, 200);
+  assert.equal(snapshotBeforeBundle.payload.decision.allow, false);
+  assert.equal(snapshotBeforeBundle.payload.decision.capabilityPolicy.denySource, "tier_default");
+
   const governanceCapabilities = await callUiProxy(uiBaseUrl, "/admin/v1/governance/capabilities");
   assert.equal(governanceCapabilities.status, 200);
   assert.equal(governanceCapabilities.payload.count >= 1, true);
@@ -450,11 +500,26 @@ test("admin-ui proxy supports admin-api round-trips for dashboard, users/groups,
   });
   assert.equal(assignGroupBundle.status, 200);
 
+  const snapshotAfterBundle = await callUiProxy(
+    uiBaseUrl,
+    "/admin/v1/governance/snapshot?tenantId=tenant-1&waUserId=u-100&waGroupId=g-100&scope=group&capability=command.hidetag"
+  );
+  assert.equal(snapshotAfterBundle.status, 200);
+  assert.equal(snapshotAfterBundle.payload.decision.allow, true);
+
   const setGroupCapabilityOverride = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/capabilities/command.hidetag", {
     method: "PUT",
     body: JSON.stringify({ mode: "deny", actor: "ops-admin" })
   });
   assert.equal(setGroupCapabilityOverride.status, 200);
+
+  const snapshotAfterOverride = await callUiProxy(
+    uiBaseUrl,
+    "/admin/v1/governance/snapshot?tenantId=tenant-1&waUserId=u-100&waGroupId=g-100&scope=group&capability=command.hidetag"
+  );
+  assert.equal(snapshotAfterOverride.status, 200);
+  assert.equal(snapshotAfterOverride.payload.decision.allow, false);
+  assert.equal(snapshotAfterOverride.payload.decision.capabilityPolicy.denySource, "explicit_override_deny");
 
   const effectiveGroup = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/effective");
   assert.equal(effectiveGroup.status, 200);
@@ -465,6 +530,13 @@ test("admin-ui proxy supports admin-api round-trips for dashboard, users/groups,
     body: JSON.stringify({ actor: "ops-admin" })
   });
   assert.equal(clearGroupCapabilityOverride.status, 200);
+
+  const snapshotAfterClear = await callUiProxy(
+    uiBaseUrl,
+    "/admin/v1/governance/snapshot?tenantId=tenant-1&waUserId=u-100&waGroupId=g-100&scope=group&capability=command.hidetag"
+  );
+  assert.equal(snapshotAfterClear.status, 200);
+  assert.equal(snapshotAfterClear.payload.decision.allow, true);
 
   const audit = await callUiProxy(uiBaseUrl, "/admin/v1/audit");
   assert.equal(audit.status, 200);

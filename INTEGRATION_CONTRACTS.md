@@ -215,6 +215,12 @@ decision is evaluated and returned for observability/debugging
 
 this endpoint remains read-only (no side-effecting runtime enforcement action is applied here)
 
+Governance subject strategy (v1.8.1+):
+
+- `scope=private` resolves policy primarily against user access/policy.
+- `scope=group` resolves policy primarily against group access/policy.
+- user checks in group scope are secondary/exceptional (explicit user deny, admin/elevated role checks).
+
 Required query params
 
 tenantId
@@ -282,6 +288,12 @@ Users
 - `GET /admin/v1/users`
 - `GET /admin/v1/users/:waUserId`
 - `PATCH /admin/v1/users/:waUserId/access`
+
+User access payload extensions (v1.8.1+):
+
+- `permissionRole` (string | null)
+- `authorityRole` (`MEMBER | ADMIN | ROOT`)
+- `isBotAdmin` (boolean)
 
 Groups
 

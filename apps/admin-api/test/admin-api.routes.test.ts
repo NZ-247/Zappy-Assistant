@@ -370,51 +370,106 @@ const buildRuntime = () => {
       OPENAI_API_KEY: "test"
     },
     governancePort: {
-      getSnapshot: async () => ({
-        evaluatedAt: new Date("2026-04-14T10:00:00.000Z"),
-        tenantId: "tenant-1",
-        waUserId: "u1",
-        scope: "private",
-        actor: {
-          isBotAdmin: false,
-          isPrivileged: false,
-          permissionRole: "member",
-          relationshipProfile: "member"
-        },
-        featureFlags: {},
-        group: {
-          exists: false
-        },
-        consent: {
-          exists: true,
-          status: "ACCEPTED",
-          termsVersion: "2026-03"
-        },
-        access: {
-          user: {
-            exists: true,
-            status: "PENDING",
-            tier: "FREE",
-            approvedBy: null,
-            approvedAt: null,
-            source: "persisted"
+      getSnapshot: async (input: any) => {
+        const scope = input?.context?.scope === "group" ? "group" : "private";
+        const tenantId = input?.tenant?.id ?? "tenant-1";
+        const waUserId = input?.user?.waUserId ?? "u1";
+        const waGroupId = input?.group?.waGroupId;
+        const user = ensureUser(waUserId);
+        const group = waGroupId ? ensureGroup(waGroupId) : null;
+        const userAssignmentSet = userBundleAssignments.get(waUserId) ?? new Set<string>();
+        const groupAssignmentSet = waGroupId ? groupBundleAssignments.get(waGroupId) ?? new Set<string>() : new Set<string>();
+        const userOverrideMap = userOverrides.get(waUserId) ?? new Map<string, "allow" | "deny">();
+        const groupOverrideMap = waGroupId ? groupOverrides.get(waGroupId) ?? new Map<string, "allow" | "deny">() : new Map<string, "allow" | "deny">();
+
+        return {
+          evaluatedAt: new Date("2026-04-14T10:00:00.000Z"),
+          tenantId,
+          waUserId,
+          waGroupId,
+          scope,
+          actor: {
+            isBotAdmin: false,
+            isPrivileged: false,
+            permissionRole: input?.user?.permissionRole ?? "member",
+            relationshipProfile: "member",
+            role: input?.user?.permissionRole?.toUpperCase?.() === "ROOT" ? "ROOT" : "MEMBER"
           },
+          featureFlags: {},
           group: {
-            exists: false,
-            status: "UNKNOWN",
-            tier: "UNKNOWN",
-            approvedBy: null,
-            approvedAt: null,
-            source: "default"
+            exists: Boolean(group),
+            allowed: true,
+            chatMode: "on",
+            botIsAdmin: true,
+            botAdminCheckedAt: new Date("2026-04-14T09:59:00.000Z")
           },
-          effective: {
-            source: "user",
-            status: "PENDING",
-            tier: "FREE"
+          consent: {
+            exists: true,
+            status: "ACCEPTED",
+            termsVersion: "2026-03"
+          },
+          access: {
+            user: {
+              exists: true,
+              status: user.status,
+              tier: user.tier,
+              approvedBy: user.approvedBy,
+              approvedAt: user.approvedAt,
+              source: "persisted"
+            },
+            group: {
+              exists: Boolean(group),
+              status: group ? group.status : "UNKNOWN",
+              tier: group ? group.tier : "UNKNOWN",
+              approvedBy: group?.approvedBy ?? null,
+              approvedAt: group?.approvedAt ?? null,
+              source: group ? "persisted" : "default"
+            },
+            effective:
+              scope === "group"
+                ? {
+                    source: "group",
+                    status: group ? group.status : "UNKNOWN",
+                    tier: group ? group.tier : "UNKNOWN"
+                  }
+                : {
+                    source: "user",
+                    status: user.status,
+                    tier: user.tier
+                  }
+          },
+          capabilityPolicy: {
+            definitions: capabilities.map((capability) => ({
+              key: capability.key,
+              displayName: capability.displayName,
+              active: capability.active
+            })),
+            bundles: bundles.map((bundle) => ({
+              key: bundle.key,
+              displayName: bundle.displayName,
+              active: bundle.active,
+              capabilities: bundle.capabilities
+            })),
+            tierDefaultBundles: {
+              FREE: ["basic_chat"],
+              BASIC: ["basic_chat"],
+              PRO: ["basic_chat", "moderation_tools"],
+              ROOT: ["basic_chat", "moderation_tools"]
+            },
+            assignments: {
+              user: Array.from(userAssignmentSet),
+              group: Array.from(groupAssignmentSet)
+            },
+            overrides: {
+              user: Object.fromEntries(userOverrideMap.entries()),
+              group: Object.fromEntries(groupOverrideMap.entries())
+            }
+          },
+          runtimePolicySignals: {
+            botIsGroupAdmin: true
           }
-        },
-        runtimePolicySignals: {}
-      })
+        };
+      }
     },
     queue: {
       name: "reminders",
@@ -651,6 +706,96 @@ test("governance capability and bundle endpoints support assignment and override
     }
   });
   assert.equal(clearGroupOverride.statusCode, 200);
+
+  await app.close();
+});
+
+test("admin governance mutations round-trip into runtime snapshot enforcement", async () => {
+  const app = Fastify();
+  registerAdminApiRoutes(app as any, buildRuntime());
+
+  const approveGroup = await app.inject({
+    method: "PATCH",
+    url: "/admin/v1/groups/g-789/access",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      status: "APPROVED",
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(approveGroup.statusCode, 200);
+
+  const setGroupTier = await app.inject({
+    method: "PATCH",
+    url: "/admin/v1/groups/g-789/license",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      tier: "BASIC",
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(setGroupTier.statusCode, 200);
+
+  const snapshotBefore = await app.inject({
+    method: "GET",
+    url: "/admin/v1/governance/snapshot?tenantId=tenant-1&waUserId=u-123&waGroupId=g-789&scope=group&capability=command.hidetag",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(snapshotBefore.statusCode, 200);
+  assert.equal(snapshotBefore.json().decision.allow, false);
+  assert.equal(snapshotBefore.json().decision.capabilityPolicy.denySource, "tier_default");
+
+  const assignBundle = await app.inject({
+    method: "PUT",
+    url: "/admin/v1/governance/groups/g-789/bundles/moderation_tools",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(assignBundle.statusCode, 200);
+
+  const snapshotAfterBundle = await app.inject({
+    method: "GET",
+    url: "/admin/v1/governance/snapshot?tenantId=tenant-1&waUserId=u-123&waGroupId=g-789&scope=group&capability=command.hidetag",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(snapshotAfterBundle.statusCode, 200);
+  assert.equal(snapshotAfterBundle.json().decision.allow, true);
+
+  const denyOverride = await app.inject({
+    method: "PUT",
+    url: "/admin/v1/governance/groups/g-789/capabilities/command.hidetag",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      mode: "deny",
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(denyOverride.statusCode, 200);
+
+  const snapshotAfterOverride = await app.inject({
+    method: "GET",
+    url: "/admin/v1/governance/snapshot?tenantId=tenant-1&waUserId=u-123&waGroupId=g-789&scope=group&capability=command.hidetag",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(snapshotAfterOverride.statusCode, 200);
+  assert.equal(snapshotAfterOverride.json().decision.allow, false);
+  assert.equal(snapshotAfterOverride.json().decision.capabilityPolicy.denySource, "explicit_override_deny");
 
   await app.close();
 });

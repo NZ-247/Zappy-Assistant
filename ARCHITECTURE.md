@@ -340,11 +340,16 @@ Phase 5 evolui o modelo de governança para política de capabilities flexível,
   - resolução efetiva de capability com precedência explícita (deny-wins)
 - `packages/core/src/modules/governance/application/use-cases/resolve-governance-decision.ts`
   - ordem de enforcement:
-    - status de acesso
-    - defaults do tier
-    - grants por bundle
-    - overrides explícitos (user/group)
+    - subject primário por escopo (`private=user`, `group=group`)
+    - status de acesso do subject primário
+    - defaults do tier efetivo
+    - grants por bundle do subject primário
+    - overrides explícitos do subject primário
+    - checks de usuário em grupo apenas para exceções (deny explícito por usuário, papel administrativo/elevado)
     - deny-all/flags e quota checks existentes
+  - modelo de autoridade operacional formalizado em `MEMBER|ADMIN|ROOT`
+    - `ROOT` mantém bypass completo (super-admin)
+    - `ADMIN` cobre operações administrativas do bot em grupo
   - atribuição de fonte de negação (`tier_default`, `missing_bundle`, `explicit_override_deny`, `blocked_status`, `quota_denied`)
 - `packages/core/src/commands/registry/*` + `apps/wa-gateway/src/inbound/governance-shadow.ts`
   - command registry passa a carregar `capability` explícita por comando
@@ -368,5 +373,7 @@ Decisões arquiteturais da fase:
 
 - tier deixa de ser fonte final de verdade e passa a ser baseline de entitlement
 - grants por bundle e overrides explícitos viabilizam cenários comerciais/teste sem mudança de código no runtime
-- precedência em escopo de grupo: deny-wins; sem deny, user allow tem prioridade sobre group allow
+- precedência em escopo de grupo: group-first para entitlement/capability; deny explícito continua deny-wins
+- bundles e allow-override de usuário deixam de governar por padrão no escopo de grupo (usuário vira subject secundário)
 - observabilidade de governança passa a expor capability solicitada + fonte primária de deny para troubleshooting rápido
+- logs de runtime passam a expor resolução de subject (`scope`, subject primário/secundário, source efetiva de acesso)

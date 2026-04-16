@@ -126,6 +126,7 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
         Boolean(input.user.isPrivileged) ||
         isPrivilegedPermissionRole(input.user.permissionRole) ||
         isPrivilegedProfile(input.user.relationshipProfile);
+      const actorIsBotAdmin = input.user.isBotAdmin === true || isBotAdmin;
 
       const runtimePolicySignals = {
         ...(input.runtimePolicySignals ?? {}),
@@ -148,24 +149,24 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
         approvedAt: groupAccess?.approvedAt ?? null,
         source: (groupAccess ? "persisted" : "default") as "persisted" | "default"
       };
-      const useGroupAccess = input.context.scope === "group" && groupAccessSnapshot.exists;
-      const effectiveAccess = useGroupAccess
-        ? {
-            source: "group" as const,
-            status: groupAccessSnapshot.status,
-            tier: groupAccessSnapshot.tier
-          }
-        : userAccessSnapshot.exists
+      const effectiveAccess =
+        input.context.scope === "group"
           ? {
-              source: "user" as const,
-              status: userAccessSnapshot.status,
-              tier: userAccessSnapshot.tier
+              source: "group" as const,
+              status: groupAccessSnapshot.status,
+              tier: groupAccessSnapshot.tier
             }
-          : {
-              source: "none" as const,
-              status: "UNKNOWN" as const,
-              tier: "UNKNOWN" as const
-            };
+          : userAccessSnapshot.exists
+            ? {
+                source: "user" as const,
+                status: userAccessSnapshot.status,
+                tier: userAccessSnapshot.tier
+              }
+            : {
+                source: "none" as const,
+                status: "UNKNOWN" as const,
+                tier: "UNKNOWN" as const
+              };
 
       return {
         evaluatedAt: sources.now?.() ?? new Date(),
@@ -174,7 +175,7 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
         waGroupId,
         scope: input.context.scope,
         actor: {
-          isBotAdmin: input.user.isBotAdmin === true || isBotAdmin,
+          isBotAdmin: actorIsBotAdmin,
           isPrivileged,
           permissionRole: input.user.permissionRole,
           relationshipProfile: input.user.relationshipProfile ?? null

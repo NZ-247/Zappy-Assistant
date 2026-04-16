@@ -13,6 +13,7 @@ export type {
   GovernanceCapabilityResolutionSource,
   GovernanceCapabilityDenySource,
   GovernanceRequiredRole,
+  GovernanceActorRole,
   GovernanceQuotaConsumeInput,
   GovernanceQuotaConsumeResult
 } from "./domain/governance-decision.js";

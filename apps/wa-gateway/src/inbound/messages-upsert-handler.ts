@@ -83,6 +83,19 @@ interface MessagesUpsertHandlerDeps {
       reasonCodes?: string[];
       approval?: { state?: string };
       licensing?: { planId?: string | null; quota?: { limit?: number | null; used?: number | null; remaining?: number | null } };
+      snapshot?: {
+        scope?: "private" | "group";
+        waGroupId?: string;
+        waUserId?: string;
+        access?: {
+          effective?: {
+            source?: "user" | "group" | "none";
+          };
+        };
+      };
+      capabilityPolicy?: {
+        decisionSource?: string;
+      };
     };
   }>;
   outboundRuntime: {
@@ -447,6 +460,17 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
             executionId: event.executionId,
             capability: governanceEvaluation.capability,
             route: governanceEvaluation.route,
+            governanceScope: governanceEvaluation.decision?.snapshot?.scope,
+            primaryPolicySubject:
+              governanceEvaluation.decision?.snapshot?.scope === "group"
+                ? { type: "group", id: governanceEvaluation.decision?.snapshot?.waGroupId ?? event.waGroupId ?? null }
+                : { type: "user", id: governanceEvaluation.decision?.snapshot?.waUserId ?? event.waUserId },
+            secondaryPolicySubject:
+              governanceEvaluation.decision?.snapshot?.scope === "group"
+                ? { type: "user", id: governanceEvaluation.decision?.snapshot?.waUserId ?? event.waUserId }
+                : null,
+            effectiveAccessSource: governanceEvaluation.decision?.snapshot?.access?.effective?.source,
+            capabilityDecisionSource: governanceEvaluation.decision?.capabilityPolicy?.decisionSource,
             reasonCodes: governanceEvaluation.decision?.reasonCodes,
             approvalState: governanceEvaluation.decision?.approval?.state,
             planId: governanceEvaluation.decision?.licensing?.planId,
@@ -506,7 +530,13 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
             waMessageId: event.waMessageId,
             executionId: event.executionId,
             capability: governanceEvaluation.capability,
-            route: governanceEvaluation.route
+            route: governanceEvaluation.route,
+            governanceScope: governanceEvaluation.decision?.snapshot?.scope,
+            primaryPolicySubject:
+              governanceEvaluation.decision?.snapshot?.scope === "group"
+                ? { type: "group", id: governanceEvaluation.decision?.snapshot?.waGroupId ?? event.waGroupId ?? null }
+                : { type: "user", id: governanceEvaluation.decision?.snapshot?.waUserId ?? event.waUserId },
+            effectiveAccessSource: governanceEvaluation.decision?.snapshot?.access?.effective?.source
           }),
           "governance evaluated and allowed"
         );

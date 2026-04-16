@@ -134,6 +134,14 @@ const buildDenyText = (decision: DecisionResult): string => {
 };
 
 const logDecision = (deps: GovernanceRuntimeDeps, input: { result: DecisionResult; capability: string; route: string; event: InboundMessageEvent }) => {
+  const scope = input.result.snapshot.scope;
+  const primaryPolicySubject =
+    scope === "group"
+      ? { type: "group", id: input.result.snapshot.waGroupId ?? input.event.waGroupId ?? null }
+      : { type: "user", id: input.result.snapshot.waUserId };
+  const secondaryPolicySubject =
+    scope === "group" ? { type: "user", id: input.result.snapshot.waUserId } : null;
+
   const basePayload = {
     tenantId: input.event.tenantId,
     waUserId: input.event.waUserId,
@@ -148,6 +156,12 @@ const logDecision = (deps: GovernanceRuntimeDeps, input: { result: DecisionResul
     reasonCodes: input.result.reasonCodes,
     capabilityPolicy: input.result.capabilityPolicy,
     contextScope: input.event.isGroup ? "group" : "direct",
+    governanceScope: scope,
+    primaryPolicySubject,
+    secondaryPolicySubject,
+    effectiveAccessSource: input.result.snapshot.access.effective.source,
+    capabilityDecisionSource: input.result.capabilityPolicy.decisionSource,
+    capabilityDenySource: input.result.capabilityPolicy.denySource,
     senderIsGroupAdmin: input.event.senderIsGroupAdmin,
     botIsGroupAdmin: input.event.botIsGroupAdmin,
     botAdminCheckFailed: input.event.botAdminCheckFailed,

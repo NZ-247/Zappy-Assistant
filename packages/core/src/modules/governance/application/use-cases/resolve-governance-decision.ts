@@ -1,4 +1,5 @@
 import type {
+  GovernanceActorRole,
   DecisionInput,
   DecisionResult,
   GovernanceCapabilityDenySource,
@@ -100,7 +101,23 @@ const isAdminRole = (role?: string | null): boolean => {
   return normalized === "admin" || isRootRole(normalized);
 };
 
-const hasRequiredRole = (requiredRole: GovernanceRequiredRole, input: DecisionInput, derived: { isPrivileged: boolean; isBotAdmin: boolean }): boolean => {
+const resolveActorRole = (input: {
+  scope: DecisionInput["context"]["scope"];
+  permissionRole?: string | null;
+  isBotAdmin: boolean;
+  senderIsGroupAdmin: boolean;
+}): GovernanceActorRole => {
+  if (isRootRole(input.permissionRole)) return "ROOT";
+  if (isAdminRole(input.permissionRole) || input.isBotAdmin) return "ADMIN";
+  if (input.scope === "group" && input.senderIsGroupAdmin) return "ADMIN";
+  return "MEMBER";
+};
+
+const hasRequiredRole = (
+  requiredRole: GovernanceRequiredRole,
+  input: DecisionInput,
+  derived: { isPrivileged: boolean; isBotAdmin: boolean; actorRole: GovernanceActorRole }
+): boolean => {
   const permissionRole = input.user.permissionRole;
   const senderIsGroupAdmin = input.user.senderIsGroupAdmin === true;
 
@@ -108,13 +125,20 @@ const hasRequiredRole = (requiredRole: GovernanceRequiredRole, input: DecisionIn
     case "member":
       return true;
     case "admin":
-      return derived.isPrivileged || derived.isBotAdmin || isAdminRole(permissionRole);
+      return (
+        derived.actorRole === "ROOT" ||
+        derived.actorRole === "ADMIN" ||
+        derived.isPrivileged ||
+        derived.isBotAdmin ||
+        isAdminRole(permissionRole) ||
+        (input.context.scope === "group" && senderIsGroupAdmin)
+      );
     case "root":
-      return derived.isPrivileged || isRootRole(permissionRole);
+      return derived.actorRole === "ROOT" || derived.isPrivileged || isRootRole(permissionRole);
     case "group_admin":
-      return senderIsGroupAdmin || derived.isPrivileged || derived.isBotAdmin;
+      return senderIsGroupAdmin || derived.actorRole === "ROOT" || derived.isPrivileged || derived.isBotAdmin;
     case "privileged":
-      return derived.isPrivileged;
+      return derived.actorRole === "ROOT" || derived.isPrivileged;
     default:
       return true;
   }
@@ -227,9 +251,24 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
 
   const allowedCapabilities = [...allowedCapabilitiesSet].sort((a, b) => a.localeCompare(b));
 
+  const permissionRole = input.user.permissionRole ?? snapshot.actor.permissionRole;
+  const senderIsGroupAdmin = input.user.senderIsGroupAdmin === true;
+  const isPrivileged = Boolean(input.user.isPrivileged ?? snapshot.actor.isPrivileged);
+  const isBotAdmin = Boolean(input.user.isBotAdmin ?? snapshot.actor.isBotAdmin);
+  const actorRole =
+    snapshot.actor.role ??
+    resolveActorRole({
+      scope: input.context.scope,
+      permissionRole,
+      isBotAdmin,
+      senderIsGroupAdmin
+    });
+
   const derived = {
-    isPrivileged: Boolean(input.user.isPrivileged ?? snapshot.actor.isPrivileged),
-    isBotAdmin: Boolean(input.user.isBotAdmin ?? snapshot.actor.isBotAdmin),
+    isPrivileged,
+    isBotAdmin,
+    actorRole,
+    isRoot: actorRole === "ROOT",
     botIsGroupAdmin:
       typeof snapshot.runtimePolicySignals.botIsGroupAdmin === "boolean"
         ? (snapshot.runtimePolicySignals.botIsGroupAdmin as boolean)
@@ -428,8 +467,29 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     reasonCode: null
   };
   const skipQuotaConsumption = snapshot.runtimePolicySignals.skipQuotaConsumption === true;
+  let rootBypassApplied = false;
 
-  if (!skipQuotaConsumption && acc.denyCodes.size === 0 && capability === "conversation.direct" && input.context.scope === "private" && effectiveAccess.tier === "FREE") {
+  if (derived.isRoot && acc.denyCodes.size > 0) {
+    rootBypassApplied = true;
+    addDiagnostic(acc, {
+      code: "ALLOW_ROOT_BYPASS",
+      severity: "warn",
+      message: "ROOT role bypass applied; blocking governance reasons were observed but ignored.",
+      context: {
+        bypassedReasonCodes: [...acc.denyCodes]
+      }
+    });
+    acc.denyCodes.clear();
+  }
+
+  if (
+    !skipQuotaConsumption &&
+    !derived.isRoot &&
+    acc.denyCodes.size === 0 &&
+    capability === "conversation.direct" &&
+    input.context.scope === "private" &&
+    effectiveAccess.tier === "FREE"
+  ) {
     const limit = resolveFreeDirectChatLimit({
       flagIndex,
       runtimePolicySignals: snapshot.runtimePolicySignals
@@ -481,7 +541,9 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
 
   const allow = acc.denyCodes.size === 0;
   if (allow) {
-    if (derived.isPrivileged) {
+    if (rootBypassApplied) {
+      // Root bypass already emitted a dedicated diagnostic above.
+    } else if (derived.isPrivileged) {
       addDiagnostic(acc, {
         code: "ALLOW_PRIVILEGED_OVERRIDE",
         severity: "info",
@@ -557,6 +619,10 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     },
     snapshot: {
       ...snapshot,
+      actor: {
+        ...snapshot.actor,
+        role: actorRole
+      },
       capabilityPolicy: normalizedPolicySnapshot
     }
   };
