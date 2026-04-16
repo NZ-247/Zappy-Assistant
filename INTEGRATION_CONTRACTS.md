@@ -209,7 +209,7 @@ Read-only governance evaluation snapshot for a requested subject/context.
 
 Notes
 
-Runtime-aware snapshot in v1.7.1:
+Runtime-aware snapshot in v1.8.0:
 
 decision is evaluated and returned for observability/debugging
 
@@ -243,7 +243,7 @@ Example response shape
 
 {
   "schemaVersion": "governance.snapshot.v1",
-  "governanceVersion": "v1.7.1",
+  "governanceVersion": "v1.8.0",
   "shadowMode": false,
   "input": {
     "tenant": { "id": "t1" },
@@ -339,6 +339,49 @@ Reminder retry policy
 - successful retry re-schedules the reminder and enqueues `send-reminder`
 - invalid-state retries return conflict (`409`)
 
+3.9 Governance Capability Policy Endpoints (v1.8.0)
+
+Purpose
+
+Expose first-class capability policy controls (catalog, bundles, overrides, effective resolution) while keeping policy decisions in core.
+
+Endpoints
+
+Catalog
+
+- `GET /admin/v1/governance/capabilities`
+- `GET /admin/v1/governance/bundles`
+
+Effective policy views
+
+- `GET /admin/v1/governance/users/:waUserId/effective`
+- `GET /admin/v1/governance/groups/:waGroupId/effective`
+
+Bundle mutations
+
+- `PUT /admin/v1/governance/users/:waUserId/bundles/:bundleKey`
+- `DELETE /admin/v1/governance/users/:waUserId/bundles/:bundleKey`
+- `PUT /admin/v1/governance/groups/:waGroupId/bundles/:bundleKey`
+- `DELETE /admin/v1/governance/groups/:waGroupId/bundles/:bundleKey`
+
+Capability override mutations
+
+- `PUT /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey` body: `{ "mode": "allow" | "deny", "actor"?, "tenantId"? }`
+- `DELETE /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey`
+- `PUT /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey` body: `{ "mode": "allow" | "deny", "actor"?, "tenantId"? }`
+- `DELETE /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey`
+
+Effective policy response shape (summary)
+
+- subject metadata (`tenantId`, `subjectType`, `subjectId`, `tier`, `status`)
+- assigned bundles (`assignedBundles.user`, `assignedBundles.group`)
+- explicit overrides (`overrides.user`, `overrides.group`)
+- `effectiveCapabilities[]` with:
+  - `key`, `allow`
+  - `source` (`tier_default` | `bundle` | `user_override_allow` | `group_override_allow` | `none`)
+  - `denySource` (`tier_default` | `missing_bundle` | `explicit_override_deny` | `blocked_status` | `quota_denied` | `policy_flag` | `unknown` | `null`)
+  - `tierDefaultAllowed`, `bundleAllowed`, `matchedBundles`, `explicitAllowSource`, `explicitDenySources`
+
 4. UI page mapping (Admin UI MVP v1.7.0)
 4.1 Dashboard page
 
@@ -370,6 +413,9 @@ Uses:
 - `PATCH /admin/v1/users/:waUserId/access`
 - `PATCH /admin/v1/users/:waUserId/license`
 - `GET /admin/v1/usage/users/:waUserId` (details/usage panel)
+- `GET /admin/v1/governance/users/:waUserId/effective` (details/policy panel)
+- `PUT|DELETE /admin/v1/governance/users/:waUserId/bundles/:bundleKey`
+- `PUT|DELETE /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey`
 
 Widgets:
 
@@ -379,7 +425,7 @@ status badge (`PENDING|APPROVED|BLOCKED`)
 
 tier badge (`FREE|BASIC|PRO|ROOT`)
 
-actions: approve / block / change tier
+actions: approve / block / change tier / assign-remove bundle / set-clear capability override
 
 optional detail panel/modal
 
@@ -391,6 +437,9 @@ Uses:
 - `PATCH /admin/v1/groups/:waGroupId/access`
 - `PATCH /admin/v1/groups/:waGroupId/license`
 - `GET /admin/v1/usage/groups/:waGroupId` (details/usage panel)
+- `GET /admin/v1/governance/groups/:waGroupId/effective` (details/policy panel)
+- `PUT|DELETE /admin/v1/governance/groups/:waGroupId/bundles/:bundleKey`
+- `PUT|DELETE /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey`
 
 Widgets:
 
@@ -400,7 +449,7 @@ status badge
 
 tier badge
 
-actions: approve / block / change tier
+actions: approve / block / change tier / assign-remove bundle / set-clear capability override
 
 4.4 Licenses/Plans page
 

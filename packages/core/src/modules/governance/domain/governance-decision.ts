@@ -7,6 +7,59 @@ export type GovernanceLicenseTier = "FREE" | "BASIC" | "PRO" | "ROOT" | "UNKNOWN
 
 export type GovernanceRequiredRole = "member" | "admin" | "root" | "group_admin" | "privileged";
 
+export type GovernanceCapabilityOverrideMode = "allow" | "deny";
+
+export type GovernanceCapabilityResolutionSource =
+  | "tier_default"
+  | "bundle"
+  | "user_override_allow"
+  | "group_override_allow"
+  | "none";
+
+export type GovernanceCapabilityDenySource =
+  | "tier_default"
+  | "missing_bundle"
+  | "explicit_override_deny"
+  | "blocked_status"
+  | "quota_denied"
+  | "policy_flag"
+  | "unknown";
+
+export interface GovernanceCapabilityDefinition {
+  key: string;
+  displayName: string;
+  description?: string;
+  category?: string;
+  active: boolean;
+}
+
+export interface GovernanceCapabilityBundle {
+  key: string;
+  displayName: string;
+  description?: string;
+  active: boolean;
+  capabilities: string[];
+}
+
+export interface GovernanceCapabilityPolicySnapshot {
+  definitions: GovernanceCapabilityDefinition[];
+  bundles: GovernanceCapabilityBundle[];
+  tierDefaultBundles: {
+    FREE: string[];
+    BASIC: string[];
+    PRO: string[];
+    ROOT: string[];
+  };
+  assignments: {
+    user: string[];
+    group: string[];
+  };
+  overrides: {
+    user: Record<string, GovernanceCapabilityOverrideMode>;
+    group: Record<string, GovernanceCapabilityOverrideMode>;
+  };
+}
+
 export interface DecisionInput {
   tenant: {
     id: string;
@@ -104,6 +157,7 @@ export interface GovernancePolicySnapshot {
       tier: GovernanceLicenseTier;
     };
   };
+  capabilityPolicy: GovernanceCapabilityPolicySnapshot;
   runtimePolicySignals: Record<string, unknown>;
 }
 
@@ -159,6 +213,19 @@ export interface DecisionResult {
   blocked_by_policy: boolean;
   reasonCodes: GovernanceReasonCode[];
   diagnostics: GovernancePolicyDiagnostic[];
+  primaryDenySource?: GovernanceCapabilityDenySource | null;
+  capabilityPolicy: {
+    requested: string;
+    governed: boolean;
+    tierDefaultAllowed: boolean;
+    bundleAllowed: boolean;
+    matchedBundleKeys: string[];
+    effectiveBundleKeys: string[];
+    explicitAllowSource: "user_override_allow" | "group_override_allow" | null;
+    explicitDenySources: Array<"user_override_deny" | "group_override_deny">;
+    decisionSource: GovernanceCapabilityResolutionSource;
+    denySource: GovernanceCapabilityDenySource | null;
+  };
   approval: {
     required: boolean;
     state: "not_required" | "required" | "pending" | "approved" | "rejected";

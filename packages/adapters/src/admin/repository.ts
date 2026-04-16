@@ -2,10 +2,19 @@ import {
   AccessStatus,
   AccessSubjectType,
   AuditAction,
+  CapabilityOverrideMode,
   LicenseTier,
   Prisma,
   type PrismaClient
 } from "@prisma/client";
+import {
+  GOVERNANCE_BUNDLE_DEFINITIONS,
+  GOVERNANCE_CAPABILITY_DEFINITIONS,
+  GOVERNANCE_TIER_DEFAULT_BUNDLES,
+  createDefaultCapabilityPolicySnapshot,
+  listEffectiveCapabilities,
+  normalizeGovernanceCapabilityKey
+} from "@zappy/core";
 
 export type AccessStatusValue = (typeof AccessStatus)[keyof typeof AccessStatus];
 export type LicenseTierValue = (typeof LicenseTier)[keyof typeof LicenseTier];
@@ -40,6 +49,53 @@ export interface GroupAccessView {
   approvedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface CapabilityDefinitionView {
+  key: string;
+  displayName: string;
+  description?: string | null;
+  category?: string | null;
+  active: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CapabilityBundleView {
+  key: string;
+  displayName: string;
+  description?: string | null;
+  active: boolean;
+  capabilities: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SubjectCapabilityPolicyView {
+  tenantId: string;
+  subjectType: "USER" | "GROUP";
+  subjectId: string;
+  tier: LicenseTierValue;
+  status: AccessStatusValue;
+  assignedBundles: {
+    user: string[];
+    group: string[];
+  };
+  overrides: {
+    user: Record<string, "allow" | "deny">;
+    group: Record<string, "allow" | "deny">;
+  };
+  effectiveCapabilities: Array<{
+    key: string;
+    allow: boolean;
+    source: "tier_default" | "bundle" | "user_override_allow" | "group_override_allow" | "none";
+    denySource: "tier_default" | "missing_bundle" | "explicit_override_deny" | "blocked_status" | "quota_denied" | "policy_flag" | "unknown" | null;
+    tierDefaultAllowed: boolean;
+    bundleAllowed: boolean;
+    matchedBundles: string[];
+    explicitAllowSource: "user_override_allow" | "group_override_allow" | null;
+    explicitDenySources: Array<"user_override_deny" | "group_override_deny">;
+  }>;
 }
 
 const DEFAULT_TENANT_NAME = "Default Tenant";
@@ -87,6 +143,22 @@ const DEFAULT_LICENSE_PLANS: Array<{
     } satisfies Prisma.InputJsonObject
   }
 ];
+
+const DEFAULT_CAPABILITY_DEFINITIONS = GOVERNANCE_CAPABILITY_DEFINITIONS.map((item) => ({
+  key: normalizeGovernanceCapabilityKey(item.key),
+  displayName: item.displayName,
+  description: item.description ?? null,
+  category: item.category ?? null,
+  active: true
+}));
+
+const DEFAULT_CAPABILITY_BUNDLES = GOVERNANCE_BUNDLE_DEFINITIONS.map((bundle) => ({
+  key: bundle.key,
+  displayName: bundle.displayName,
+  description: bundle.description ?? null,
+  active: bundle.active,
+  capabilities: bundle.capabilities.map((capability) => normalizeGovernanceCapabilityKey(capability))
+}));
 
 const asJsonValue = (value: unknown): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined => {
   if (value === undefined) return undefined;
@@ -136,6 +208,24 @@ const mapGroupAccessRow = (row: {
   tier: row.tier,
   approvedBy: row.approvedBy,
   approvedAt: row.approvedAt,
+  createdAt: row.createdAt,
+  updatedAt: row.updatedAt
+});
+
+const mapCapabilityDefinitionRow = (row: {
+  key: string;
+  displayName: string;
+  description: string | null;
+  category: string | null;
+  active: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}): CapabilityDefinitionView => ({
+  key: row.key,
+  displayName: row.displayName,
+  description: row.description,
+  category: row.category,
+  active: row.active,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt
 });
@@ -339,6 +429,246 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     }
   };
 
+  const ensureCapabilityPolicyCatalog = async () => {
+    for (const definition of DEFAULT_CAPABILITY_DEFINITIONS) {
+      await deps.prisma.capabilityDefinition.upsert({
+        where: { key: definition.key },
+        create: {
+          key: definition.key,
+          displayName: definition.displayName,
+          description: definition.description,
+          category: definition.category,
+          active: definition.active
+        },
+        update: {
+          displayName: definition.displayName,
+          description: definition.description,
+          category: definition.category,
+          active: definition.active
+        }
+      });
+    }
+
+    for (const bundle of DEFAULT_CAPABILITY_BUNDLES) {
+      await deps.prisma.capabilityBundle.upsert({
+        where: { key: bundle.key },
+        create: {
+          key: bundle.key,
+          displayName: bundle.displayName,
+          description: bundle.description,
+          active: bundle.active
+        },
+        update: {
+          displayName: bundle.displayName,
+          description: bundle.description,
+          active: bundle.active
+        }
+      });
+    }
+
+    const capabilityRows = await deps.prisma.capabilityDefinition.findMany({
+      select: { id: true, key: true }
+    });
+    const capabilityByKey = new Map(capabilityRows.map((row) => [row.key, row.id]));
+    const bundleRows = await deps.prisma.capabilityBundle.findMany({
+      select: { id: true, key: true }
+    });
+    const bundleByKey = new Map(bundleRows.map((row) => [row.key, row.id]));
+
+    for (const bundle of DEFAULT_CAPABILITY_BUNDLES) {
+      const bundleId = bundleByKey.get(bundle.key);
+      if (!bundleId) continue;
+      for (const capabilityKey of bundle.capabilities) {
+        const capabilityId = capabilityByKey.get(capabilityKey);
+        if (!capabilityId) continue;
+        await deps.prisma.capabilityBundleCapability.upsert({
+          where: {
+            bundleId_capabilityId: {
+              bundleId,
+              capabilityId
+            }
+          },
+          create: {
+            bundleId,
+            capabilityId
+          },
+          update: {}
+        });
+      }
+    }
+
+    for (const [tier, bundles] of Object.entries(GOVERNANCE_TIER_DEFAULT_BUNDLES) as Array<[LicenseTier, string[]]>) {
+      for (const bundleKey of bundles) {
+        const bundleId = bundleByKey.get(bundleKey);
+        if (!bundleId) continue;
+        await deps.prisma.tierBundleDefault.upsert({
+          where: {
+            tier_bundleId: {
+              tier,
+              bundleId
+            }
+          },
+          create: {
+            tier,
+            bundleId
+          },
+          update: {}
+        });
+      }
+    }
+  };
+
+  const listCapabilityDefinitions = async (): Promise<CapabilityDefinitionView[]> => {
+    await ensureCapabilityPolicyCatalog();
+    const rows = await deps.prisma.capabilityDefinition.findMany({
+      orderBy: {
+        key: "asc"
+      }
+    });
+    return rows.map(mapCapabilityDefinitionRow);
+  };
+
+  const listCapabilityBundles = async (): Promise<CapabilityBundleView[]> => {
+    await ensureCapabilityPolicyCatalog();
+    const rows = await deps.prisma.capabilityBundle.findMany({
+      include: {
+        capabilityLinks: {
+          include: {
+            capability: true
+          }
+        }
+      },
+      orderBy: {
+        key: "asc"
+      }
+    });
+
+    return rows.map((row) => ({
+      key: row.key,
+      displayName: row.displayName,
+      description: row.description,
+      active: row.active,
+      capabilities: row.capabilityLinks
+        .map((link) => link.capability.key)
+        .sort((a, b) => a.localeCompare(b)),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    }));
+  };
+
+  const resolveCapabilityPolicySnapshot = async (input: {
+    tenantId: string;
+    waUserId: string;
+    waGroupId?: string;
+    scope: "private" | "group";
+  }) => {
+    await ensureCapabilityPolicyCatalog();
+
+    const [definitions, bundles, tierDefaults, userAssignments, groupAssignments, userOverrides, groupOverrides] = await Promise.all([
+      deps.prisma.capabilityDefinition.findMany({
+        orderBy: { key: "asc" }
+      }),
+      deps.prisma.capabilityBundle.findMany({
+        include: {
+          capabilityLinks: {
+            include: {
+              capability: true
+            }
+          }
+        },
+        orderBy: { key: "asc" }
+      }),
+      deps.prisma.tierBundleDefault.findMany({
+        include: {
+          bundle: {
+            select: { key: true }
+          }
+        }
+      }),
+      deps.prisma.userBundleAssignment.findMany({
+        where: {
+          tenantId: input.tenantId,
+          waUserId: input.waUserId
+        },
+        include: {
+          bundle: {
+            select: { key: true }
+          }
+        }
+      }),
+      input.waGroupId
+        ? deps.prisma.groupBundleAssignment.findMany({
+            where: {
+              tenantId: input.tenantId,
+              waGroupId: input.waGroupId
+            },
+            include: {
+              bundle: {
+                select: { key: true }
+              }
+            }
+          })
+        : Promise.resolve([]),
+      deps.prisma.userCapabilityOverride.findMany({
+        where: {
+          tenantId: input.tenantId,
+          waUserId: input.waUserId
+        }
+      }),
+      input.waGroupId
+        ? deps.prisma.groupCapabilityOverride.findMany({
+            where: {
+              tenantId: input.tenantId,
+              waGroupId: input.waGroupId
+            }
+          })
+        : Promise.resolve([])
+    ]);
+
+    const fallback = createDefaultCapabilityPolicySnapshot();
+
+    return {
+      definitions: definitions.length
+        ? definitions.map((item) => ({
+            key: item.key,
+            displayName: item.displayName,
+            description: item.description ?? undefined,
+            category: item.category ?? undefined,
+            active: item.active
+          }))
+        : fallback.definitions,
+      bundles: bundles.length
+        ? bundles.map((bundle) => ({
+            key: bundle.key,
+            displayName: bundle.displayName,
+            description: bundle.description ?? undefined,
+            active: bundle.active,
+            capabilities: bundle.capabilityLinks.map((link) => link.capability.key).sort((a, b) => a.localeCompare(b))
+          }))
+        : fallback.bundles,
+      tierDefaultBundles: {
+        FREE: tierDefaults.filter((item) => item.tier === LicenseTier.FREE).map((item) => item.bundle.key),
+        BASIC: tierDefaults.filter((item) => item.tier === LicenseTier.BASIC).map((item) => item.bundle.key),
+        PRO: tierDefaults.filter((item) => item.tier === LicenseTier.PRO).map((item) => item.bundle.key),
+        ROOT: tierDefaults.filter((item) => item.tier === LicenseTier.ROOT).map((item) => item.bundle.key)
+      },
+      assignments: {
+        user: userAssignments.map((item) => item.bundle.key),
+        group: groupAssignments.map((item) => item.bundle.key)
+      },
+      overrides: {
+        user: userOverrides.reduce<Record<string, "allow" | "deny">>((acc, row) => {
+          acc[row.capabilityKey] = row.mode === CapabilityOverrideMode.ALLOW ? "allow" : "deny";
+          return acc;
+        }, {}),
+        group: groupOverrides.reduce<Record<string, "allow" | "deny">>((acc, row) => {
+          acc[row.capabilityKey] = row.mode === CapabilityOverrideMode.ALLOW ? "allow" : "deny";
+          return acc;
+        }, {})
+      }
+    };
+  };
+
   const updateUserAccessStatus = async (input: {
     tenantId?: string | null;
     waUserId: string;
@@ -509,6 +839,439 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     });
 
     return mapGroupAccessRow(next);
+  };
+
+  const resolveBundle = async (bundleKey: string) => {
+    await ensureCapabilityPolicyCatalog();
+    const bundle = await deps.prisma.capabilityBundle.findUnique({
+      where: { key: bundleKey },
+      select: {
+        id: true,
+        key: true,
+        displayName: true,
+        active: true
+      }
+    });
+    if (!bundle) throw new Error(`bundle_not_found:${bundleKey}`);
+    return bundle;
+  };
+
+  const resolveCapabilityDefinition = async (capabilityKey: string) => {
+    await ensureCapabilityPolicyCatalog();
+    const normalized = normalizeGovernanceCapabilityKey(capabilityKey);
+    const definition = await deps.prisma.capabilityDefinition.findUnique({
+      where: { key: normalized },
+      select: {
+        key: true
+      }
+    });
+    if (!definition) throw new Error(`capability_not_found:${capabilityKey}`);
+    return definition.key;
+  };
+
+  const assignUserBundle = async (input: {
+    tenantId?: string | null;
+    waUserId: string;
+    bundleKey: string;
+    actor: string;
+  }) => {
+    const current = await ensureUserAccess({ tenantId: input.tenantId, waUserId: input.waUserId });
+    const bundle = await resolveBundle(input.bundleKey);
+
+    const row = await deps.prisma.userBundleAssignment.upsert({
+      where: {
+        tenantId_waUserId_bundleId: {
+          tenantId: current.tenantId,
+          waUserId: current.waUserId,
+          bundleId: bundle.id
+        }
+      },
+      create: {
+        tenantId: current.tenantId,
+        waUserId: current.waUserId,
+        bundleId: bundle.id,
+        assignedBy: input.actor
+      },
+      update: {
+        assignedBy: input.actor
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.USER,
+      subjectId: current.waUserId,
+      action: "USER_BUNDLE_ASSIGNED",
+      actor: input.actor,
+      before: null,
+      after: {
+        bundleKey: bundle.key,
+        assignedBy: row.assignedBy
+      }
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waUserId: current.waUserId,
+      bundleKey: bundle.key,
+      assignedBy: row.assignedBy,
+      updatedAt: row.updatedAt
+    };
+  };
+
+  const removeUserBundle = async (input: {
+    tenantId?: string | null;
+    waUserId: string;
+    bundleKey: string;
+    actor: string;
+  }) => {
+    const current = await ensureUserAccess({ tenantId: input.tenantId, waUserId: input.waUserId });
+    const bundle = await resolveBundle(input.bundleKey);
+
+    await deps.prisma.userBundleAssignment.deleteMany({
+      where: {
+        tenantId: current.tenantId,
+        waUserId: current.waUserId,
+        bundleId: bundle.id
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.USER,
+      subjectId: current.waUserId,
+      action: "USER_BUNDLE_REMOVED",
+      actor: input.actor,
+      before: {
+        bundleKey: bundle.key
+      },
+      after: null
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waUserId: current.waUserId,
+      bundleKey: bundle.key
+    };
+  };
+
+  const assignGroupBundle = async (input: {
+    tenantId?: string | null;
+    waGroupId: string;
+    bundleKey: string;
+    actor: string;
+  }) => {
+    const current = await ensureGroupAccess({ tenantId: input.tenantId, waGroupId: input.waGroupId });
+    const bundle = await resolveBundle(input.bundleKey);
+
+    const row = await deps.prisma.groupBundleAssignment.upsert({
+      where: {
+        tenantId_waGroupId_bundleId: {
+          tenantId: current.tenantId,
+          waGroupId: current.waGroupId,
+          bundleId: bundle.id
+        }
+      },
+      create: {
+        tenantId: current.tenantId,
+        waGroupId: current.waGroupId,
+        bundleId: bundle.id,
+        assignedBy: input.actor
+      },
+      update: {
+        assignedBy: input.actor
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.GROUP,
+      subjectId: current.waGroupId,
+      action: "GROUP_BUNDLE_ASSIGNED",
+      actor: input.actor,
+      before: null,
+      after: {
+        bundleKey: bundle.key,
+        assignedBy: row.assignedBy
+      }
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waGroupId: current.waGroupId,
+      bundleKey: bundle.key,
+      assignedBy: row.assignedBy,
+      updatedAt: row.updatedAt
+    };
+  };
+
+  const removeGroupBundle = async (input: {
+    tenantId?: string | null;
+    waGroupId: string;
+    bundleKey: string;
+    actor: string;
+  }) => {
+    const current = await ensureGroupAccess({ tenantId: input.tenantId, waGroupId: input.waGroupId });
+    const bundle = await resolveBundle(input.bundleKey);
+
+    await deps.prisma.groupBundleAssignment.deleteMany({
+      where: {
+        tenantId: current.tenantId,
+        waGroupId: current.waGroupId,
+        bundleId: bundle.id
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.GROUP,
+      subjectId: current.waGroupId,
+      action: "GROUP_BUNDLE_REMOVED",
+      actor: input.actor,
+      before: {
+        bundleKey: bundle.key
+      },
+      after: null
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waGroupId: current.waGroupId,
+      bundleKey: bundle.key
+    };
+  };
+
+  const setUserCapabilityOverride = async (input: {
+    tenantId?: string | null;
+    waUserId: string;
+    capabilityKey: string;
+    mode: "allow" | "deny";
+    actor: string;
+  }) => {
+    const current = await ensureUserAccess({ tenantId: input.tenantId, waUserId: input.waUserId });
+    const capabilityKey = await resolveCapabilityDefinition(input.capabilityKey);
+    const mode = input.mode === "allow" ? CapabilityOverrideMode.ALLOW : CapabilityOverrideMode.DENY;
+
+    const row = await deps.prisma.userCapabilityOverride.upsert({
+      where: {
+        tenantId_waUserId_capabilityKey: {
+          tenantId: current.tenantId,
+          waUserId: current.waUserId,
+          capabilityKey
+        }
+      },
+      create: {
+        tenantId: current.tenantId,
+        waUserId: current.waUserId,
+        capabilityKey,
+        mode,
+        updatedBy: input.actor
+      },
+      update: {
+        mode,
+        updatedBy: input.actor
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.USER,
+      subjectId: current.waUserId,
+      action: "USER_CAPABILITY_OVERRIDE_SET",
+      actor: input.actor,
+      before: null,
+      after: {
+        capabilityKey,
+        mode: row.mode
+      }
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waUserId: current.waUserId,
+      capabilityKey,
+      mode: row.mode === CapabilityOverrideMode.ALLOW ? "allow" : "deny",
+      updatedAt: row.updatedAt
+    };
+  };
+
+  const clearUserCapabilityOverride = async (input: {
+    tenantId?: string | null;
+    waUserId: string;
+    capabilityKey: string;
+    actor: string;
+  }) => {
+    const current = await ensureUserAccess({ tenantId: input.tenantId, waUserId: input.waUserId });
+    const capabilityKey = await resolveCapabilityDefinition(input.capabilityKey);
+
+    await deps.prisma.userCapabilityOverride.deleteMany({
+      where: {
+        tenantId: current.tenantId,
+        waUserId: current.waUserId,
+        capabilityKey
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.USER,
+      subjectId: current.waUserId,
+      action: "USER_CAPABILITY_OVERRIDE_CLEARED",
+      actor: input.actor,
+      before: {
+        capabilityKey
+      },
+      after: null
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waUserId: current.waUserId,
+      capabilityKey
+    };
+  };
+
+  const setGroupCapabilityOverride = async (input: {
+    tenantId?: string | null;
+    waGroupId: string;
+    capabilityKey: string;
+    mode: "allow" | "deny";
+    actor: string;
+  }) => {
+    const current = await ensureGroupAccess({ tenantId: input.tenantId, waGroupId: input.waGroupId });
+    const capabilityKey = await resolveCapabilityDefinition(input.capabilityKey);
+    const mode = input.mode === "allow" ? CapabilityOverrideMode.ALLOW : CapabilityOverrideMode.DENY;
+
+    const row = await deps.prisma.groupCapabilityOverride.upsert({
+      where: {
+        tenantId_waGroupId_capabilityKey: {
+          tenantId: current.tenantId,
+          waGroupId: current.waGroupId,
+          capabilityKey
+        }
+      },
+      create: {
+        tenantId: current.tenantId,
+        waGroupId: current.waGroupId,
+        capabilityKey,
+        mode,
+        updatedBy: input.actor
+      },
+      update: {
+        mode,
+        updatedBy: input.actor
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.GROUP,
+      subjectId: current.waGroupId,
+      action: "GROUP_CAPABILITY_OVERRIDE_SET",
+      actor: input.actor,
+      before: null,
+      after: {
+        capabilityKey,
+        mode: row.mode
+      }
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waGroupId: current.waGroupId,
+      capabilityKey,
+      mode: row.mode === CapabilityOverrideMode.ALLOW ? "allow" : "deny",
+      updatedAt: row.updatedAt
+    };
+  };
+
+  const clearGroupCapabilityOverride = async (input: {
+    tenantId?: string | null;
+    waGroupId: string;
+    capabilityKey: string;
+    actor: string;
+  }) => {
+    const current = await ensureGroupAccess({ tenantId: input.tenantId, waGroupId: input.waGroupId });
+    const capabilityKey = await resolveCapabilityDefinition(input.capabilityKey);
+
+    await deps.prisma.groupCapabilityOverride.deleteMany({
+      where: {
+        tenantId: current.tenantId,
+        waGroupId: current.waGroupId,
+        capabilityKey
+      }
+    });
+
+    await writeApprovalAudit({
+      subjectType: AccessSubjectType.GROUP,
+      subjectId: current.waGroupId,
+      action: "GROUP_CAPABILITY_OVERRIDE_CLEARED",
+      actor: input.actor,
+      before: {
+        capabilityKey
+      },
+      after: null
+    });
+
+    return {
+      tenantId: current.tenantId,
+      waGroupId: current.waGroupId,
+      capabilityKey
+    };
+  };
+
+  const getUserEffectiveCapabilityPolicy = async (input: {
+    tenantId?: string | null;
+    waUserId: string;
+  }): Promise<SubjectCapabilityPolicyView> => {
+    const user = await ensureUserAccess({ tenantId: input.tenantId, waUserId: input.waUserId });
+    const capabilityPolicy = await resolveCapabilityPolicySnapshot({
+      tenantId: user.tenantId,
+      waUserId: user.waUserId,
+      scope: "private"
+    });
+
+    const effectiveCapabilities = listEffectiveCapabilities({
+      policy: capabilityPolicy,
+      tier: user.tier,
+      scope: "private"
+    });
+
+    return {
+      tenantId: user.tenantId,
+      subjectType: "USER",
+      subjectId: user.waUserId,
+      tier: user.tier,
+      status: user.status,
+      assignedBundles: capabilityPolicy.assignments,
+      overrides: capabilityPolicy.overrides,
+      effectiveCapabilities
+    };
+  };
+
+  const getGroupEffectiveCapabilityPolicy = async (input: {
+    tenantId?: string | null;
+    waGroupId: string;
+    waUserId?: string | null;
+  }): Promise<SubjectCapabilityPolicyView> => {
+    const group = await ensureGroupAccess({ tenantId: input.tenantId, waGroupId: input.waGroupId });
+    const waUserId = input.waUserId?.trim() || "unknown@s.whatsapp.net";
+    const capabilityPolicy = await resolveCapabilityPolicySnapshot({
+      tenantId: group.tenantId,
+      waUserId,
+      waGroupId: group.waGroupId,
+      scope: "group"
+    });
+
+    const effectiveCapabilities = listEffectiveCapabilities({
+      policy: capabilityPolicy,
+      tier: group.tier,
+      scope: "group"
+    });
+
+    return {
+      tenantId: group.tenantId,
+      subjectType: "GROUP",
+      subjectId: group.waGroupId,
+      tier: group.tier,
+      status: group.status,
+      assignedBundles: capabilityPolicy.assignments,
+      overrides: capabilityPolicy.overrides,
+      effectiveCapabilities
+    };
   };
 
   const materializeUserAccessFromDirectory = async (input: {
@@ -701,6 +1464,8 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
 
   return {
     ensureLicensePlans,
+    ensureCapabilityPolicyCatalog,
+    resolveCapabilityPolicySnapshot,
     getOrMaterializeUserAccess: ensureUserAccess,
     getOrMaterializeGroupAccess: ensureGroupAccess,
     listUsers,
@@ -712,6 +1477,18 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     listLicensePlans,
     updateUserLicense,
     updateGroupLicense,
+    listCapabilityDefinitions,
+    listCapabilityBundles,
+    getUserEffectiveCapabilityPolicy,
+    getGroupEffectiveCapabilityPolicy,
+    assignUserBundle,
+    removeUserBundle,
+    assignGroupBundle,
+    removeGroupBundle,
+    setUserCapabilityOverride,
+    clearUserCapabilityOverride,
+    setGroupCapabilityOverride,
+    clearGroupCapabilityOverride,
     getUserUsage,
     getGroupUsage,
     listUsageCounters,

@@ -437,6 +437,22 @@ tr:hover td {
   gap: 0.8rem;
 }
 
+.governance-details {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.governance-card h4 {
+  margin: 0.7rem 0 0.45rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.governance-card table {
+  min-width: 680px;
+}
+
 pre {
   white-space: pre-wrap;
   word-break: break-word;
@@ -466,6 +482,10 @@ pre {
   }
 
   .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .governance-details {
     grid-template-columns: 1fr;
   }
 

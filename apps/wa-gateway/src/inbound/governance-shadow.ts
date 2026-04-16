@@ -55,22 +55,23 @@ const isPrivilegedProfile = (profile?: RelationshipProfile | null): boolean => {
   return PRIVILEGED_PROFILES.has(profile);
 };
 
-const resolveCommandCapability = (commandName: string): string => {
-  const normalized = commandName.trim().toLowerCase();
-  if (normalized === "search" || normalized === "google") return "search.basic";
-  if (normalized === "img" || normalized === "imglink") return "image.basic";
-  if (normalized === "tts") return "tts.basic";
-  if (normalized === "transcribe") return "transcribe.basic";
-  if (normalized === "search-ai") return "search_ai.premium";
-  if (normalized === "dl") return "download.premium";
-  return `command.${normalized}`;
+const resolveCommandCapability = (input: { commandName: string; explicitCapability?: string }): string => {
+  const explicit = input.explicitCapability?.trim().toLowerCase();
+  if (explicit) return explicit;
+
+  const normalized = input.commandName.trim().toLowerCase();
+  const suffix = normalized.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return `command.${suffix || "unknown"}`;
 };
 
 const resolveCapabilityFromEvent = (input: { event: InboundMessageEvent; text: string; registry: ReturnType<typeof createCommandRegistry> }) => {
   const command = input.registry.resolve(input.text);
   if (command) {
     return {
-      capability: resolveCommandCapability(command.command.name),
+      capability: resolveCommandCapability({
+        commandName: command.command.name,
+        explicitCapability: command.command.capability
+      }),
       commandName: command.command.name,
       requiredRole: command.command.requiredRole,
       requiresBotAdmin: command.command.botAdminRequired,
@@ -81,7 +82,7 @@ const resolveCapabilityFromEvent = (input: { event: InboundMessageEvent; text: s
 
   const messageType = (input.event.rawMessageType ?? "").toLowerCase();
   if (!input.text && input.event.hasMedia) {
-    if (messageType.includes("audio")) return { capability: "transcribe.basic", route: "media_audio" };
+    if (messageType.includes("audio")) return { capability: "command.transcribe", route: "media_audio" };
     if (messageType.includes("video") || messageType.includes("image")) {
       return { capability: input.event.isGroup ? "conversation.group" : "conversation.direct", route: "media_message" };
     }
@@ -117,6 +118,9 @@ const buildDenyText = (decision: DecisionResult): string => {
     return "Seu acesso ao Zappy ainda está pendente de aprovação. Aguarde a liberação de um administrador.";
   }
   if (reason === "DENY_LICENSE_CAPABILITY") {
+    if (decision.capabilityPolicy.denySource === "explicit_override_deny") {
+      return "Esse recurso foi bloqueado explicitamente por uma política administrativa.";
+    }
     return "Seu plano atual não permite esse recurso. Peça um upgrade de licença para continuar.";
   }
   if (reason === "DENY_QUOTA_LIMIT") {
@@ -140,7 +144,9 @@ const logDecision = (deps: GovernanceRuntimeDeps, input: { result: DecisionResul
     route: input.route,
     decision: input.result.decision,
     blockedByPolicy: input.result.blockedByPolicy,
+    primaryDenySource: input.result.primaryDenySource,
     reasonCodes: input.result.reasonCodes,
+    capabilityPolicy: input.result.capabilityPolicy,
     contextScope: input.event.isGroup ? "group" : "direct",
     senderIsGroupAdmin: input.event.senderIsGroupAdmin,
     botIsGroupAdmin: input.event.botIsGroupAdmin,

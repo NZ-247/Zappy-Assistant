@@ -1,65 +1,25 @@
 import type {
   DecisionInput,
   DecisionResult,
+  GovernanceCapabilityDenySource,
   GovernanceLicenseTier,
   GovernancePolicyDiagnostic,
   GovernanceReasonCode,
   GovernanceRequiredRole
 } from "../../domain/governance-decision.js";
+import {
+  createDefaultCapabilityPolicySnapshot,
+  evaluateCapabilityPolicy,
+  listEffectiveCapabilities,
+  normalizeGovernanceCapabilityKey
+} from "../../domain/capability-policy.js";
 import type { GovernancePort } from "../../ports/governance.port.js";
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "on", "enabled", "allow", "allowed"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off", "disabled", "deny", "denied"]);
 
-const DEFAULT_ALLOWED_CAPABILITIES = [
-  "conversation.direct",
-  "conversation.group",
-  "ai.addressed",
-  "tool.intent",
-  "tasks",
-  "notes",
-  "reminders",
-  "moderation",
-  "group.settings",
-  "audio.transcribe",
-  "tts",
-  "translation",
-  "search.web",
-  "search.ai",
-  "search.image",
-  "media.download"
-];
-
 const DEFAULT_FREE_DIRECT_CHAT_LIMIT = 30;
 const FREE_DIRECT_CHAT_QUOTA_BUCKET = "conversation.direct.free.daily";
-
-const TIER_CAPABILITY_ALIASES = new Map<string, string>([
-  ["conversation", "conversation.direct"],
-  ["conversation.direct", "conversation.direct"],
-  ["conversation.group", "conversation.group"],
-  ["search.basic", "search.basic"],
-  ["search.web", "search.basic"],
-  ["web-search", "search.basic"],
-  ["search", "search.basic"],
-  ["image.basic", "image.basic"],
-  ["search.image", "image.basic"],
-  ["image-search", "image.basic"],
-  ["tts.basic", "tts.basic"],
-  ["tts", "tts.basic"],
-  ["transcribe.basic", "transcribe.basic"],
-  ["audio.transcribe", "transcribe.basic"],
-  ["search_ai.premium", "search_ai.premium"],
-  ["search.ai", "search_ai.premium"],
-  ["search-ai", "search_ai.premium"],
-  ["download.premium", "download.premium"],
-  ["media.download", "download.premium"],
-  ["downloads", "download.premium"]
-]);
-
-const FREE_TIER_CAPABILITIES = new Set(["conversation.direct", "conversation.group", "search.basic", "image.basic", "tts.basic", "transcribe.basic"]);
-const BASIC_TIER_CAPABILITIES = new Set([...FREE_TIER_CAPABILITIES]);
-const PRO_TIER_CAPABILITIES = new Set([...BASIC_TIER_CAPABILITIES, "search_ai.premium", "download.premium"]);
-const TIER_GATED_CAPABILITIES = new Set([...PRO_TIER_CAPABILITIES]);
 
 const normalizeRole = (value?: string | null): string => (value ?? "").trim().toLowerCase();
 
@@ -79,20 +39,6 @@ const parsePositiveInt = (value?: string): number | undefined => {
 };
 
 const normalizeCapabilitySlug = (capability: string): string => capability.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-
-const normalizeTierCapability = (capability: string): string => {
-  const normalized = capability.trim().toLowerCase();
-  return TIER_CAPABILITY_ALIASES.get(normalized) ?? normalized;
-};
-
-const tierAllowsCapability = (tier: GovernanceLicenseTier, capability: string): boolean => {
-  if (!TIER_GATED_CAPABILITIES.has(capability)) return true;
-  if (tier === "ROOT") return true;
-  if (tier === "PRO") return PRO_TIER_CAPABILITIES.has(capability);
-  if (tier === "BASIC") return BASIC_TIER_CAPABILITIES.has(capability);
-  if (tier === "FREE") return FREE_TIER_CAPABILITIES.has(capability);
-  return true;
-};
 
 const buildFeatureFlagIndex = (flags: Record<string, string>): Map<string, string> => {
   const out = new Map<string, string>();
@@ -144,23 +90,6 @@ const resolveFreeDirectChatLimit = (input: { flagIndex: Map<string, string>; run
 
 const buildDailyPeriodKey = (date: Date): string => date.toISOString().slice(0, 10);
 
-const resolveAllowedCapabilities = (featureFlags: Record<string, string>): string[] => {
-  const flagIndex = buildFeatureFlagIndex(featureFlags);
-  const allowed = new Set<string>(DEFAULT_ALLOWED_CAPABILITIES);
-
-  for (const [key, rawValue] of flagIndex.entries()) {
-    if (!key.startsWith("capability.") || !key.endsWith(".enabled")) continue;
-    const capabilityKey = key.slice("capability.".length, -".enabled".length).trim();
-    if (!capabilityKey) continue;
-    const capability = capabilityKey.replace(/_/g, ".");
-    const parsed = parseBooleanFlag(rawValue);
-    if (parsed === false) allowed.delete(capability);
-    if (parsed === true) allowed.add(capability);
-  }
-
-  return [...allowed].sort((a, b) => a.localeCompare(b));
-};
-
 const isRootRole = (role?: string | null): boolean => {
   const normalized = normalizeRole(role);
   return normalized === "root" || normalized === "dono" || normalized === "owner";
@@ -207,13 +136,96 @@ const addDiagnostic = (
   if (input.isDeny) acc.denyCodes.add(diagnostic.code);
 };
 
+const resolvePrimaryDenySource = (input: {
+  allow: boolean;
+  reasonCodes: Set<GovernanceReasonCode>;
+  capabilityDenySource: GovernanceCapabilityDenySource | null;
+}): GovernanceCapabilityDenySource | null => {
+  if (input.allow) return null;
+  if (input.reasonCodes.has("DENY_ACCESS_BLOCKED") || input.reasonCodes.has("DENY_ACCESS_PENDING")) return "blocked_status";
+  if (input.reasonCodes.has("DENY_QUOTA_LIMIT")) return "quota_denied";
+  if (input.reasonCodes.has("DENY_LICENSE_CAPABILITY")) return input.capabilityDenySource ?? "unknown";
+  if (input.reasonCodes.has("DENY_CAPABILITY_DISABLED") || input.reasonCodes.has("DENY_TENANT_POLICY")) return "policy_flag";
+  return "unknown";
+};
+
+const normalizeOverrideMap = (input: Record<string, string>): Record<string, "allow" | "deny"> => {
+  const out: Record<string, "allow" | "deny"> = {};
+  for (const [key, raw] of Object.entries(input)) {
+    const normalizedKey = normalizeGovernanceCapabilityKey(key);
+    if (!normalizedKey) continue;
+    const normalizedRaw = (raw ?? "").trim().toLowerCase();
+    if (normalizedRaw !== "allow" && normalizedRaw !== "deny") continue;
+    out[normalizedKey] = normalizedRaw;
+  }
+  return out;
+};
+
+const normalizePolicySnapshot = (input: DecisionResult["snapshot"]["capabilityPolicy"] | undefined) => {
+  const fallback = createDefaultCapabilityPolicySnapshot();
+  if (!input) return fallback;
+
+  return {
+    definitions: input.definitions?.length ? input.definitions : fallback.definitions,
+    bundles: input.bundles?.length ? input.bundles : fallback.bundles,
+    tierDefaultBundles: {
+      FREE: input.tierDefaultBundles?.FREE?.length ? input.tierDefaultBundles.FREE : fallback.tierDefaultBundles.FREE,
+      BASIC: input.tierDefaultBundles?.BASIC?.length ? input.tierDefaultBundles.BASIC : fallback.tierDefaultBundles.BASIC,
+      PRO: input.tierDefaultBundles?.PRO?.length ? input.tierDefaultBundles.PRO : fallback.tierDefaultBundles.PRO,
+      ROOT: input.tierDefaultBundles?.ROOT?.length ? input.tierDefaultBundles.ROOT : fallback.tierDefaultBundles.ROOT
+    },
+    assignments: {
+      user: input.assignments?.user ?? [],
+      group: input.assignments?.group ?? []
+    },
+    overrides: {
+      user: normalizeOverrideMap(input.overrides?.user ?? {}),
+      group: normalizeOverrideMap(input.overrides?.group ?? {})
+    }
+  };
+};
+
+const normalizeTier = (value: GovernanceLicenseTier): GovernanceLicenseTier => {
+  if (value === "FREE" || value === "BASIC" || value === "PRO" || value === "ROOT") return value;
+  return "UNKNOWN";
+};
+
 export const resolveGovernanceDecision = async (governancePort: GovernancePort, input: DecisionInput): Promise<DecisionResult> => {
   const snapshot = await governancePort.getSnapshot(input);
   const flagIndex = buildFeatureFlagIndex(snapshot.featureFlags);
-  const allowedCapabilities = resolveAllowedCapabilities(snapshot.featureFlags);
-  const capability = input.request.capability.trim().toLowerCase();
-  const tierCapability = normalizeTierCapability(capability);
+  const capability = normalizeGovernanceCapabilityKey(input.request.capability);
   const effectiveAccess = snapshot.access.effective;
+  const normalizedPolicySnapshot = normalizePolicySnapshot(snapshot.capabilityPolicy);
+
+  const policyCapabilityEvaluation = evaluateCapabilityPolicy({
+    policy: normalizedPolicySnapshot,
+    capability,
+    tier: normalizeTier(effectiveAccess.tier),
+    scope: input.context.scope
+  });
+
+  const allowedCapabilitiesSet = new Set(
+    listEffectiveCapabilities({
+      policy: normalizedPolicySnapshot,
+      tier: normalizeTier(effectiveAccess.tier),
+      scope: input.context.scope
+    })
+      .filter((item) => item.allow)
+      .map((item) => item.key)
+  );
+
+  for (const [key, rawValue] of flagIndex.entries()) {
+    if (!key.startsWith("capability.") || !key.endsWith(".enabled")) continue;
+    const capabilityKey = key.slice("capability.".length, -".enabled".length).trim();
+    if (!capabilityKey) continue;
+    const normalized = normalizeGovernanceCapabilityKey(capabilityKey.replace(/_/g, "."));
+    if (!normalized) continue;
+    const parsed = parseBooleanFlag(rawValue);
+    if (parsed === false) allowedCapabilitiesSet.delete(normalized);
+    if (parsed === true) allowedCapabilitiesSet.add(normalized);
+  }
+
+  const allowedCapabilities = [...allowedCapabilitiesSet].sort((a, b) => a.localeCompare(b));
 
   const derived = {
     isPrivileged: Boolean(input.user.isPrivileged ?? snapshot.actor.isPrivileged),
@@ -270,17 +282,22 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     );
   }
 
-  if (!tierAllowsCapability(effectiveAccess.tier, tierCapability)) {
+  if (policyCapabilityEvaluation.governed && !policyCapabilityEvaluation.allow) {
     addDiagnostic(
       acc,
       {
         code: "DENY_LICENSE_CAPABILITY",
         severity: "error",
-        message: "Capability is not available for the current license tier.",
+        message: "Capability is not available for the current effective capability policy.",
         context: {
           capability,
-          normalizedCapability: tierCapability,
-          tier: effectiveAccess.tier
+          tier: effectiveAccess.tier,
+          denySource: policyCapabilityEvaluation.denySource,
+          tierDefaultAllowed: policyCapabilityEvaluation.tierDefaultAllowed,
+          bundleAllowed: policyCapabilityEvaluation.bundleAllowed,
+          matchedBundleKeys: policyCapabilityEvaluation.matchedBundleKeys,
+          explicitAllowSource: policyCapabilityEvaluation.explicitAllowSource,
+          explicitDenySources: policyCapabilityEvaluation.explicitDenySources
         }
       },
       { isDeny: true }
@@ -412,7 +429,7 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
   };
   const skipQuotaConsumption = snapshot.runtimePolicySignals.skipQuotaConsumption === true;
 
-  if (!skipQuotaConsumption && acc.denyCodes.size === 0 && tierCapability === "conversation.direct" && input.context.scope === "private" && effectiveAccess.tier === "FREE") {
+  if (!skipQuotaConsumption && acc.denyCodes.size === 0 && capability === "conversation.direct" && input.context.scope === "private" && effectiveAccess.tier === "FREE") {
     const limit = resolveFreeDirectChatLimit({
       flagIndex,
       runtimePolicySignals: snapshot.runtimePolicySignals
@@ -427,13 +444,13 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
         tenantId: snapshot.tenantId,
         waUserId: snapshot.waUserId,
         waGroupId: snapshot.waGroupId,
-        capability: tierCapability,
+        capability,
         limit,
         periodKey,
         bucket: FREE_DIRECT_CHAT_QUOTA_BUCKET,
         metadata: {
           scope: snapshot.scope,
-          capability: tierCapability
+          capability
         }
       });
 
@@ -495,6 +512,12 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
         : "active";
   const effectiveApprovedBy = snapshot.access.effective.source === "group" ? snapshot.access.group.approvedBy : snapshot.access.user.approvedBy;
 
+  const primaryDenySource = resolvePrimaryDenySource({
+    allow,
+    reasonCodes: acc.reasonCodes,
+    capabilityDenySource: policyCapabilityEvaluation.denySource
+  });
+
   const decision: DecisionResult = {
     decision: allow ? "allow" : "deny",
     allow,
@@ -503,6 +526,19 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
     blocked_by_policy: !allow,
     reasonCodes: [...acc.reasonCodes],
     diagnostics: acc.diagnostics,
+    primaryDenySource,
+    capabilityPolicy: {
+      requested: capability,
+      governed: policyCapabilityEvaluation.governed,
+      tierDefaultAllowed: policyCapabilityEvaluation.tierDefaultAllowed,
+      bundleAllowed: policyCapabilityEvaluation.bundleAllowed,
+      matchedBundleKeys: policyCapabilityEvaluation.matchedBundleKeys,
+      effectiveBundleKeys: policyCapabilityEvaluation.effectiveBundleKeys,
+      explicitAllowSource: policyCapabilityEvaluation.explicitAllowSource,
+      explicitDenySources: policyCapabilityEvaluation.explicitDenySources,
+      decisionSource: policyCapabilityEvaluation.decisionSource,
+      denySource: policyCapabilityEvaluation.denySource
+    },
     approval: {
       required: approvalState !== "not_required",
       state: approvalState,
@@ -519,7 +555,10 @@ export const resolveGovernanceDecision = async (governancePort: GovernancePort, 
       mode: allow ? "none" : "route_default",
       reasonCode: allow ? null : [...acc.denyCodes][0] ?? null
     },
-    snapshot
+    snapshot: {
+      ...snapshot,
+      capabilityPolicy: normalizedPolicySnapshot
+    }
   };
 
   return decision;

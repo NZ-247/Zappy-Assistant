@@ -276,7 +276,7 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - resolver health fails after delegation:
   - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
-Version note: current release line is `v1.7.1`.
+Version note: current release line is `v1.8.0`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -290,12 +290,16 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 ## Features
 
 - Core orchestrator pipeline: flags -> triggers -> commands -> LLM fallback.
-- Governance runtime enforcement (Phase 2, incremental): persisted access (`PENDING/APPROVED/BLOCKED`) + tier/capability checks + FREE direct-chat quota hook enforced in runtime for scoped capabilities, with structured decision logs and admin snapshot visibility.
+- Governance runtime enforcement (Phase 2 evolution): persisted access (`PENDING/APPROVED/BLOCKED`) + flexible capability policy (`tier defaults -> bundle grants -> explicit overrides`) + FREE direct-chat quota hook enforced in runtime for scoped capabilities, with structured decision logs and admin snapshot visibility.
 - Admin control-plane API (`apps/admin-api`) now persists and exposes governance administrative state:
   - approvals: `/admin/v1/users/:waUserId/access`, `/admin/v1/groups/:waGroupId/access`
   - licensing: `/admin/v1/licenses/plans`, `/admin/v1/users/:waUserId/license`, `/admin/v1/groups/:waGroupId/license`
   - usage visibility: `/admin/v1/usage/users/:waUserId`, `/admin/v1/usage/groups/:waGroupId`
   - approval audit trail: `/admin/v1/audit`
+  - capability catalogs: `/admin/v1/governance/capabilities`, `/admin/v1/governance/bundles`
+  - effective policy resolution: `/admin/v1/governance/users/:waUserId/effective`, `/admin/v1/governance/groups/:waGroupId/effective`
+  - bundle assignment/removal: `PUT|DELETE /admin/v1/governance/users/:waUserId/bundles/:bundleKey`, `PUT|DELETE /admin/v1/governance/groups/:waGroupId/bundles/:bundleKey`
+  - capability override set/clear: `PUT|DELETE /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey`, `PUT|DELETE /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey`
   - safe defaults for first-seen entities: `status=PENDING`, `tier=FREE`
 - Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe` (`/tr`, `/tss`), `/tts`, `/trl`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
@@ -366,8 +370,9 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Reminder and timer jobs via BullMQ with idempotent worker.
 - Admin control-plane stack (`admin-api` + `admin-ui` MVP):
   - Dashboard health/summary view for `wa-gateway`, `worker`, `admin-api`, `media-resolver-api`, optional `assistant-api`, Redis/Postgres, queue/reminders, and recent failures.
-  - Users/Groups operations with approve, block, and tier assignment flows backed by persisted governance entities.
+  - Users/Groups operations with approve, block, tier assignment, bundle assignment/removal, and per-capability override controls backed by persisted governance entities.
   - Licenses/Plans catalog with capability metadata visibility.
+  - Effective capabilities view for users/groups with source attribution (`tier_default`, `bundle`, `user_override_allow`, `group_override_allow`) and deny-source diagnostics.
   - Audit history view with actor/subject/action/timestamp and before/after summaries where available.
   - Jobs/Reminders view with failed reminder inspection and safe retry action.
 - Services.NET onboarding/consent gate for common users (SIM/NÃO) with link (`CONSENT_LINK`), pending reminder state, and privileged bypass (creator_root, mother_privileged, owners/admins).

@@ -65,6 +65,11 @@ enum AccessSubjectType {
   GROUP
 }
 
+enum CapabilityOverrideMode {
+  ALLOW
+  DENY
+}
+
 enum ChatMode {
   ON
   OFF
@@ -131,6 +136,10 @@ model Tenant {
   botAdmins     BotAdmin[]
   userAccessEntries UserAccess[]
   groupAccessEntries GroupAccess[]
+  userBundleAssignments UserBundleAssignment[]
+  groupBundleAssignments GroupBundleAssignment[]
+  userCapabilityOverrides UserCapabilityOverride[]
+  groupCapabilityOverrides GroupCapabilityOverride[]
 
   @@index([name])
 }
@@ -498,6 +507,132 @@ model LicensePlan {
   active             Boolean     @default(true)
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
+}
+
+model CapabilityDefinition {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  displayName String
+  description String?
+  category    String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bundleLinks CapabilityBundleCapability[]
+
+  @@index([active])
+}
+
+model CapabilityBundle {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  displayName String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  capabilityLinks CapabilityBundleCapability[]
+  tierDefaults    TierBundleDefault[]
+  userAssignments UserBundleAssignment[]
+  groupAssignments GroupBundleAssignment[]
+
+  @@index([active])
+}
+
+model CapabilityBundleCapability {
+  id           String   @id @default(uuid())
+  bundleId     String
+  capabilityId String
+  createdAt    DateTime @default(now())
+
+  bundle     CapabilityBundle     @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  capability CapabilityDefinition @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+
+  @@unique([bundleId, capabilityId])
+  @@index([capabilityId])
+}
+
+model TierBundleDefault {
+  id        String      @id @default(uuid())
+  tier      LicenseTier
+  bundleId  String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  bundle CapabilityBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  @@unique([tier, bundleId])
+  @@index([bundleId])
+}
+
+model UserBundleAssignment {
+  id        String   @id @default(uuid())
+  tenantId  String
+  waUserId  String
+  bundleId  String
+  assignedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bundle CapabilityBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, waUserId, bundleId])
+  @@index([waUserId])
+  @@index([bundleId])
+}
+
+model GroupBundleAssignment {
+  id         String   @id @default(uuid())
+  tenantId   String
+  waGroupId  String
+  bundleId   String
+  assignedBy String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bundle CapabilityBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, waGroupId, bundleId])
+  @@index([waGroupId])
+  @@index([bundleId])
+}
+
+model UserCapabilityOverride {
+  id            String                 @id @default(uuid())
+  tenantId      String
+  waUserId      String
+  capabilityKey String
+  mode          CapabilityOverrideMode
+  updatedBy     String?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, waUserId, capabilityKey])
+  @@index([waUserId])
+  @@index([capabilityKey])
+}
+
+model GroupCapabilityOverride {
+  id            String                 @id @default(uuid())
+  tenantId      String
+  waGroupId     String
+  capabilityKey String
+  mode          CapabilityOverrideMode
+  updatedBy     String?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, waGroupId, capabilityKey])
+  @@index([waGroupId])
+  @@index([capabilityKey])
 }
 
 model UsageCounter {

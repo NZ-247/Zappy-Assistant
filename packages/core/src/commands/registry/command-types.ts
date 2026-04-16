@@ -18,6 +18,7 @@ export interface CommandDefinition {
   name: string;
   aliases?: string[];
   category?: CommandCategory;
+  capability?: string;
   scope: CommandScope;
   requiredRole?: CommandRequiredRole;
   botAdminRequired?: boolean;

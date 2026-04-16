@@ -6,6 +6,12 @@ export type {
   GovernanceReasonCode,
   GovernancePolicyDiagnostic,
   GovernancePolicySnapshot,
+  GovernanceCapabilityPolicySnapshot,
+  GovernanceCapabilityDefinition,
+  GovernanceCapabilityBundle,
+  GovernanceCapabilityOverrideMode,
+  GovernanceCapabilityResolutionSource,
+  GovernanceCapabilityDenySource,
   GovernanceRequiredRole,
   GovernanceQuotaConsumeInput,
   GovernanceQuotaConsumeResult

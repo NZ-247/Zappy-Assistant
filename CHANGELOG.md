@@ -1,5 +1,61 @@
 # Changelog
 
+## V1.8.0 - 2026-04-16
+- Evolved governance from narrow tier gating to a flexible capability policy model (tiers + bundles + overrides) with core-first decisioning.
+- Added formal capability policy domain in core:
+  - canonical capability catalog now includes command-level capabilities (`command.hidetag`, `command.search_ai`, `command.download`, etc.)
+  - canonical bundle catalog (`basic_chat`, `search_tools`, `audio_tools`, `image_tools`, `download_tools`, `moderation_tools`, `productivity_tools`)
+  - tier defaults now map to bundles and serve as baseline policy source
+- Refactored governance decision resolution order to:
+  - access status
+  - tier default entitlements
+  - subject bundle grants
+  - explicit subject overrides
+  - existing deny-all/feature-flag and quota checks
+- Added explicit deny-source observability in decisions/logs:
+  - `tier_default`
+  - `missing_bundle`
+  - `explicit_override_deny`
+  - `blocked_status`
+  - `quota_denied`
+- Updated command registry metadata with explicit capability keys and moved runtime capability mapping to registry-driven resolution (no narrow command hardcoding in gateway).
+- Confirmed `/hidetag` is explicitly modeled as `command.hidetag` and enforced by effective capability policy instead of old narrow tier mapping.
+- Added Prisma capability-policy persistence foundation:
+  - `CapabilityDefinition`
+  - `CapabilityBundle`
+  - `CapabilityBundleCapability`
+  - `TierBundleDefault`
+  - `UserBundleAssignment`
+  - `GroupBundleAssignment`
+  - `UserCapabilityOverride`
+  - `GroupCapabilityOverride`
+  - enum `CapabilityOverrideMode`
+- Expanded admin governance repository/read adapter to support:
+  - capability and bundle catalogs
+  - effective policy resolution for user/group
+  - bundle assignment/removal for user/group
+  - capability override set/clear for user/group
+- Added admin-api governance policy endpoints:
+  - `GET /admin/v1/governance/capabilities`
+  - `GET /admin/v1/governance/bundles`
+  - `GET /admin/v1/governance/users/:waUserId/effective`
+  - `GET /admin/v1/governance/groups/:waGroupId/effective`
+  - `PUT|DELETE /admin/v1/governance/users/:waUserId/bundles/:bundleKey`
+  - `PUT|DELETE /admin/v1/governance/groups/:waGroupId/bundles/:bundleKey`
+  - `PUT|DELETE /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey`
+  - `PUT|DELETE /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey`
+- Extended admin-ui Users/Groups details panels with operational governance controls:
+  - assigned bundle management
+  - effective capability table with source attribution
+  - per-capability override controls (`inherit`, `allow`, `deny`)
+- Added/expanded tests for:
+  - PRO tier default capability coverage (including `command.hidetag`)
+  - bundle grant unlock behavior
+  - explicit deny override precedence
+  - group-context deny-wins semantics
+  - admin-api/admin-ui bundle+override round-trip contracts
+- Bumped workspace/project versions to `1.8.0`.
+
 ## V1.7.1 - 2026-04-16
 - Activated first runtime governance enforcement phase (incremental rollout) using persisted admin/governance state.
 - Runtime now enforces access status in live behavior:

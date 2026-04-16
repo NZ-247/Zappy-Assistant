@@ -1,5 +1,6 @@
 import type { ConsentStatus } from "@zappy/core";
 import type {
+  GovernanceCapabilityPolicySnapshot,
   DecisionInput,
   GovernancePolicySnapshot,
   GovernancePort,
@@ -7,6 +8,7 @@ import type {
   GovernanceQuotaConsumeResult,
   RelationshipProfile
 } from "@zappy/core";
+import { createDefaultCapabilityPolicySnapshot } from "@zappy/core";
 
 export interface GovernanceGroupSnapshotSource {
   tenantId: string;
@@ -38,6 +40,12 @@ export interface GovernanceGroupAccessSnapshotSource {
 
 export interface GovernanceReadOnlySources {
   resolveFlags: (input: { tenantId: string; waGroupId?: string; waUserId: string }) => Promise<Record<string, string>>;
+  resolveCapabilityPolicy?: (input: {
+    tenantId: string;
+    waUserId: string;
+    waGroupId?: string;
+    scope: "private" | "group";
+  }) => Promise<GovernanceCapabilityPolicySnapshot>;
   readGroup: (input: { tenantId: string; waGroupId: string }) => Promise<GovernanceGroupSnapshotSource | null>;
   isBotAdmin: (input: { tenantId: string; waUserId: string }) => Promise<boolean>;
   getConsent: (input: { tenantId: string; waUserId: string; termsVersion?: string }) => Promise<{
@@ -80,9 +88,18 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
     getSnapshot: async (input: DecisionInput): Promise<GovernancePolicySnapshot> => {
       const { tenant, user } = input;
       const waGroupId = input.group?.waGroupId;
+      const scope = input.context.scope;
 
-      const [featureFlags, group, isBotAdmin, consent, userAccess, groupAccess] = await Promise.all([
+      const [featureFlags, capabilityPolicy, group, isBotAdmin, consent, userAccess, groupAccess] = await Promise.all([
         sources.resolveFlags({ tenantId: tenant.id, waGroupId, waUserId: user.waUserId }),
+        sources.resolveCapabilityPolicy
+          ? sources.resolveCapabilityPolicy({
+              tenantId: tenant.id,
+              waUserId: user.waUserId,
+              waGroupId,
+              scope
+            })
+          : Promise.resolve(createDefaultCapabilityPolicySnapshot()),
         waGroupId ? sources.readGroup({ tenantId: tenant.id, waGroupId }) : Promise.resolve(null),
         sources.isBotAdmin({ tenantId: tenant.id, waUserId: user.waUserId }),
         sources.getConsent({
@@ -180,6 +197,7 @@ export const createReadOnlyGovernancePort = (sources: GovernanceReadOnlySources)
           group: groupAccessSnapshot,
           effective: effectiveAccess
         },
+        capabilityPolicy: capabilityPolicy ?? createDefaultCapabilityPolicySnapshot(),
         runtimePolicySignals
       };
     }

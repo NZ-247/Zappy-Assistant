@@ -951,6 +951,13 @@ export const adminJobsRepository = createAdminJobsRepository({
 
 export const governancePort = createReadOnlyGovernancePort({
   resolveFlags: async (input) => coreFlagsRepository.resolveFlags(input),
+  resolveCapabilityPolicy: async (input) =>
+    adminGovernanceRepository.resolveCapabilityPolicySnapshot({
+      tenantId: input.tenantId,
+      waUserId: input.waUserId,
+      waGroupId: input.waGroupId,
+      scope: input.scope
+    }),
   readGroup: async (input) => {
     const group = await prisma.group.findUnique({
       where: { waGroupId: input.waGroupId },

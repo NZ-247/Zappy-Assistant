@@ -328,3 +328,45 @@ Guardrails de rollout da fase:
 - enforcement limitado apenas às capabilities definidas nesta versão (sem “big bang”)
 - features fora do escopo continuam com comportamento estável anterior
 - apps de runtime consomem decisão de governança; não duplicam regra de política
+
+## 15. Runtime Enforcement Phase 2 (v1.8.0)
+
+Phase 5 evolui o modelo de governança para política de capabilities flexível, mantendo o core como fonte da decisão e adapters como fonte de persistência:
+
+- `packages/core/src/modules/governance/domain/capability-policy.ts`
+  - catálogo formal de capabilities (incluindo `command.hidetag`)
+  - catálogo de bundles (`basic_chat`, `search_tools`, `audio_tools`, `image_tools`, `download_tools`, `moderation_tools`, `productivity_tools`)
+  - mapeamento de bundles default por tier (`FREE|BASIC|PRO|ROOT`)
+  - resolução efetiva de capability com precedência explícita (deny-wins)
+- `packages/core/src/modules/governance/application/use-cases/resolve-governance-decision.ts`
+  - ordem de enforcement:
+    - status de acesso
+    - defaults do tier
+    - grants por bundle
+    - overrides explícitos (user/group)
+    - deny-all/flags e quota checks existentes
+  - atribuição de fonte de negação (`tier_default`, `missing_bundle`, `explicit_override_deny`, `blocked_status`, `quota_denied`)
+- `packages/core/src/commands/registry/*` + `apps/wa-gateway/src/inbound/governance-shadow.ts`
+  - command registry passa a carregar `capability` explícita por comando
+  - runtime usa mapeamento orientado por metadata do registry, evitando hardcode espalhado em transport
+- `packages/adapters` + `prisma/schema.prisma`
+  - persistência dedicada para política de capability:
+    - `CapabilityDefinition`
+    - `CapabilityBundle`
+    - `CapabilityBundleCapability`
+    - `TierBundleDefault`
+    - `UserBundleAssignment`
+    - `GroupBundleAssignment`
+    - `UserCapabilityOverride`
+    - `GroupCapabilityOverride`
+  - adapter de governança passa a compor snapshot de policy para consumo do core
+- `apps/admin-api` + `apps/admin-ui`
+  - API/UX operacional para catálogo, bundles, overrides e visualização de capability efetiva por usuário/grupo
+  - frontend permanece presentation-only: decisão final e persistência continuam no admin-api/adapters/core
+
+Decisões arquiteturais da fase:
+
+- tier deixa de ser fonte final de verdade e passa a ser baseline de entitlement
+- grants por bundle e overrides explícitos viabilizam cenários comerciais/teste sem mudança de código no runtime
+- precedência em escopo de grupo: deny-wins; sem deny, user allow tem prioridade sobre group allow
+- observabilidade de governança passa a expor capability solicitada + fonte primária de deny para troubleshooting rápido

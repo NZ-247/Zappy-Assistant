@@ -8,6 +8,18 @@ const buildRuntime = () => {
   const groups = new Map<string, any>();
   const audit: any[] = [];
   const reminders = new Map<string, any>();
+  const capabilities = [
+    { key: "command.ping", displayName: "Ping", active: true, createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") },
+    { key: "command.hidetag", displayName: "Hidetag", active: true, createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") }
+  ];
+  const bundles = [
+    { key: "basic_chat", displayName: "Basic Chat", active: true, capabilities: ["command.ping"], createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") },
+    { key: "moderation_tools", displayName: "Moderation Tools", active: true, capabilities: ["command.hidetag"], createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") }
+  ];
+  const userBundleAssignments = new Map<string, Set<string>>();
+  const groupBundleAssignments = new Map<string, Set<string>>();
+  const userOverrides = new Map<string, Map<string, "allow" | "deny">>();
+  const groupOverrides = new Map<string, Map<string, "allow" | "deny">>();
 
   const nowIso = () => new Date("2026-04-14T12:00:00.000Z").toISOString();
 
@@ -159,6 +171,127 @@ const buildRuntime = () => {
         createdAt: new Date(nowIso())
       });
       return next;
+    },
+    listCapabilityDefinitions: async () => capabilities,
+    listCapabilityBundles: async () => bundles,
+    getUserEffectiveCapabilityPolicy: async ({ waUserId }: { waUserId: string }) => {
+      const user = ensureUser(waUserId);
+      const assigned = Array.from(userBundleAssignments.get(waUserId) ?? new Set<string>());
+      const overrideMap = userOverrides.get(waUserId) ?? new Map<string, "allow" | "deny">();
+      return {
+        tenantId: user.tenantId,
+        subjectType: "USER",
+        subjectId: waUserId,
+        tier: user.tier,
+        status: user.status,
+        assignedBundles: { user: assigned, group: [] },
+        overrides: {
+          user: Object.fromEntries(overrideMap.entries()),
+          group: {}
+        },
+        effectiveCapabilities: [
+          {
+            key: "command.ping",
+            allow: true,
+            source: "tier_default",
+            denySource: null,
+            tierDefaultAllowed: true,
+            bundleAllowed: assigned.includes("basic_chat"),
+            matchedBundles: assigned.includes("basic_chat") ? ["basic_chat"] : [],
+            explicitAllowSource: null,
+            explicitDenySources: []
+          },
+          {
+            key: "command.hidetag",
+            allow: assigned.includes("moderation_tools") && overrideMap.get("command.hidetag") !== "deny",
+            source: assigned.includes("moderation_tools") ? "bundle" : "none",
+            denySource: assigned.includes("moderation_tools") ? null : "missing_bundle",
+            tierDefaultAllowed: false,
+            bundleAllowed: assigned.includes("moderation_tools"),
+            matchedBundles: assigned.includes("moderation_tools") ? ["moderation_tools"] : [],
+            explicitAllowSource: overrideMap.get("command.hidetag") === "allow" ? "user_override_allow" : null,
+            explicitDenySources: overrideMap.get("command.hidetag") === "deny" ? ["user_override_deny"] : []
+          }
+        ]
+      };
+    },
+    getGroupEffectiveCapabilityPolicy: async ({ waGroupId }: { waGroupId: string }) => {
+      const group = ensureGroup(waGroupId);
+      const assigned = Array.from(groupBundleAssignments.get(waGroupId) ?? new Set<string>());
+      const overrideMap = groupOverrides.get(waGroupId) ?? new Map<string, "allow" | "deny">();
+      return {
+        tenantId: group.tenantId,
+        subjectType: "GROUP",
+        subjectId: waGroupId,
+        tier: group.tier,
+        status: group.status,
+        assignedBundles: { user: [], group: assigned },
+        overrides: {
+          user: {},
+          group: Object.fromEntries(overrideMap.entries())
+        },
+        effectiveCapabilities: [
+          {
+            key: "command.hidetag",
+            allow: assigned.includes("moderation_tools") && overrideMap.get("command.hidetag") !== "deny",
+            source: assigned.includes("moderation_tools") ? "bundle" : "none",
+            denySource: assigned.includes("moderation_tools") ? null : "missing_bundle",
+            tierDefaultAllowed: false,
+            bundleAllowed: assigned.includes("moderation_tools"),
+            matchedBundles: assigned.includes("moderation_tools") ? ["moderation_tools"] : [],
+            explicitAllowSource: overrideMap.get("command.hidetag") === "allow" ? "group_override_allow" : null,
+            explicitDenySources: overrideMap.get("command.hidetag") === "deny" ? ["group_override_deny"] : []
+          }
+        ]
+      };
+    },
+    assignUserBundle: async ({ waUserId, bundleKey }: { waUserId: string; bundleKey: string }) => {
+      const set = userBundleAssignments.get(waUserId) ?? new Set<string>();
+      set.add(bundleKey);
+      userBundleAssignments.set(waUserId, set);
+      return { waUserId, bundleKey };
+    },
+    removeUserBundle: async ({ waUserId, bundleKey }: { waUserId: string; bundleKey: string }) => {
+      const set = userBundleAssignments.get(waUserId) ?? new Set<string>();
+      set.delete(bundleKey);
+      userBundleAssignments.set(waUserId, set);
+      return { waUserId, bundleKey };
+    },
+    assignGroupBundle: async ({ waGroupId, bundleKey }: { waGroupId: string; bundleKey: string }) => {
+      const set = groupBundleAssignments.get(waGroupId) ?? new Set<string>();
+      set.add(bundleKey);
+      groupBundleAssignments.set(waGroupId, set);
+      return { waGroupId, bundleKey };
+    },
+    removeGroupBundle: async ({ waGroupId, bundleKey }: { waGroupId: string; bundleKey: string }) => {
+      const set = groupBundleAssignments.get(waGroupId) ?? new Set<string>();
+      set.delete(bundleKey);
+      groupBundleAssignments.set(waGroupId, set);
+      return { waGroupId, bundleKey };
+    },
+    setUserCapabilityOverride: async ({ waUserId, capabilityKey, mode }: { waUserId: string; capabilityKey: string; mode: "allow" | "deny" }) => {
+      const overrides = userOverrides.get(waUserId) ?? new Map<string, "allow" | "deny">();
+      overrides.set(capabilityKey, mode);
+      userOverrides.set(waUserId, overrides);
+      return { waUserId, capabilityKey, mode };
+    },
+    clearUserCapabilityOverride: async ({ waUserId, capabilityKey }: { waUserId: string; capabilityKey: string }) => {
+      const overrides = userOverrides.get(waUserId) ?? new Map<string, "allow" | "deny">();
+      overrides.delete(capabilityKey);
+      userOverrides.set(waUserId, overrides);
+      return { waUserId, capabilityKey };
+    },
+    setGroupCapabilityOverride: async ({ waGroupId, capabilityKey, mode }: { waGroupId: string; capabilityKey: string; mode: "allow" | "deny" }) => {
+      const overrides = groupOverrides.get(waGroupId) ?? new Map<string, "allow" | "deny">();
+      overrides.set(capabilityKey, mode);
+      groupOverrides.set(waGroupId, overrides);
+      return { waGroupId, capabilityKey, mode };
+    },
+    clearGroupCapabilityOverride: async ({ waGroupId, capabilityKey }: { waGroupId: string; capabilityKey: string }) => {
+      const overrides = groupOverrides.get(waGroupId) ?? new Map<string, "allow" | "deny">();
+      overrides.delete(capabilityKey);
+      groupOverrides.set(waGroupId, overrides);
+      return { waGroupId, capabilityKey };
     },
     getUserUsage: async ({ waUserId }: { waUserId: string }) => ({
       subjectType: "USER",
@@ -445,6 +578,83 @@ test("usage endpoints return stable admin-facing shape", async () => {
   await app.close();
 });
 
+test("governance capability and bundle endpoints support assignment and overrides", async () => {
+  const app = Fastify();
+  registerAdminApiRoutes(app as any, buildRuntime());
+
+  const capabilities = await app.inject({
+    method: "GET",
+    url: "/admin/v1/governance/capabilities",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(capabilities.statusCode, 200);
+  assert.equal(capabilities.json().schemaVersion, "admin.governance.capabilities.v1");
+  assert.equal(capabilities.json().count >= 1, true);
+
+  const bundles = await app.inject({
+    method: "GET",
+    url: "/admin/v1/governance/bundles",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(bundles.statusCode, 200);
+  assert.equal(bundles.json().schemaVersion, "admin.governance.bundles.v1");
+  assert.equal(bundles.json().count >= 1, true);
+
+  const assignGroupBundle = await app.inject({
+    method: "PUT",
+    url: "/admin/v1/governance/groups/g-789/bundles/moderation_tools",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(assignGroupBundle.statusCode, 200);
+
+  const setGroupOverride = await app.inject({
+    method: "PUT",
+    url: "/admin/v1/governance/groups/g-789/capabilities/command.hidetag",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      mode: "deny",
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(setGroupOverride.statusCode, 200);
+  assert.equal(setGroupOverride.json().item.mode, "deny");
+
+  const effectiveGroup = await app.inject({
+    method: "GET",
+    url: "/admin/v1/governance/groups/g-789/effective",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(effectiveGroup.statusCode, 200);
+  assert.equal(effectiveGroup.json().schemaVersion, "admin.governance.group.effective.v1");
+
+  const clearGroupOverride = await app.inject({
+    method: "DELETE",
+    url: "/admin/v1/governance/groups/g-789/capabilities/command.hidetag",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(clearGroupOverride.statusCode, 200);
+
+  await app.close();
+});
+
 test("status endpoint returns dashboard-ready health summary", async () => {
   const app = Fastify();
   registerAdminApiRoutes(app as any, buildRuntime());
@@ -460,7 +670,7 @@ test("status endpoint returns dashboard-ready health summary", async () => {
   assert.equal(response.statusCode, 200);
   const payload = response.json();
   assert.equal(payload.schemaVersion, "admin.status.v2");
-  assert.equal(payload.version, "1.7.0");
+  assert.equal(payload.version, "1.8.0");
   assert.equal(typeof payload.services.gateway.online, "boolean");
   assert.equal(typeof payload.reminders.FAILED, "number");
   assert.equal(Array.isArray(payload.failures.recentFailedReminders), true);

@@ -50,6 +50,44 @@ const buildMockAdminApi = async () => {
       }
     ]
   ]);
+  const capabilities = [
+    {
+      key: "command.ping",
+      displayName: "Ping",
+      active: true,
+      createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z").toISOString()
+    },
+    {
+      key: "command.hidetag",
+      displayName: "Hidetag",
+      active: true,
+      createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z").toISOString()
+    }
+  ];
+  const bundles = [
+    {
+      key: "basic_chat",
+      displayName: "Basic Chat",
+      active: true,
+      capabilities: ["command.ping"],
+      createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z").toISOString()
+    },
+    {
+      key: "moderation_tools",
+      displayName: "Moderation Tools",
+      active: true,
+      capabilities: ["command.hidetag"],
+      createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z").toISOString()
+    }
+  ];
+  const userBundleAssignments = new Map<string, Set<string>>();
+  const groupBundleAssignments = new Map<string, Set<string>>();
+  const userOverrides = new Map<string, Map<string, "allow" | "deny">>();
+  const groupOverrides = new Map<string, Map<string, "allow" | "deny">>();
 
   const audit: any[] = [];
 
@@ -153,6 +191,137 @@ const buildMockAdminApi = async () => {
       { tier: "ROOT", displayName: "Root", description: "Root", active: true, capabilityDefaults: { support: "owner" } }
     ]
   }));
+
+  app.get("/admin/v1/governance/capabilities", async () => ({
+    schemaVersion: "admin.governance.capabilities.v1",
+    count: capabilities.length,
+    items: capabilities
+  }));
+  app.get("/admin/v1/governance/bundles", async () => ({
+    schemaVersion: "admin.governance.bundles.v1",
+    count: bundles.length,
+    items: bundles
+  }));
+  app.get("/admin/v1/governance/users/:waUserId/effective", async (request) => {
+    const params = request.params as { waUserId: string };
+    const user = users.get(params.waUserId);
+    const assigned = Array.from(userBundleAssignments.get(params.waUserId) ?? new Set<string>());
+    const overrides = Object.fromEntries((userOverrides.get(params.waUserId) ?? new Map<string, "allow" | "deny">()).entries());
+    return {
+      schemaVersion: "admin.governance.user.effective.v1",
+      item: {
+        tenantId: user?.tenantId ?? "tenant-1",
+        subjectType: "USER",
+        subjectId: params.waUserId,
+        tier: user?.tier ?? "FREE",
+        status: user?.status ?? "PENDING",
+        assignedBundles: { user: assigned, group: [] },
+        overrides: { user: overrides, group: {} },
+        effectiveCapabilities: [
+          {
+            key: "command.ping",
+            allow: true,
+            source: "tier_default",
+            denySource: null,
+            tierDefaultAllowed: true,
+            bundleAllowed: assigned.includes("basic_chat"),
+            matchedBundles: assigned.includes("basic_chat") ? ["basic_chat"] : [],
+            explicitAllowSource: null,
+            explicitDenySources: []
+          }
+        ]
+      }
+    };
+  });
+  app.get("/admin/v1/governance/groups/:waGroupId/effective", async (request) => {
+    const params = request.params as { waGroupId: string };
+    const group = groups.get(params.waGroupId);
+    const assigned = Array.from(groupBundleAssignments.get(params.waGroupId) ?? new Set<string>());
+    const overrides = Object.fromEntries((groupOverrides.get(params.waGroupId) ?? new Map<string, "allow" | "deny">()).entries());
+    return {
+      schemaVersion: "admin.governance.group.effective.v1",
+      item: {
+        tenantId: group?.tenantId ?? "tenant-1",
+        subjectType: "GROUP",
+        subjectId: params.waGroupId,
+        tier: group?.tier ?? "FREE",
+        status: group?.status ?? "PENDING",
+        assignedBundles: { user: [], group: assigned },
+        overrides: { user: {}, group: overrides },
+        effectiveCapabilities: [
+          {
+            key: "command.hidetag",
+            allow: assigned.includes("moderation_tools") && overrides["command.hidetag"] !== "deny",
+            source: assigned.includes("moderation_tools") ? "bundle" : "none",
+            denySource: assigned.includes("moderation_tools") ? null : "missing_bundle",
+            tierDefaultAllowed: false,
+            bundleAllowed: assigned.includes("moderation_tools"),
+            matchedBundles: assigned.includes("moderation_tools") ? ["moderation_tools"] : [],
+            explicitAllowSource: overrides["command.hidetag"] === "allow" ? "group_override_allow" : null,
+            explicitDenySources: overrides["command.hidetag"] === "deny" ? ["group_override_deny"] : []
+          }
+        ]
+      }
+    };
+  });
+  app.put("/admin/v1/governance/users/:waUserId/bundles/:bundleKey", async (request) => {
+    const params = request.params as { waUserId: string; bundleKey: string };
+    const set = userBundleAssignments.get(params.waUserId) ?? new Set<string>();
+    set.add(params.bundleKey);
+    userBundleAssignments.set(params.waUserId, set);
+    return { schemaVersion: "admin.governance.user.bundle.v1", item: { waUserId: params.waUserId, bundleKey: params.bundleKey } };
+  });
+  app.delete("/admin/v1/governance/users/:waUserId/bundles/:bundleKey", async (request) => {
+    const params = request.params as { waUserId: string; bundleKey: string };
+    const set = userBundleAssignments.get(params.waUserId) ?? new Set<string>();
+    set.delete(params.bundleKey);
+    userBundleAssignments.set(params.waUserId, set);
+    return { schemaVersion: "admin.governance.user.bundle.v1", item: { waUserId: params.waUserId, bundleKey: params.bundleKey } };
+  });
+  app.put("/admin/v1/governance/groups/:waGroupId/bundles/:bundleKey", async (request) => {
+    const params = request.params as { waGroupId: string; bundleKey: string };
+    const set = groupBundleAssignments.get(params.waGroupId) ?? new Set<string>();
+    set.add(params.bundleKey);
+    groupBundleAssignments.set(params.waGroupId, set);
+    return { schemaVersion: "admin.governance.group.bundle.v1", item: { waGroupId: params.waGroupId, bundleKey: params.bundleKey } };
+  });
+  app.delete("/admin/v1/governance/groups/:waGroupId/bundles/:bundleKey", async (request) => {
+    const params = request.params as { waGroupId: string; bundleKey: string };
+    const set = groupBundleAssignments.get(params.waGroupId) ?? new Set<string>();
+    set.delete(params.bundleKey);
+    groupBundleAssignments.set(params.waGroupId, set);
+    return { schemaVersion: "admin.governance.group.bundle.v1", item: { waGroupId: params.waGroupId, bundleKey: params.bundleKey } };
+  });
+  app.put("/admin/v1/governance/users/:waUserId/capabilities/:capabilityKey", async (request) => {
+    const params = request.params as { waUserId: string; capabilityKey: string };
+    const body = request.body as { mode: "allow" | "deny" };
+    const map = userOverrides.get(params.waUserId) ?? new Map<string, "allow" | "deny">();
+    map.set(params.capabilityKey, body.mode);
+    userOverrides.set(params.waUserId, map);
+    return { schemaVersion: "admin.governance.user.capability.v1", item: { waUserId: params.waUserId, capabilityKey: params.capabilityKey, mode: body.mode } };
+  });
+  app.delete("/admin/v1/governance/users/:waUserId/capabilities/:capabilityKey", async (request) => {
+    const params = request.params as { waUserId: string; capabilityKey: string };
+    const map = userOverrides.get(params.waUserId) ?? new Map<string, "allow" | "deny">();
+    map.delete(params.capabilityKey);
+    userOverrides.set(params.waUserId, map);
+    return { schemaVersion: "admin.governance.user.capability.v1", item: { waUserId: params.waUserId, capabilityKey: params.capabilityKey } };
+  });
+  app.put("/admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey", async (request) => {
+    const params = request.params as { waGroupId: string; capabilityKey: string };
+    const body = request.body as { mode: "allow" | "deny" };
+    const map = groupOverrides.get(params.waGroupId) ?? new Map<string, "allow" | "deny">();
+    map.set(params.capabilityKey, body.mode);
+    groupOverrides.set(params.waGroupId, map);
+    return { schemaVersion: "admin.governance.group.capability.v1", item: { waGroupId: params.waGroupId, capabilityKey: params.capabilityKey, mode: body.mode } };
+  });
+  app.delete("/admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey", async (request) => {
+    const params = request.params as { waGroupId: string; capabilityKey: string };
+    const map = groupOverrides.get(params.waGroupId) ?? new Map<string, "allow" | "deny">();
+    map.delete(params.capabilityKey);
+    groupOverrides.set(params.waGroupId, map);
+    return { schemaVersion: "admin.governance.group.capability.v1", item: { waGroupId: params.waGroupId, capabilityKey: params.capabilityKey } };
+  });
 
   app.get("/admin/v1/audit", async () => ({ schemaVersion: "admin.audit.v1", count: audit.length, items: audit }));
 
@@ -266,6 +435,36 @@ test("admin-ui proxy supports admin-api round-trips for dashboard, users/groups,
   });
   assert.equal(updateGroupTier.status, 200);
   assert.equal(updateGroupTier.payload.item.tier, "BASIC");
+
+  const governanceCapabilities = await callUiProxy(uiBaseUrl, "/admin/v1/governance/capabilities");
+  assert.equal(governanceCapabilities.status, 200);
+  assert.equal(governanceCapabilities.payload.count >= 1, true);
+
+  const governanceBundles = await callUiProxy(uiBaseUrl, "/admin/v1/governance/bundles");
+  assert.equal(governanceBundles.status, 200);
+  assert.equal(governanceBundles.payload.count >= 1, true);
+
+  const assignGroupBundle = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/bundles/moderation_tools", {
+    method: "PUT",
+    body: JSON.stringify({ actor: "ops-admin" })
+  });
+  assert.equal(assignGroupBundle.status, 200);
+
+  const setGroupCapabilityOverride = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/capabilities/command.hidetag", {
+    method: "PUT",
+    body: JSON.stringify({ mode: "deny", actor: "ops-admin" })
+  });
+  assert.equal(setGroupCapabilityOverride.status, 200);
+
+  const effectiveGroup = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/effective");
+  assert.equal(effectiveGroup.status, 200);
+  assert.equal(effectiveGroup.payload.schemaVersion, "admin.governance.group.effective.v1");
+
+  const clearGroupCapabilityOverride = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/capabilities/command.hidetag", {
+    method: "DELETE",
+    body: JSON.stringify({ actor: "ops-admin" })
+  });
+  assert.equal(clearGroupCapabilityOverride.status, 200);
 
   const audit = await callUiProxy(uiBaseUrl, "/admin/v1/audit");
   assert.equal(audit.status, 200);

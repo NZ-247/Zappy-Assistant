@@ -90,6 +90,7 @@ test("governance shadow evaluator logs structured decision in shadow mode", asyn
   assert.equal(infoLogs[0]?.payload?.status, "governance_shadow_decision_evaluated");
   assert.equal(infoLogs[0]?.payload?.shadowMode, true);
   assert.equal(infoLogs[0]?.payload?.decision, "deny");
+  assert.equal(infoLogs[0]?.payload?.capability, "command.hidetag");
   assert.equal(Array.isArray(infoLogs[0]?.payload?.reasonCodes), true);
 });
 

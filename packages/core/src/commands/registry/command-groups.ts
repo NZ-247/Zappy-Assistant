@@ -5,6 +5,7 @@ export const coreCommands: CommandDefinition[] = [
     category: "core",
     name: "help",
     aliases: ["ajuda"],
+    capability: "command.help",
     scope: "both",
     description: "Lista comandos disponíveis e contexto do chat.",
     usage: "help"
@@ -12,6 +13,7 @@ export const coreCommands: CommandDefinition[] = [
   {
     category: "core",
     name: "ping",
+    capability: "command.ping",
     scope: "both",
     description: "Verifica a latência do bot.",
     usage: "ping"
@@ -26,6 +28,7 @@ export const coreCommands: CommandDefinition[] = [
   {
     category: "system",
     name: "status",
+    capability: "command.status",
     scope: "both",
     description: "Mostra status operacional.",
     usage: "status"
@@ -177,6 +180,7 @@ export const moderationCommands: CommandDefinition[] = [
   {
     category: "moderation",
     name: "hidetag",
+    capability: "command.hidetag",
     scope: "group",
     requiredRole: "admin",
     botAdminRequired: true,
@@ -202,6 +206,7 @@ export const reminderCommands: CommandDefinition[] = [
   {
     category: "reminders",
     name: "agenda",
+    capability: "command.reminder",
     scope: "both",
     description: "Mostra tarefas e lembretes do dia.",
     usage: "agenda"
@@ -209,6 +214,7 @@ export const reminderCommands: CommandDefinition[] = [
   {
     category: "reminders",
     name: "timer",
+    capability: "command.reminder",
     scope: "both",
     description: "Cria um timer curto.",
     usage: "timer <duration>"
@@ -216,6 +222,7 @@ export const reminderCommands: CommandDefinition[] = [
   {
     category: "reminders",
     name: "reminder",
+    capability: "command.reminder",
     scope: "both",
     description: "Agenda um lembrete.",
     usage: "reminder in <duration> <message> | reminder at <DD-MM[-YYYY]> [HH:MM] <message>"
@@ -254,6 +261,7 @@ export const audioCommands: CommandDefinition[] = [
     category: "tools",
     name: "transcribe",
     aliases: ["tr", "tss"],
+    capability: "command.transcribe",
     scope: "both",
     progressAck: true,
     description: "Transcreve audio (responda um audio com /transcribe ou /tss) e mantem fluxo automatico para audio direto.",
@@ -266,6 +274,7 @@ export const ttsCommands: CommandDefinition[] = [
   {
     category: "tools",
     name: "tts",
+    capability: "command.tts",
     scope: "both",
     progressAck: true,
     description: "Converte texto em voz (PTT), aceitando texto direto ou texto da mensagem respondida.",
@@ -296,6 +305,7 @@ export const webSearchCommands: CommandDefinition[] = [
   {
     category: "tools",
     name: "search",
+    capability: "command.search",
     scope: "both",
     progressAck: true,
     description: "Busca textual generica na web; aceita termo direto ou mensagem respondida.",
@@ -305,6 +315,7 @@ export const webSearchCommands: CommandDefinition[] = [
   {
     category: "tools",
     name: "google",
+    capability: "command.search",
     scope: "both",
     progressAck: true,
     description: "Busca textual usando Google real; aceita termo direto ou mensagem respondida.",
@@ -315,6 +326,7 @@ export const webSearchCommands: CommandDefinition[] = [
     category: "tools",
     name: "search-ai",
     aliases: ["sai"],
+    capability: "command.search_ai",
     scope: "both",
     progressAck: true,
     description: "Busca assistida por IA com internet; aceita termo direto ou mensagem respondida.",
@@ -328,6 +340,7 @@ export const imageSearchCommands: CommandDefinition[] = [
     category: "tools",
     name: "img",
     aliases: ["gimage"],
+    capability: "command.img",
     scope: "both",
     progressAck: true,
     description: "Busca imagem com legenda curta/relevante e fonte única; aceita termo direto ou mensagem respondida.",
@@ -337,6 +350,7 @@ export const imageSearchCommands: CommandDefinition[] = [
   {
     category: "tools",
     name: "imglink",
+    capability: "command.img",
     scope: "both",
     progressAck: true,
     description: "Busca imagem e retorna link conciso quando necessario; aceita termo direto ou mensagem respondida.",
@@ -349,6 +363,7 @@ export const downloadCommands: CommandDefinition[] = [
   {
     category: "tools",
     name: "dl",
+    capability: "command.download",
     scope: "both",
     progressAck: true,
     description: "Baixa mídia por link com detecção automática de provider (ou provider explícito).",

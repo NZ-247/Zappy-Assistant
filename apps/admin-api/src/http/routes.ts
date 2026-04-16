@@ -55,8 +55,8 @@ type GovernanceSnapshotQuery = {
   isReplyToBot?: string;
 };
 
-const ADMIN_API_VERSION = "1.7.0";
-const GOVERNANCE_VERSION = "v1.7.0";
+const ADMIN_API_VERSION = "1.8.0";
+const GOVERNANCE_VERSION = "v1.8.0";
 const HEALTH_CHECK_TIMEOUT_MS = 3_500;
 const reminderStatuses = ["SCHEDULED", "SENT", "FAILED", "CANCELED"] as const;
 
@@ -70,6 +70,22 @@ const licenseUpdateBodySchema = z.object({
   tier: z.enum(["FREE", "BASIC", "PRO", "ROOT"]),
   actor: z.string().min(1).optional(),
   tenantId: z.string().min(1).optional()
+});
+
+const governanceMutationBodySchema = z.object({
+  actor: z.string().min(1).optional(),
+  tenantId: z.string().min(1).optional()
+});
+
+const capabilityOverrideBodySchema = z.object({
+  mode: z.enum(["allow", "deny"]),
+  actor: z.string().min(1).optional(),
+  tenantId: z.string().min(1).optional()
+});
+
+const governanceEffectiveQuerySchema = z.object({
+  tenantId: z.string().min(1).optional(),
+  waUserId: z.string().min(1).optional()
 });
 
 const reminderQuerySchema = z.object({
@@ -113,6 +129,25 @@ type ExternalServiceHealth = {
 const toErrorMessage = (error: unknown): string => {
   if (error instanceof Error) return error.message;
   return String(error ?? "Unknown error");
+};
+
+const resolveGovernanceRepositoryError = (error: unknown): { statusCode: number; code: string; message: string } | null => {
+  const message = toErrorMessage(error);
+  if (message.startsWith("bundle_not_found:")) {
+    return {
+      statusCode: 404,
+      code: "BUNDLE_NOT_FOUND",
+      message: `Bundle not found: ${message.replace("bundle_not_found:", "")}`
+    };
+  }
+  if (message.startsWith("capability_not_found:")) {
+    return {
+      statusCode: 404,
+      code: "CAPABILITY_NOT_FOUND",
+      message: `Capability not found: ${message.replace("capability_not_found:", "")}`
+    };
+  }
+  return null;
 };
 
 const parseBoolean = (value?: string): boolean | undefined => {
@@ -417,6 +452,289 @@ export const registerAdminApiRoutes = (app: AdminApiHttpApp, runtime: AdminApiRu
       input,
       decision
     };
+  });
+
+  app.get("/admin/v1/governance/capabilities", async () => {
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const items = await repository.listCapabilityDefinitions();
+    return {
+      schemaVersion: "admin.governance.capabilities.v1",
+      count: items.length,
+      items
+    };
+  });
+
+  app.get("/admin/v1/governance/bundles", async () => {
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const items = await repository.listCapabilityBundles();
+    return {
+      schemaVersion: "admin.governance.bundles.v1",
+      count: items.length,
+      items
+    };
+  });
+
+  app.get("/admin/v1/governance/users/:waUserId/effective", async (request) => {
+    const params = request.params as { waUserId: string };
+    const query = governanceEffectiveQuerySchema.parse(request.query ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const item = await repository.getUserEffectiveCapabilityPolicy({
+      tenantId: query.tenantId,
+      waUserId: params.waUserId
+    });
+    return {
+      schemaVersion: "admin.governance.user.effective.v1",
+      item
+    };
+  });
+
+  app.get("/admin/v1/governance/groups/:waGroupId/effective", async (request) => {
+    const params = request.params as { waGroupId: string };
+    const query = governanceEffectiveQuerySchema.parse(request.query ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const item = await repository.getGroupEffectiveCapabilityPolicy({
+      tenantId: query.tenantId,
+      waGroupId: params.waGroupId,
+      waUserId: query.waUserId
+    });
+    return {
+      schemaVersion: "admin.governance.group.effective.v1",
+      item
+    };
+  });
+
+  app.put("/admin/v1/governance/users/:waUserId/bundles/:bundleKey", async (request, reply) => {
+    const params = request.params as { waUserId: string; bundleKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.assignUserBundle({
+        tenantId: body.tenantId,
+        waUserId: params.waUserId,
+        bundleKey: decodeURIComponent(params.bundleKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.user.bundle.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.delete("/admin/v1/governance/users/:waUserId/bundles/:bundleKey", async (request, reply) => {
+    const params = request.params as { waUserId: string; bundleKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.removeUserBundle({
+        tenantId: body.tenantId,
+        waUserId: params.waUserId,
+        bundleKey: decodeURIComponent(params.bundleKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.user.bundle.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/admin/v1/governance/groups/:waGroupId/bundles/:bundleKey", async (request, reply) => {
+    const params = request.params as { waGroupId: string; bundleKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.assignGroupBundle({
+        tenantId: body.tenantId,
+        waGroupId: params.waGroupId,
+        bundleKey: decodeURIComponent(params.bundleKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.group.bundle.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.delete("/admin/v1/governance/groups/:waGroupId/bundles/:bundleKey", async (request, reply) => {
+    const params = request.params as { waGroupId: string; bundleKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.removeGroupBundle({
+        tenantId: body.tenantId,
+        waGroupId: params.waGroupId,
+        bundleKey: decodeURIComponent(params.bundleKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.group.bundle.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/admin/v1/governance/users/:waUserId/capabilities/:capabilityKey", async (request, reply) => {
+    const params = request.params as { waUserId: string; capabilityKey: string };
+    const body = capabilityOverrideBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.setUserCapabilityOverride({
+        tenantId: body.tenantId,
+        waUserId: params.waUserId,
+        capabilityKey: decodeURIComponent(params.capabilityKey),
+        mode: body.mode,
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.user.capability.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.delete("/admin/v1/governance/users/:waUserId/capabilities/:capabilityKey", async (request, reply) => {
+    const params = request.params as { waUserId: string; capabilityKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.clearUserCapabilityOverride({
+        tenantId: body.tenantId,
+        waUserId: params.waUserId,
+        capabilityKey: decodeURIComponent(params.capabilityKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.user.capability.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey", async (request, reply) => {
+    const params = request.params as { waGroupId: string; capabilityKey: string };
+    const body = capabilityOverrideBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.setGroupCapabilityOverride({
+        tenantId: body.tenantId,
+        waGroupId: params.waGroupId,
+        capabilityKey: decodeURIComponent(params.capabilityKey),
+        mode: body.mode,
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.group.capability.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.delete("/admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey", async (request, reply) => {
+    const params = request.params as { waGroupId: string; capabilityKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.clearGroupCapabilityOverride({
+        tenantId: body.tenantId,
+        waGroupId: params.waGroupId,
+        capabilityKey: decodeURIComponent(params.capabilityKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.group.capability.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
   });
 
   app.get("/admin/v1/users", async (request) => {

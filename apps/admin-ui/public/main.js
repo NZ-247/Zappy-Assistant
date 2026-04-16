@@ -158,6 +158,28 @@ const createApiClient = ({ fetchImpl, getSession }) => {
     updateGroupAccess: (waGroupId, body) => call(`/admin/v1/groups/${encodeURIComponent(waGroupId)}/access`, { method: "PATCH", body }),
     updateGroupTier: (waGroupId, body) => call(`/admin/v1/groups/${encodeURIComponent(waGroupId)}/license`, { method: "PATCH", body }),
     listPlans: () => call("/admin/v1/licenses/plans"),
+    listGovernanceCapabilities: () => call("/admin/v1/governance/capabilities"),
+    listGovernanceBundles: () => call("/admin/v1/governance/bundles"),
+    getUserEffectiveGovernance: (waUserId, tenantId) =>
+      call(`/admin/v1/governance/users/${encodeURIComponent(waUserId)}/effective${tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : ""}`),
+    getGroupEffectiveGovernance: (waGroupId, query = "") =>
+      call(`/admin/v1/governance/groups/${encodeURIComponent(waGroupId)}/effective${query ? `?${query}` : ""}`),
+    assignUserBundle: (waUserId, bundleKey, body) =>
+      call(`/admin/v1/governance/users/${encodeURIComponent(waUserId)}/bundles/${encodeURIComponent(bundleKey)}`, { method: "PUT", body }),
+    removeUserBundle: (waUserId, bundleKey, body) =>
+      call(`/admin/v1/governance/users/${encodeURIComponent(waUserId)}/bundles/${encodeURIComponent(bundleKey)}`, { method: "DELETE", body }),
+    assignGroupBundle: (waGroupId, bundleKey, body) =>
+      call(`/admin/v1/governance/groups/${encodeURIComponent(waGroupId)}/bundles/${encodeURIComponent(bundleKey)}`, { method: "PUT", body }),
+    removeGroupBundle: (waGroupId, bundleKey, body) =>
+      call(`/admin/v1/governance/groups/${encodeURIComponent(waGroupId)}/bundles/${encodeURIComponent(bundleKey)}`, { method: "DELETE", body }),
+    setUserCapabilityOverride: (waUserId, capabilityKey, body) =>
+      call(`/admin/v1/governance/users/${encodeURIComponent(waUserId)}/capabilities/${encodeURIComponent(capabilityKey)}`, { method: "PUT", body }),
+    clearUserCapabilityOverride: (waUserId, capabilityKey, body) =>
+      call(`/admin/v1/governance/users/${encodeURIComponent(waUserId)}/capabilities/${encodeURIComponent(capabilityKey)}`, { method: "DELETE", body }),
+    setGroupCapabilityOverride: (waGroupId, capabilityKey, body) =>
+      call(`/admin/v1/governance/groups/${encodeURIComponent(waGroupId)}/capabilities/${encodeURIComponent(capabilityKey)}`, { method: "PUT", body }),
+    clearGroupCapabilityOverride: (waGroupId, capabilityKey, body) =>
+      call(`/admin/v1/governance/groups/${encodeURIComponent(waGroupId)}/capabilities/${encodeURIComponent(capabilityKey)}`, { method: "DELETE", body }),
     listAudit: (query = "") => call(`/admin/v1/audit${query ? `?${query}` : ""}`),
     listReminders: (query = "") => call(`/admin/v1/reminders${query ? `?${query}` : ""}`),
     retryReminder: (id, body) => call(`/admin/v1/reminders/${encodeURIComponent(id)}/retry`, { method: "POST", body })
@@ -170,7 +192,7 @@ export const createAdminUiApp = ({
   storage,
   uiConfig = {
     defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-    uiVersion: "1.7.0"
+    uiVersion: "1.8.0"
   }
 }) => {
   const viewRoot = document.getElementById("view-root");
@@ -196,6 +218,8 @@ export const createAdminUiApp = ({
       tenantId: stored?.tenantId || ""
     },
     plans: [],
+    governanceCapabilities: [],
+    governanceBundles: [],
     users: [],
     groups: [],
     audit: [],
@@ -376,6 +400,84 @@ export const createAdminUiApp = ({
     `;
   };
 
+  const renderGovernanceSection = (kind, detail) => {
+    const governance = detail?.governance?.item;
+    if (!governance) {
+      return '<article class="info-card"><h3>Governance</h3><p class="subtext">No governance details loaded.</p></article>';
+    }
+
+    const subjectId = kind === "user" ? detail?.item?.waUserId : detail?.item?.waGroupId;
+    const assignedBundles = new Set((kind === "user" ? governance.assignedBundles?.user : governance.assignedBundles?.group) || []);
+    const overrides = kind === "user" ? governance.overrides?.user || {} : governance.overrides?.group || {};
+    const bundleActionPrefix = kind === "user" ? "user-bundle" : "group-bundle";
+    const capabilityActionPrefix = kind === "user" ? "user-capability" : "group-capability";
+
+    return `
+      <article class="info-card governance-card">
+        <h3>Governance Policy</h3>
+        <p class="subtext">Tier <span class="mono">${escapeHtml(governance.tier)}</span> | Status <span class="mono">${escapeHtml(governance.status)}</span></p>
+        <h4>Bundles</h4>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Bundle</th><th>Assigned</th><th>Action</th></tr></thead>
+            <tbody>
+              ${
+                state.governanceBundles.length
+                  ? state.governanceBundles
+                      .map((bundle) => {
+                        const isAssigned = assignedBundles.has(bundle.key);
+                        const action = isAssigned ? `${bundleActionPrefix}-remove` : `${bundleActionPrefix}-add`;
+                        const actionLabel = isAssigned ? "Remove" : "Add";
+                        return `<tr>
+                          <td><div class="mono">${escapeHtml(bundle.key)}</div><div>${escapeHtml(bundle.displayName || bundle.key)}</div></td>
+                          <td>${isAssigned ? '<span class="badge status-approved">yes</span>' : '<span class="badge status-blocked">no</span>'}</td>
+                          <td><button class="btn btn-ghost" data-action="${escapeHtml(action)}" data-id="${escapeHtml(subjectId)}" data-bundle="${escapeHtml(bundle.key)}">${actionLabel}</button></td>
+                        </tr>`;
+                      })
+                      .join("")
+                  : '<tr><td colspan="3">No bundle catalog loaded.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <h4>Capabilities</h4>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Capability</th><th>Allow</th><th>Source</th><th>Override</th></tr></thead>
+            <tbody>
+              ${
+                (governance.effectiveCapabilities || [])
+                  .map((item) => {
+                    const currentOverride = overrides[item.key] || "inherit";
+                    const selectorKey = `${subjectId}::${item.key}`;
+                    return `<tr>
+                      <td><div class="mono">${escapeHtml(item.key)}</div><div class="subtext">bundles: ${escapeHtml((item.matchedBundles || []).join(", ") || "-")}</div></td>
+                      <td>${item.allow ? '<span class="badge status-approved">allow</span>' : '<span class="badge status-blocked">deny</span>'}</td>
+                      <td class="mono">${escapeHtml(item.source)}${item.denySource ? ` / ${escapeHtml(item.denySource)}` : ""}</td>
+                      <td>
+                        <div class="inline-actions">
+                          <select data-override-select-${escapeHtml(kind)}="${escapeHtml(selectorKey)}">
+                            <option value="inherit" ${currentOverride === "inherit" ? "selected" : ""}>inherit</option>
+                            <option value="allow" ${currentOverride === "allow" ? "selected" : ""}>allow</option>
+                            <option value="deny" ${currentOverride === "deny" ? "selected" : ""}>deny</option>
+                          </select>
+                          <button class="btn btn-ghost" data-action="${escapeHtml(capabilityActionPrefix)}-apply" data-id="${escapeHtml(subjectId)}" data-capability="${escapeHtml(
+                      item.key
+                    )}">Apply</button>
+                        </div>
+                      </td>
+                    </tr>`;
+                  })
+                  .join("") || '<tr><td colspan="4">No capability records.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+      </article>
+    `;
+  };
+
   const renderUsers = () => {
     const filtered = state.users.filter((item) => {
       const needle = state.filters.usersSearch.trim().toLowerCase();
@@ -435,9 +537,10 @@ export const createAdminUiApp = ({
       </div>
       ${
         state.details.user
-          ? `<section style="margin-top:0.8rem" class="two-col">
+          ? `<section style="margin-top:0.8rem" class="two-col governance-details">
             <article class="info-card"><h3>User Details</h3><pre>${escapeHtml(JSON.stringify(state.details.user.item, null, 2))}</pre></article>
             <article class="info-card"><h3>User Usage</h3><pre>${escapeHtml(JSON.stringify(state.details.user.usage, null, 2))}</pre></article>
+            ${renderGovernanceSection("user", state.details.user)}
           </section>`
           : ""
       }
@@ -503,9 +606,10 @@ export const createAdminUiApp = ({
       </div>
       ${
         state.details.group
-          ? `<section style="margin-top:0.8rem" class="two-col">
+          ? `<section style="margin-top:0.8rem" class="two-col governance-details">
             <article class="info-card"><h3>Group Details</h3><pre>${escapeHtml(JSON.stringify(state.details.group.item, null, 2))}</pre></article>
             <article class="info-card"><h3>Group Usage</h3><pre>${escapeHtml(JSON.stringify(state.details.group.usage, null, 2))}</pre></article>
+            ${renderGovernanceSection("group", state.details.group)}
           </section>`
           : ""
       }
@@ -628,6 +732,18 @@ export const createAdminUiApp = ({
     state.plans = response.plans || [];
   };
 
+  const ensureGovernanceCatalog = async () => {
+    if (!state.governanceBundles.length) {
+      const bundlesResponse = await api.listGovernanceBundles();
+      state.governanceBundles = bundlesResponse.items || [];
+    }
+
+    if (!state.governanceCapabilities.length) {
+      const capabilitiesResponse = await api.listGovernanceCapabilities();
+      state.governanceCapabilities = capabilitiesResponse.items || [];
+    }
+  };
+
   const loadDashboard = async () => {
     const status = await api.getStatus();
     state.dashboard = status;
@@ -730,7 +846,7 @@ export const createAdminUiApp = ({
     showGlobalMessage(`${kind} tier updated to ${tier}.`, "info");
   };
 
-  const handleTableAction = async (action, id) => {
+  const handleTableAction = async (action, id, metadata = {}) => {
     try {
       if (action === "users-refresh" || action === "groups-refresh" || action === "audit-refresh" || action === "jobs-refresh") {
         if (action === "audit-refresh") {
@@ -774,18 +890,110 @@ export const createAdminUiApp = ({
         await handleTierUpdate("group", id);
       }
 
+      if (action === "user-bundle-add" || action === "user-bundle-remove") {
+        const bundleKey = metadata.bundle;
+        if (!bundleKey) return;
+        if (action === "user-bundle-add") {
+          await api.assignUserBundle(id, bundleKey, { actor: state.session.actor, tenantId: state.session.tenantId || undefined });
+          showGlobalMessage(`Bundle ${bundleKey} assigned to user ${id}.`, "info");
+        } else {
+          await api.removeUserBundle(id, bundleKey, { actor: state.session.actor, tenantId: state.session.tenantId || undefined });
+          showGlobalMessage(`Bundle ${bundleKey} removed from user ${id}.`, "warn");
+        }
+        const governance = await api.getUserEffectiveGovernance(id, state.session.tenantId);
+        if (state.details.user?.item?.waUserId === id) {
+          state.details.user.governance = governance;
+          renderUsers();
+          return;
+        }
+      }
+
+      if (action === "group-bundle-add" || action === "group-bundle-remove") {
+        const bundleKey = metadata.bundle;
+        if (!bundleKey) return;
+        if (action === "group-bundle-add") {
+          await api.assignGroupBundle(id, bundleKey, { actor: state.session.actor, tenantId: state.session.tenantId || undefined });
+          showGlobalMessage(`Bundle ${bundleKey} assigned to group ${id}.`, "info");
+        } else {
+          await api.removeGroupBundle(id, bundleKey, { actor: state.session.actor, tenantId: state.session.tenantId || undefined });
+          showGlobalMessage(`Bundle ${bundleKey} removed from group ${id}.`, "warn");
+        }
+        const query = new URLSearchParams();
+        if (state.session.tenantId) query.set("tenantId", state.session.tenantId);
+        const governance = await api.getGroupEffectiveGovernance(id, query.toString());
+        if (state.details.group?.item?.waGroupId === id) {
+          state.details.group.governance = governance;
+          renderGroups();
+          return;
+        }
+      }
+
+      if (action === "user-capability-apply") {
+        const capabilityKey = metadata.capability;
+        if (!capabilityKey) return;
+        const selector = Array.from(viewRoot.querySelectorAll("[data-override-select-user]")).find(
+          (node) => node.dataset.overrideSelectUser === `${id}::${capabilityKey}`
+        );
+        const mode = selector?.value || "inherit";
+        if (mode === "inherit") {
+          await api.clearUserCapabilityOverride(id, capabilityKey, { actor: state.session.actor, tenantId: state.session.tenantId || undefined });
+        } else {
+          await api.setUserCapabilityOverride(id, capabilityKey, {
+            mode,
+            actor: state.session.actor,
+            tenantId: state.session.tenantId || undefined
+          });
+        }
+        const governance = await api.getUserEffectiveGovernance(id, state.session.tenantId);
+        if (state.details.user?.item?.waUserId === id) {
+          state.details.user.governance = governance;
+          renderUsers();
+          return;
+        }
+      }
+
+      if (action === "group-capability-apply") {
+        const capabilityKey = metadata.capability;
+        if (!capabilityKey) return;
+        const selector = Array.from(viewRoot.querySelectorAll("[data-override-select-group]")).find(
+          (node) => node.dataset.overrideSelectGroup === `${id}::${capabilityKey}`
+        );
+        const mode = selector?.value || "inherit";
+        if (mode === "inherit") {
+          await api.clearGroupCapabilityOverride(id, capabilityKey, { actor: state.session.actor, tenantId: state.session.tenantId || undefined });
+        } else {
+          await api.setGroupCapabilityOverride(id, capabilityKey, {
+            mode,
+            actor: state.session.actor,
+            tenantId: state.session.tenantId || undefined
+          });
+        }
+        const query = new URLSearchParams();
+        if (state.session.tenantId) query.set("tenantId", state.session.tenantId);
+        const governance = await api.getGroupEffectiveGovernance(id, query.toString());
+        if (state.details.group?.item?.waGroupId === id) {
+          state.details.group.governance = governance;
+          renderGroups();
+          return;
+        }
+      }
+
       if (action === "user-details") {
         const user = state.users.find((item) => item.waUserId === id);
-        const usage = await api.getUserUsage(id, state.session.tenantId);
-        state.details.user = { item: user ?? null, usage };
+        await ensureGovernanceCatalog();
+        const [usage, governance] = await Promise.all([api.getUserUsage(id, state.session.tenantId), api.getUserEffectiveGovernance(id, state.session.tenantId)]);
+        state.details.user = { item: user ?? null, usage, governance };
         renderUsers();
         return;
       }
 
       if (action === "group-details") {
         const group = state.groups.find((item) => item.waGroupId === id);
-        const usage = await api.getGroupUsage(id, state.session.tenantId);
-        state.details.group = { item: group ?? null, usage };
+        await ensureGovernanceCatalog();
+        const query = new URLSearchParams();
+        if (state.session.tenantId) query.set("tenantId", state.session.tenantId);
+        const [usage, governance] = await Promise.all([api.getGroupUsage(id, state.session.tenantId), api.getGroupEffectiveGovernance(id, query.toString())]);
+        state.details.group = { item: group ?? null, usage, governance };
         renderGroups();
         return;
       }
@@ -857,12 +1065,15 @@ export const createAdminUiApp = ({
       const action = target.dataset.action;
       if (!action) return;
       const id = target.dataset.id;
-      void handleTableAction(action, id);
+      void handleTableAction(action, id, {
+        bundle: target.dataset.bundle,
+        capability: target.dataset.capability
+      });
     });
   };
 
   const init = async () => {
-    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.7.0"}`;
+    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.8.0"}`;
     fillFormFromSession();
     renderSessionBadge();
     wireEvents();
@@ -883,14 +1094,14 @@ const fetchUiConfig = async () => {
     if (!response.ok) {
       return {
         defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-        uiVersion: "1.7.0"
+        uiVersion: "1.8.0"
       };
     }
     return await response.json();
   } catch {
     return {
       defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-      uiVersion: "1.7.0"
+      uiVersion: "1.8.0"
     };
   }
 };
