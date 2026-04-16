@@ -55,8 +55,8 @@ type GovernanceSnapshotQuery = {
   isReplyToBot?: string;
 };
 
-const ADMIN_API_VERSION = "1.8.0";
-const GOVERNANCE_VERSION = "v1.8.0";
+const ADMIN_API_VERSION = "1.9.0";
+const GOVERNANCE_VERSION = "v1.9.0";
 const HEALTH_CHECK_TIMEOUT_MS = 3_500;
 const reminderStatuses = ["SCHEDULED", "SENT", "FAILED", "CANCELED"] as const;
 
@@ -81,6 +81,23 @@ const capabilityOverrideBodySchema = z.object({
   mode: z.enum(["allow", "deny"]),
   actor: z.string().min(1).optional(),
   tenantId: z.string().min(1).optional()
+});
+
+const bundleCreateBodySchema = z.object({
+  key: z.string().min(1),
+  displayName: z.string().min(1),
+  description: z.string().optional().nullable(),
+  active: z.boolean().optional(),
+  capabilityKeys: z.array(z.string().min(1)).optional(),
+  actor: z.string().min(1).optional()
+});
+
+const bundleUpdateBodySchema = z.object({
+  displayName: z.string().min(1).optional(),
+  description: z.string().optional().nullable(),
+  active: z.boolean().optional(),
+  capabilityKeys: z.array(z.string().min(1)).optional(),
+  actor: z.string().min(1).optional()
 });
 
 const governanceEffectiveQuerySchema = z.object({
@@ -138,6 +155,20 @@ const resolveGovernanceRepositoryError = (error: unknown): { statusCode: number;
       statusCode: 404,
       code: "BUNDLE_NOT_FOUND",
       message: `Bundle not found: ${message.replace("bundle_not_found:", "")}`
+    };
+  }
+  if (message.startsWith("bundle_exists:")) {
+    return {
+      statusCode: 409,
+      code: "BUNDLE_ALREADY_EXISTS",
+      message: `Bundle already exists: ${message.replace("bundle_exists:", "")}`
+    };
+  }
+  if (message.startsWith("invalid_bundle_key:")) {
+    return {
+      statusCode: 400,
+      code: "INVALID_BUNDLE_KEY",
+      message: `Invalid bundle key: ${message.replace("invalid_bundle_key:", "")}`
     };
   }
   if (message.startsWith("capability_not_found:")) {
@@ -471,6 +502,132 @@ export const registerAdminApiRoutes = (app: AdminApiHttpApp, runtime: AdminApiRu
       schemaVersion: "admin.governance.bundles.v1",
       count: items.length,
       items
+    };
+  });
+
+  app.post("/admin/v1/governance/bundles", async (request, reply) => {
+    const body = bundleCreateBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.createCapabilityBundle({
+        key: body.key,
+        displayName: body.displayName,
+        description: body.description,
+        active: body.active,
+        capabilityKeys: body.capabilityKeys,
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.bundle.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.patch("/admin/v1/governance/bundles/:bundleKey", async (request, reply) => {
+    const params = request.params as { bundleKey: string };
+    const body = bundleUpdateBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.updateCapabilityBundle({
+        bundleKey: decodeURIComponent(params.bundleKey),
+        displayName: body.displayName,
+        description: body.description,
+        active: body.active,
+        capabilityKeys: body.capabilityKeys,
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.bundle.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey", async (request, reply) => {
+    const params = request.params as { bundleKey: string; capabilityKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.assignCapabilityToBundle({
+        bundleKey: decodeURIComponent(params.bundleKey),
+        capabilityKey: decodeURIComponent(params.capabilityKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.bundle.capability.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.delete("/admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey", async (request, reply) => {
+    const params = request.params as { bundleKey: string; capabilityKey: string };
+    const body = governanceMutationBodySchema.parse(request.body ?? {});
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    try {
+      const item = await repository.removeCapabilityFromBundle({
+        bundleKey: decodeURIComponent(params.bundleKey),
+        capabilityKey: decodeURIComponent(params.capabilityKey),
+        actor: body.actor ?? "admin-api"
+      });
+      return {
+        schemaVersion: "admin.governance.bundle.capability.v1",
+        item
+      };
+    } catch (error) {
+      const parsed = resolveGovernanceRepositoryError(error);
+      if (parsed) {
+        return reply.code(parsed.statusCode).send({
+          error: {
+            code: parsed.code,
+            message: parsed.message
+          }
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/admin/v1/governance/settings", async () => {
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const item = await repository.getGovernanceDefaults();
+    return {
+      schemaVersion: "admin.governance.settings.v1",
+      item
     };
   });
 

@@ -14,7 +14,7 @@ const buildMockAdminApi = async () => {
         tenantId: "tenant-1",
         waUserId: "u-100",
         displayName: "User 100",
-        status: "PENDING",
+        status: "APPROVED",
         tier: "FREE",
         updatedAt: new Date("2026-04-14T11:00:00.000Z").toISOString()
       }
@@ -54,6 +54,9 @@ const buildMockAdminApi = async () => {
     {
       key: "command.ping",
       displayName: "Ping",
+      description: "Ping command",
+      category: "command",
+      bundles: ["basic_chat"],
       active: true,
       createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
       updatedAt: new Date("2026-04-14T00:00:00.000Z").toISOString()
@@ -61,6 +64,9 @@ const buildMockAdminApi = async () => {
     {
       key: "command.hidetag",
       displayName: "Hidetag",
+      description: "Hidetag command",
+      category: "moderation",
+      bundles: ["moderation_tools"],
       active: true,
       createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
       updatedAt: new Date("2026-04-14T00:00:00.000Z").toISOString()
@@ -202,6 +208,76 @@ const buildMockAdminApi = async () => {
     count: bundles.length,
     items: bundles
   }));
+  app.post("/admin/v1/governance/bundles", async (request) => {
+    const body = request.body as {
+      key: string;
+      displayName: string;
+      description?: string | null;
+      active?: boolean;
+      capabilityKeys?: string[];
+    };
+    const next = {
+      key: body.key,
+      displayName: body.displayName,
+      description: body.description ?? null,
+      active: body.active ?? true,
+      capabilities: body.capabilityKeys ?? [],
+      createdAt: new Date("2026-04-14T12:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-14T12:00:00.000Z").toISOString()
+    };
+    bundles.push(next);
+    return { schemaVersion: "admin.governance.bundle.v1", item: next };
+  });
+  app.patch("/admin/v1/governance/bundles/:bundleKey", async (request) => {
+    const params = request.params as { bundleKey: string };
+    const body = request.body as {
+      displayName?: string;
+      description?: string | null;
+      active?: boolean;
+      capabilityKeys?: string[];
+    };
+    const index = bundles.findIndex((item) => item.key === params.bundleKey);
+    const current = bundles[index];
+    const next = {
+      ...current,
+      displayName: body.displayName ?? current.displayName,
+      description: body.description !== undefined ? body.description : current.description,
+      active: body.active ?? current.active,
+      capabilities: body.capabilityKeys ?? current.capabilities,
+      updatedAt: new Date("2026-04-14T12:00:00.000Z").toISOString()
+    };
+    bundles[index] = next;
+    return { schemaVersion: "admin.governance.bundle.v1", item: next };
+  });
+  app.put("/admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey", async (request) => {
+    const params = request.params as { bundleKey: string; capabilityKey: string };
+    const bundle = bundles.find((item) => item.key === params.bundleKey);
+    if (bundle && !bundle.capabilities.includes(params.capabilityKey)) bundle.capabilities.push(params.capabilityKey);
+    return { schemaVersion: "admin.governance.bundle.capability.v1", item: { bundleKey: params.bundleKey, capabilityKey: params.capabilityKey } };
+  });
+  app.delete("/admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey", async (request) => {
+    const params = request.params as { bundleKey: string; capabilityKey: string };
+    const bundle = bundles.find((item) => item.key === params.bundleKey);
+    if (bundle) bundle.capabilities = bundle.capabilities.filter((capability) => capability !== params.capabilityKey);
+    return { schemaVersion: "admin.governance.bundle.capability.v1", item: { bundleKey: params.bundleKey, capabilityKey: params.capabilityKey } };
+  });
+  app.get("/admin/v1/governance/settings", async () => ({
+    schemaVersion: "admin.governance.settings.v1",
+    item: {
+      defaults: {
+        privateUser: { status: "APPROVED", tier: "FREE", source: "system_default" },
+        group: { status: "PENDING", tier: "FREE", source: "system_default" }
+      },
+      onboarding: {
+        privateAssistantEnabled: true,
+        serviceExplanationEnabled: true,
+        basicQuoteHelpEnabled: true
+      },
+      governance: {
+        separationRule: "private_and_group_defaults_are_independent"
+      }
+    }
+  }));
   app.get("/admin/v1/governance/users/:waUserId/effective", async (request) => {
     const params = request.params as { waUserId: string };
     const user = users.get(params.waUserId);
@@ -214,7 +290,7 @@ const buildMockAdminApi = async () => {
         subjectType: "USER",
         subjectId: params.waUserId,
         tier: user?.tier ?? "FREE",
-        status: user?.status ?? "PENDING",
+        status: user?.status ?? "APPROVED",
         assignedBundles: { user: assigned, group: [] },
         overrides: { user: overrides, group: {} },
         effectiveCapabilities: [
@@ -493,6 +569,31 @@ test("admin-ui proxy supports admin-api round-trips for dashboard, users/groups,
   const governanceBundles = await callUiProxy(uiBaseUrl, "/admin/v1/governance/bundles");
   assert.equal(governanceBundles.status, 200);
   assert.equal(governanceBundles.payload.count >= 1, true);
+
+  const createBundle = await callUiProxy(uiBaseUrl, "/admin/v1/governance/bundles", {
+    method: "POST",
+    body: JSON.stringify({
+      key: "onboarding_plus",
+      displayName: "Onboarding Plus",
+      capabilityKeys: ["command.ping"]
+    })
+  });
+  assert.equal(createBundle.status, 200);
+  assert.equal(createBundle.payload.item.key, "onboarding_plus");
+
+  const patchBundle = await callUiProxy(uiBaseUrl, "/admin/v1/governance/bundles/onboarding_plus", {
+    method: "PATCH",
+    body: JSON.stringify({
+      displayName: "Onboarding Plus Updated",
+      capabilityKeys: ["command.ping", "command.hidetag"]
+    })
+  });
+  assert.equal(patchBundle.status, 200);
+  assert.equal(patchBundle.payload.item.displayName, "Onboarding Plus Updated");
+
+  const governanceSettings = await callUiProxy(uiBaseUrl, "/admin/v1/governance/settings");
+  assert.equal(governanceSettings.status, 200);
+  assert.equal(governanceSettings.payload.item.defaults.privateUser.status, "APPROVED");
 
   const assignGroupBundle = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/bundles/moderation_tools", {
     method: "PUT",

@@ -111,6 +111,87 @@ test("admin-ui renders dashboard and jobs/reminders views with integration fetch
       );
     }
 
+    if (path.startsWith("/ui-api/admin/v1/governance/bundles") && (init?.method ?? "GET") === "GET") {
+      return new Response(
+        JSON.stringify({
+          schemaVersion: "admin.governance.bundles.v1",
+          count: 1,
+          items: [
+            {
+              key: "basic_chat",
+              displayName: "Basic Chat",
+              description: "Default onboarding bundle",
+              active: true,
+              capabilities: ["command.ping"],
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
+    if (path.startsWith("/ui-api/admin/v1/governance/capabilities") && (init?.method ?? "GET") === "GET") {
+      return new Response(
+        JSON.stringify({
+          schemaVersion: "admin.governance.capabilities.v1",
+          count: 1,
+          items: [
+            {
+              key: "command.ping",
+              displayName: "Ping",
+              description: "Ping command",
+              category: "command",
+              bundles: ["basic_chat"],
+              active: true,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
+    if (path.startsWith("/ui-api/admin/v1/governance/settings")) {
+      return new Response(
+        JSON.stringify({
+          schemaVersion: "admin.governance.settings.v1",
+          item: {
+            defaults: {
+              privateUser: { status: "APPROVED", tier: "FREE", source: "system_default" },
+              group: { status: "PENDING", tier: "FREE", source: "system_default" }
+            },
+            onboarding: {
+              privateAssistantEnabled: true,
+              serviceExplanationEnabled: true,
+              basicQuoteHelpEnabled: true
+            },
+            governance: {
+              separationRule: "private_and_group_defaults_are_independent"
+            }
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
     return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: `Unhandled path ${path}` } }), {
       status: 404,
       headers: {
@@ -148,4 +229,19 @@ test("admin-ui renders dashboard and jobs/reminders views with integration fetch
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(calls.some((call) => call.includes("POST /ui-api/admin/v1/reminders/r-900/retry")), true);
+
+  await app.setView("bundles");
+  const bundlesText = dom.window.document.getElementById("view-root")?.textContent || "";
+  assert.match(bundlesText, /Bundle Catalog/i);
+  assert.match(bundlesText, /basic_chat/i);
+
+  await app.setView("capabilities");
+  const capabilitiesText = dom.window.document.getElementById("view-root")?.textContent || "";
+  assert.match(capabilitiesText, /Capability/i);
+  assert.match(capabilitiesText, /command\.ping/i);
+
+  await app.setView("settings");
+  const settingsText = dom.window.document.getElementById("view-root")?.textContent || "";
+  assert.match(settingsText, /New Private User Default/i);
+  assert.match(settingsText, /APPROVED/i);
 });

@@ -189,7 +189,7 @@ export const registerAssistantApiRoutes = (app: AssistantApiHttpApp, runtime: As
 
     return {
       schemaVersion: "governance.snapshot.v1",
-      governanceVersion: "v1.8.0",
+      governanceVersion: "v1.9.0",
       shadowMode: false,
       input,
       decision

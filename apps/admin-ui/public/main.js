@@ -7,7 +7,7 @@ const DEFAULT_SETTINGS = {
   tenantId: ""
 };
 
-const VIEW_IDS = ["dashboard", "users", "groups", "licenses", "audit", "jobs"];
+const VIEW_IDS = ["dashboard", "users", "groups", "bundles", "capabilities", "settings", "licenses", "audit", "jobs"];
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -160,6 +160,14 @@ const createApiClient = ({ fetchImpl, getSession }) => {
     listPlans: () => call("/admin/v1/licenses/plans"),
     listGovernanceCapabilities: () => call("/admin/v1/governance/capabilities"),
     listGovernanceBundles: () => call("/admin/v1/governance/bundles"),
+    createGovernanceBundle: (body) => call("/admin/v1/governance/bundles", { method: "POST", body }),
+    updateGovernanceBundle: (bundleKey, body) =>
+      call(`/admin/v1/governance/bundles/${encodeURIComponent(bundleKey)}`, { method: "PATCH", body }),
+    assignCapabilityToBundle: (bundleKey, capabilityKey, body) =>
+      call(`/admin/v1/governance/bundles/${encodeURIComponent(bundleKey)}/capabilities/${encodeURIComponent(capabilityKey)}`, { method: "PUT", body }),
+    removeCapabilityFromBundle: (bundleKey, capabilityKey, body) =>
+      call(`/admin/v1/governance/bundles/${encodeURIComponent(bundleKey)}/capabilities/${encodeURIComponent(capabilityKey)}`, { method: "DELETE", body }),
+    getGovernanceSettings: () => call("/admin/v1/governance/settings"),
     getUserEffectiveGovernance: (waUserId, tenantId) =>
       call(`/admin/v1/governance/users/${encodeURIComponent(waUserId)}/effective${tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : ""}`),
     getGroupEffectiveGovernance: (waGroupId, query = "") =>
@@ -192,7 +200,7 @@ export const createAdminUiApp = ({
   storage,
   uiConfig = {
     defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-    uiVersion: "1.8.0"
+    uiVersion: "1.9.0"
   }
 }) => {
   const viewRoot = document.getElementById("view-root");
@@ -226,6 +234,7 @@ export const createAdminUiApp = ({
     reminders: [],
     dashboard: null,
     metrics: null,
+    settings: null,
     filters: {
       usersSearch: "",
       groupsSearch: "",
@@ -235,7 +244,8 @@ export const createAdminUiApp = ({
     },
     details: {
       user: null,
-      group: null
+      group: null,
+      bundleEditor: null
     }
   };
 
@@ -624,6 +634,169 @@ export const createAdminUiApp = ({
     `;
   };
 
+  const parseCapabilityCsv = (value) =>
+    [...new Set(String(value || "").split(",").map((item) => item.trim()).filter(Boolean))];
+
+  const renderBundles = () => {
+    const editor = state.details.bundleEditor;
+
+    viewRoot.innerHTML = `
+      <section class="info-card">
+        <h3>Create Bundle</h3>
+        <p class="subtext">Create an access group and optionally attach capabilities in one step.</p>
+        <div class="tools-row">
+          <input id="bundle-create-key" placeholder="bundle key (ex: onboarding_private)" />
+          <input id="bundle-create-name" placeholder="display name" />
+          <input id="bundle-create-description" placeholder="description (optional)" />
+          <label class="subtext" style="display:flex;align-items:center;gap:0.35rem">
+            <input id="bundle-create-active" type="checkbox" checked />
+            active
+          </label>
+          <button class="btn" data-action="bundle-create">Create Bundle</button>
+          <button class="btn btn-ghost" data-action="bundles-refresh">Refresh</button>
+        </div>
+        <div class="tools-row">
+          <input id="bundle-create-capabilities" style="min-width:420px;max-width:100%" placeholder="capabilities (comma separated)" />
+        </div>
+      </section>
+
+      <section style="margin-top:0.8rem" class="info-card">
+        <h3>Bundle Catalog</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Bundle</th><th>Active</th><th>Capabilities</th><th>Updated</th><th>Action</th></tr></thead>
+            <tbody>
+              ${
+                state.governanceBundles.length
+                  ? state.governanceBundles
+                      .map(
+                        (bundle) => `<tr>
+                        <td><div class="mono">${escapeHtml(bundle.key)}</div><div>${escapeHtml(bundle.displayName || bundle.key)}</div><div class="subtext">${escapeHtml(
+                          bundle.description || "-"
+                        )}</div></td>
+                        <td>${bundle.active ? '<span class="badge status-approved">active</span>' : '<span class="badge status-blocked">inactive</span>'}</td>
+                        <td class="mono">${escapeHtml((bundle.capabilities || []).join(", ") || "-")}</td>
+                        <td class="mono">${escapeHtml(toPrettyDate(bundle.updatedAt))}</td>
+                        <td><button class="btn btn-ghost" data-action="bundle-edit" data-bundle="${escapeHtml(bundle.key)}">Edit</button></td>
+                      </tr>`
+                      )
+                      .join("")
+                  : '<tr><td colspan="5">No bundles available.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      ${
+        editor
+          ? `<section style="margin-top:0.8rem" class="info-card">
+            <h3>Edit Bundle</h3>
+            <p class="subtext">Key <span class="mono">${escapeHtml(editor.key)}</span></p>
+            <div class="tools-row">
+              <input id="bundle-edit-name" value="${escapeHtml(editor.displayName || "")}" placeholder="display name" />
+              <input id="bundle-edit-description" value="${escapeHtml(editor.description || "")}" placeholder="description (optional)" />
+              <label class="subtext" style="display:flex;align-items:center;gap:0.35rem">
+                <input id="bundle-edit-active" type="checkbox" ${editor.active ? "checked" : ""} />
+                active
+              </label>
+              <button class="btn" data-action="bundle-save" data-bundle="${escapeHtml(editor.key)}">Save Bundle</button>
+              <button class="btn btn-ghost" data-action="bundle-edit-cancel">Cancel</button>
+            </div>
+            <div class="tools-row">
+              <input id="bundle-edit-capabilities" style="min-width:420px;max-width:100%" value="${escapeHtml(
+                (editor.capabilities || []).join(", ")
+              )}" placeholder="capabilities (comma separated)" />
+            </div>
+          </section>`
+          : ""
+      }
+    `;
+  };
+
+  const resolveCapabilityMembership = (capability) => {
+    if (Array.isArray(capability.bundles) && capability.bundles.length) return capability.bundles;
+    return state.governanceBundles
+      .filter((bundle) => (bundle.capabilities || []).includes(capability.key))
+      .map((bundle) => bundle.key)
+      .sort((a, b) => a.localeCompare(b));
+  };
+
+  const renderCapabilities = () => {
+    if (!state.governanceCapabilities.length) return renderEmpty("No capability catalog entries available.");
+
+    viewRoot.innerHTML = `
+      <div class="tools-row">
+        <button class="btn btn-ghost" data-action="capabilities-refresh">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Capability</th><th>Category</th><th>Description</th><th>Bundles</th><th>Active</th></tr></thead>
+          <tbody>
+            ${state.governanceCapabilities
+              .map((capability) => {
+                const memberships = resolveCapabilityMembership(capability);
+                return `<tr>
+                  <td class="mono">${escapeHtml(capability.key)}</td>
+                  <td>${escapeHtml(capability.category || "-")}</td>
+                  <td>${escapeHtml(capability.description || capability.displayName || "-")}</td>
+                  <td class="mono">${escapeHtml(memberships.join(", ") || "-")}</td>
+                  <td>${capability.active ? '<span class="badge status-approved">active</span>' : '<span class="badge status-blocked">inactive</span>'}</td>
+                </tr>`;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
+  const renderSettings = () => {
+    const settings = state.settings?.item ?? state.settings;
+    if (!settings) return renderEmpty("Governance defaults unavailable.");
+
+    const privateDefault = settings.defaults?.privateUser || {};
+    const groupDefault = settings.defaults?.group || {};
+    const onboarding = settings.onboarding || {};
+
+    viewRoot.innerHTML = `
+      <div class="card-grid">
+        <article class="info-card">
+          <h3>New Private User Default</h3>
+          <p class="metric mono">${escapeHtml(privateDefault.status || "-")} / ${escapeHtml(privateDefault.tier || "-")}</p>
+          <p class="subtext">Onboarding-friendly private default (assistant explanation and basic help/quote flows enabled).</p>
+        </article>
+        <article class="info-card">
+          <h3>New Group Default</h3>
+          <p class="metric mono">${escapeHtml(groupDefault.status || "-")} / ${escapeHtml(groupDefault.tier || "-")}</p>
+          <p class="subtext">Group policy remains independently governed from private defaults.</p>
+        </article>
+        <article class="info-card">
+          <h3>Onboarding Flags</h3>
+          <p class="subtext">privateAssistantEnabled: ${onboarding.privateAssistantEnabled ? "true" : "false"}</p>
+          <p class="subtext">serviceExplanationEnabled: ${onboarding.serviceExplanationEnabled ? "true" : "false"}</p>
+          <p class="subtext">basicQuoteHelpEnabled: ${onboarding.basicQuoteHelpEnabled ? "true" : "false"}</p>
+        </article>
+      </div>
+      <article class="info-card" style="margin-top:0.8rem">
+        <h3>Next UI Phase Plan</h3>
+        <pre>${escapeHtml(
+          JSON.stringify(
+            {
+              users: ["status/tier", "bundle assignment", "capability overrides", "usage summary"],
+              groups: ["status/tier", "bundle assignment", "capability overrides", "effective capability diagnostics"],
+              bundles: ["catalog list", "create/edit", "capability composition"],
+              capabilities: ["catalog list", "category/description", "bundle membership"],
+              settings: ["private/group defaults", "onboarding governance defaults"]
+            },
+            null,
+            2
+          )
+        )}</pre>
+      </article>
+    `;
+  };
+
   const renderLicenses = () => {
     if (!state.plans.length) return renderEmpty("No license plan metadata available.");
     viewRoot.innerHTML = `
@@ -728,6 +901,9 @@ export const createAdminUiApp = ({
     if (state.view === "dashboard") return renderDashboard();
     if (state.view === "users") return renderUsers();
     if (state.view === "groups") return renderGroups();
+    if (state.view === "bundles") return renderBundles();
+    if (state.view === "capabilities") return renderCapabilities();
+    if (state.view === "settings") return renderSettings();
     if (state.view === "licenses") return renderLicenses();
     if (state.view === "audit") return renderAudit();
     if (state.view === "jobs") return renderJobs();
@@ -776,6 +952,18 @@ export const createAdminUiApp = ({
     state.groups = response.items || [];
   };
 
+  const loadBundles = async () => {
+    await ensureGovernanceCatalog();
+  };
+
+  const loadCapabilities = async () => {
+    await ensureGovernanceCatalog();
+  };
+
+  const loadSettings = async () => {
+    state.settings = await api.getGovernanceSettings();
+  };
+
   const loadLicenses = async () => {
     const response = await api.listPlans();
     state.plans = response.plans || [];
@@ -809,6 +997,9 @@ export const createAdminUiApp = ({
       if (state.view === "dashboard") await loadDashboard();
       else if (state.view === "users") await loadUsers();
       else if (state.view === "groups") await loadGroups();
+      else if (state.view === "bundles") await loadBundles();
+      else if (state.view === "capabilities") await loadCapabilities();
+      else if (state.view === "settings") await loadSettings();
       else if (state.view === "licenses") await loadLicenses();
       else if (state.view === "audit") await loadAudit();
       else if (state.view === "jobs") await loadJobs();
@@ -829,6 +1020,7 @@ export const createAdminUiApp = ({
     state.view = nextView;
     state.details.user = null;
     state.details.group = null;
+    state.details.bundleEditor = null;
 
     document.querySelectorAll(".nav-btn").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.view === nextView);
@@ -856,7 +1048,15 @@ export const createAdminUiApp = ({
 
   const handleTableAction = async (action, id, metadata = {}) => {
     try {
-      if (action === "users-refresh" || action === "groups-refresh" || action === "audit-refresh" || action === "jobs-refresh") {
+      if (
+        action === "users-refresh" ||
+        action === "groups-refresh" ||
+        action === "audit-refresh" ||
+        action === "jobs-refresh" ||
+        action === "bundles-refresh" ||
+        action === "capabilities-refresh" ||
+        action === "settings-refresh"
+      ) {
         if (action === "audit-refresh") {
           state.filters.auditType = String(viewRoot.querySelector("#audit-type")?.value || "");
           state.filters.auditSubjectId = String(viewRoot.querySelector("#audit-subject-id")?.value || "").trim();
@@ -865,6 +1065,87 @@ export const createAdminUiApp = ({
           state.filters.reminderStatus = String(viewRoot.querySelector("#jobs-status")?.value || "");
         }
         await refreshCurrentView();
+        return;
+      }
+
+      if (action === "bundle-create") {
+        const key = String(viewRoot.querySelector("#bundle-create-key")?.value || "").trim();
+        const displayName = String(viewRoot.querySelector("#bundle-create-name")?.value || "").trim();
+        const description = String(viewRoot.querySelector("#bundle-create-description")?.value || "").trim();
+        const active = Boolean(viewRoot.querySelector("#bundle-create-active")?.checked);
+        const capabilitiesRaw = String(viewRoot.querySelector("#bundle-create-capabilities")?.value || "");
+        const capabilityKeys = parseCapabilityCsv(capabilitiesRaw);
+
+        if (!key || !displayName) {
+          showGlobalMessage("Bundle key and display name are required.", "warn");
+          return;
+        }
+
+        await api.createGovernanceBundle({
+          key,
+          displayName,
+          description: description || null,
+          active,
+          capabilityKeys,
+          actor: state.session.actor
+        });
+        state.governanceBundles = [];
+        state.governanceCapabilities = [];
+        state.details.bundleEditor = null;
+        await ensureGovernanceCatalog();
+        renderBundles();
+        showGlobalMessage(`Bundle ${key} created.`, "info");
+        return;
+      }
+
+      if (action === "bundle-edit") {
+        const bundleKey = metadata.bundle;
+        if (!bundleKey) return;
+        const bundle = state.governanceBundles.find((item) => item.key === bundleKey);
+        if (!bundle) return;
+        state.details.bundleEditor = {
+          key: bundle.key,
+          displayName: bundle.displayName || bundle.key,
+          description: bundle.description || "",
+          active: Boolean(bundle.active),
+          capabilities: [...(bundle.capabilities || [])]
+        };
+        renderBundles();
+        return;
+      }
+
+      if (action === "bundle-edit-cancel") {
+        state.details.bundleEditor = null;
+        renderBundles();
+        return;
+      }
+
+      if (action === "bundle-save") {
+        const bundleKey = metadata.bundle;
+        if (!bundleKey) return;
+        const displayName = String(viewRoot.querySelector("#bundle-edit-name")?.value || "").trim();
+        const description = String(viewRoot.querySelector("#bundle-edit-description")?.value || "").trim();
+        const active = Boolean(viewRoot.querySelector("#bundle-edit-active")?.checked);
+        const capabilityKeys = parseCapabilityCsv(String(viewRoot.querySelector("#bundle-edit-capabilities")?.value || ""));
+
+        if (!displayName) {
+          showGlobalMessage("Bundle display name is required.", "warn");
+          return;
+        }
+
+        await api.updateGovernanceBundle(bundleKey, {
+          displayName,
+          description: description || null,
+          active,
+          capabilityKeys,
+          actor: state.session.actor
+        });
+        state.governanceBundles = [];
+        state.governanceCapabilities = [];
+        await ensureGovernanceCatalog();
+        state.details.bundleEditor = state.governanceBundles.find((item) => item.key === bundleKey) || null;
+        renderBundles();
+        showGlobalMessage(`Bundle ${bundleKey} updated.`, "info");
         return;
       }
 
@@ -1081,7 +1362,7 @@ export const createAdminUiApp = ({
   };
 
   const init = async () => {
-    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.8.0"}`;
+    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.9.0"}`;
     fillFormFromSession();
     renderSessionBadge();
     wireEvents();
@@ -1102,14 +1383,14 @@ const fetchUiConfig = async () => {
     if (!response.ok) {
       return {
         defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-        uiVersion: "1.8.0"
+        uiVersion: "1.9.0"
       };
     }
     return await response.json();
   } catch {
     return {
       defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-      uiVersion: "1.8.0"
+      uiVersion: "1.9.0"
     };
   }
 };

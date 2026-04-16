@@ -276,7 +276,7 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - resolver health fails after delegation:
   - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
-Version note: current release line is `v1.8.0`.
+Version note: current release line is `v1.9.0`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -297,10 +297,13 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - usage visibility: `/admin/v1/usage/users/:waUserId`, `/admin/v1/usage/groups/:waGroupId`
   - approval audit trail: `/admin/v1/audit`
   - capability catalogs: `/admin/v1/governance/capabilities`, `/admin/v1/governance/bundles`
+  - bundle catalog management: `POST /admin/v1/governance/bundles`, `PATCH /admin/v1/governance/bundles/:bundleKey`
+  - bundle capability composition: `PUT|DELETE /admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey`
   - effective policy resolution: `/admin/v1/governance/users/:waUserId/effective`, `/admin/v1/governance/groups/:waGroupId/effective`
   - bundle assignment/removal: `PUT|DELETE /admin/v1/governance/users/:waUserId/bundles/:bundleKey`, `PUT|DELETE /admin/v1/governance/groups/:waGroupId/bundles/:bundleKey`
   - capability override set/clear: `PUT|DELETE /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey`, `PUT|DELETE /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey`
-  - safe defaults for first-seen entities: `status=PENDING`, `tier=FREE`
+  - governance defaults/settings view: `GET /admin/v1/governance/settings`
+  - first-seen materialization defaults: private users `status=APPROVED`, `tier=FREE`; groups `status=PENDING`, `tier=FREE`
 - Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe` (`/tr`, `/tss`), `/tts`, `/trl`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.
@@ -371,6 +374,9 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 - Admin control-plane stack (`admin-api` + `admin-ui` MVP):
   - Dashboard health/summary view for `wa-gateway`, `worker`, `admin-api`, `media-resolver-api`, optional `assistant-api`, Redis/Postgres, queue/reminders, and recent failures.
   - Users/Groups operations with approve, block, tier assignment, bundle assignment/removal, and per-capability override controls backed by persisted governance entities.
+  - Bundles management view with create/edit flows and capability composition per bundle.
+  - Capabilities catalog view with category/description and bundle membership visibility.
+  - Governance settings view exposing separated defaults for new private users vs groups.
   - Licenses/Plans catalog with capability metadata visibility.
   - Effective capabilities view for users/groups with source attribution (`tier_default`, `bundle`, `user_override_allow`, `group_override_allow`) and deny-source diagnostics.
   - Audit history view with actor/subject/action/timestamp and before/after summaries where available.

@@ -9,8 +9,26 @@ const buildRuntime = () => {
   const audit: any[] = [];
   const reminders = new Map<string, any>();
   const capabilities = [
-    { key: "command.ping", displayName: "Ping", active: true, createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") },
-    { key: "command.hidetag", displayName: "Hidetag", active: true, createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") }
+    {
+      key: "command.ping",
+      displayName: "Ping",
+      description: "Ping command",
+      category: "command",
+      bundles: ["basic_chat"],
+      active: true,
+      createdAt: new Date("2026-04-14T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z")
+    },
+    {
+      key: "command.hidetag",
+      displayName: "Hidetag",
+      description: "Hidetag command",
+      category: "moderation",
+      bundles: ["moderation_tools"],
+      active: true,
+      createdAt: new Date("2026-04-14T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z")
+    }
   ];
   const bundles = [
     { key: "basic_chat", displayName: "Basic Chat", active: true, capabilities: ["command.ping"], createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") },
@@ -60,10 +78,10 @@ const buildRuntime = () => {
       waUserId,
       displayName: waUserId,
       phoneNumber: null,
-      status: "PENDING",
+      status: "APPROVED",
       tier: "FREE",
-      approvedBy: null,
-      approvedAt: null,
+      approvedBy: "system:private-default",
+      approvedAt: new Date("2026-04-14T00:00:00.000Z"),
       createdAt: new Date("2026-04-14T00:00:00.000Z"),
       updatedAt: new Date("2026-04-14T00:00:00.000Z")
     };
@@ -172,8 +190,94 @@ const buildRuntime = () => {
       });
       return next;
     },
-    listCapabilityDefinitions: async () => capabilities,
+    listCapabilityDefinitions: async () =>
+      capabilities.map((capability) => ({
+        ...capability,
+        bundles: bundles.filter((bundle) => bundle.capabilities.includes(capability.key)).map((bundle) => bundle.key)
+      })),
     listCapabilityBundles: async () => bundles,
+    createCapabilityBundle: async ({
+      key,
+      displayName,
+      description,
+      active,
+      capabilityKeys
+    }: {
+      key: string;
+      displayName: string;
+      description?: string | null;
+      active?: boolean;
+      capabilityKeys?: string[];
+    }) => {
+      if (bundles.some((bundle) => bundle.key === key)) throw new Error(`bundle_exists:${key}`);
+      const next = {
+        key,
+        displayName,
+        description: description ?? null,
+        active: active ?? true,
+        capabilities: capabilityKeys ?? [],
+        createdAt: new Date(nowIso()),
+        updatedAt: new Date(nowIso())
+      };
+      bundles.push(next);
+      return next;
+    },
+    updateCapabilityBundle: async ({
+      bundleKey,
+      displayName,
+      description,
+      active,
+      capabilityKeys
+    }: {
+      bundleKey: string;
+      displayName?: string;
+      description?: string | null;
+      active?: boolean;
+      capabilityKeys?: string[];
+    }) => {
+      const index = bundles.findIndex((bundle) => bundle.key === bundleKey);
+      if (index < 0) throw new Error(`bundle_not_found:${bundleKey}`);
+      const current = bundles[index];
+      const next = {
+        ...current,
+        displayName: displayName ?? current.displayName,
+        description: description !== undefined ? description : current.description,
+        active: active ?? current.active,
+        capabilities: capabilityKeys ?? current.capabilities,
+        updatedAt: new Date(nowIso())
+      };
+      bundles[index] = next;
+      return next;
+    },
+    assignCapabilityToBundle: async ({ bundleKey, capabilityKey }: { bundleKey: string; capabilityKey: string }) => {
+      const bundle = bundles.find((item) => item.key === bundleKey);
+      if (!bundle) throw new Error(`bundle_not_found:${bundleKey}`);
+      if (!capabilities.some((capability) => capability.key === capabilityKey)) throw new Error(`capability_not_found:${capabilityKey}`);
+      if (!bundle.capabilities.includes(capabilityKey)) bundle.capabilities.push(capabilityKey);
+      bundle.updatedAt = new Date(nowIso());
+      return { bundleKey, capabilityKey };
+    },
+    removeCapabilityFromBundle: async ({ bundleKey, capabilityKey }: { bundleKey: string; capabilityKey: string }) => {
+      const bundle = bundles.find((item) => item.key === bundleKey);
+      if (!bundle) throw new Error(`bundle_not_found:${bundleKey}`);
+      bundle.capabilities = bundle.capabilities.filter((item) => item !== capabilityKey);
+      bundle.updatedAt = new Date(nowIso());
+      return { bundleKey, capabilityKey };
+    },
+    getGovernanceDefaults: async () => ({
+      defaults: {
+        privateUser: { status: "APPROVED", tier: "FREE", source: "system_default" },
+        group: { status: "PENDING", tier: "FREE", source: "system_default" }
+      },
+      onboarding: {
+        privateAssistantEnabled: true,
+        serviceExplanationEnabled: true,
+        basicQuoteHelpEnabled: true
+      },
+      governance: {
+        separationRule: "private_and_group_defaults_are_independent"
+      }
+    }),
     getUserEffectiveCapabilityPolicy: async ({ waUserId }: { waUserId: string }) => {
       const user = ensureUser(waUserId);
       const assigned = Array.from(userBundleAssignments.get(waUserId) ?? new Set<string>());
@@ -511,6 +615,35 @@ test("admin auth guard protects /admin routes", async () => {
   await app.close();
 });
 
+test("first-seen defaults keep private and group governance policies separated", async () => {
+  const app = Fastify();
+  registerAdminApiRoutes(app as any, buildRuntime());
+
+  const userResponse = await app.inject({
+    method: "GET",
+    url: "/admin/v1/users/u-new-private",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(userResponse.statusCode, 200);
+  assert.equal(userResponse.json().item.status, "APPROVED");
+  assert.equal(userResponse.json().item.tier, "FREE");
+
+  const groupResponse = await app.inject({
+    method: "GET",
+    url: "/admin/v1/groups/g-new-group",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(groupResponse.statusCode, 200);
+  assert.equal(groupResponse.json().item.status, "PENDING");
+  assert.equal(groupResponse.json().item.tier, "FREE");
+
+  await app.close();
+});
+
 test("user approval and block flow writes audit trail entries", async () => {
   const app = Fastify();
   registerAdminApiRoutes(app as any, buildRuntime());
@@ -710,6 +843,72 @@ test("governance capability and bundle endpoints support assignment and override
   await app.close();
 });
 
+test("governance bundle catalog can be created/edited and settings expose defaults", async () => {
+  const app = Fastify();
+  registerAdminApiRoutes(app as any, buildRuntime());
+
+  const createBundle = await app.inject({
+    method: "POST",
+    url: "/admin/v1/governance/bundles",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      key: "onboarding_plus",
+      displayName: "Onboarding Plus",
+      description: "Onboarding access package",
+      capabilityKeys: ["command.ping"],
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(createBundle.statusCode, 200);
+  assert.equal(createBundle.json().schemaVersion, "admin.governance.bundle.v1");
+  assert.equal(createBundle.json().item.key, "onboarding_plus");
+
+  const addCapability = await app.inject({
+    method: "PUT",
+    url: "/admin/v1/governance/bundles/onboarding_plus/capabilities/command.hidetag",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(addCapability.statusCode, 200);
+  assert.equal(addCapability.json().schemaVersion, "admin.governance.bundle.capability.v1");
+
+  const patchBundle = await app.inject({
+    method: "PATCH",
+    url: "/admin/v1/governance/bundles/onboarding_plus",
+    headers: {
+      authorization: "Bearer test-token"
+    },
+    payload: {
+      displayName: "Onboarding Plus Updated",
+      capabilityKeys: ["command.ping", "command.hidetag"],
+      actor: "ops-admin"
+    }
+  });
+  assert.equal(patchBundle.statusCode, 200);
+  assert.equal(patchBundle.json().item.displayName, "Onboarding Plus Updated");
+  assert.equal(patchBundle.json().item.capabilities.includes("command.hidetag"), true);
+
+  const settings = await app.inject({
+    method: "GET",
+    url: "/admin/v1/governance/settings",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(settings.statusCode, 200);
+  assert.equal(settings.json().schemaVersion, "admin.governance.settings.v1");
+  assert.equal(settings.json().item.defaults.privateUser.status, "APPROVED");
+  assert.equal(settings.json().item.defaults.group.status, "PENDING");
+
+  await app.close();
+});
+
 test("admin governance mutations round-trip into runtime snapshot enforcement", async () => {
   const app = Fastify();
   registerAdminApiRoutes(app as any, buildRuntime());
@@ -815,7 +1014,7 @@ test("status endpoint returns dashboard-ready health summary", async () => {
   assert.equal(response.statusCode, 200);
   const payload = response.json();
   assert.equal(payload.schemaVersion, "admin.status.v2");
-  assert.equal(payload.version, "1.8.0");
+  assert.equal(payload.version, "1.9.0");
   assert.equal(typeof payload.services.gateway.online, "boolean");
   assert.equal(typeof payload.reminders.FAILED, "number");
   assert.equal(Array.isArray(payload.failures.recentFailedReminders), true);

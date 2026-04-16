@@ -1,5 +1,34 @@
 # Changelog
 
+## V1.9.0 - 2026-04-16
+- Changed first-seen private/direct user materialization default to onboarding-friendly governance:
+  - `status=APPROVED`
+  - `tier=FREE`
+- Kept group defaults independent from private defaults:
+  - first-seen groups remain `status=PENDING`, `tier=FREE`
+- Preserved block workflow for private users:
+  - manual `BLOCKED` actions continue to deny runtime access
+- Expanded governance repository model for richer control-plane management:
+  - create/edit capability bundles
+  - add/remove capabilities in bundles
+  - capability catalog now includes bundle membership in admin responses
+  - governance settings/defaults view model added (`private` vs `group` defaults + onboarding flags)
+- Added admin-api governance endpoints for bundle lifecycle and settings:
+  - `POST /admin/v1/governance/bundles`
+  - `PATCH /admin/v1/governance/bundles/:bundleKey`
+  - `PUT|DELETE /admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey`
+  - `GET /admin/v1/governance/settings`
+- Expanded admin-ui governance surface:
+  - new Bundles screen (create/edit and capability composition)
+  - new Capabilities screen (catalog with category/description/membership)
+  - new Governance Settings screen (defaults and planning structure)
+- Added/expanded tests for:
+  - private default materialization (`APPROVED + FREE`)
+  - group default independence (`PENDING + FREE`)
+  - admin-api bundle management + governance settings contracts
+  - admin-ui proxy/render flows for new governance controls
+- Bumped workspace/project versions to `1.9.0`.
+
 ## V1.8.0 - 2026-04-16
 - Evolved governance from narrow tier gating to a flexible capability policy model (tiers + bundles + overrides) with core-first decisioning.
 - Added formal capability policy domain in core:

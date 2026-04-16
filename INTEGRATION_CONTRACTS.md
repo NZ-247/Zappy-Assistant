@@ -209,7 +209,7 @@ Read-only governance evaluation snapshot for a requested subject/context.
 
 Notes
 
-Runtime-aware snapshot in v1.8.0:
+Runtime-aware snapshot in v1.9.0:
 
 decision is evaluated and returned for observability/debugging
 
@@ -249,7 +249,7 @@ Example response shape
 
 {
   "schemaVersion": "governance.snapshot.v1",
-  "governanceVersion": "v1.8.0",
+  "governanceVersion": "v1.9.0",
   "shadowMode": false,
   "input": {
     "tenant": { "id": "t1" },
@@ -318,7 +318,7 @@ Audit
 
 Default materialization policy
 
-- first-seen private users are materialized with `status=PENDING`, `tier=FREE`
+- first-seen private users are materialized with `status=APPROVED`, `tier=FREE`
 - first-seen groups are materialized with `status=PENDING`, `tier=FREE`
 - admin mutation endpoints append records to `ApprovalAudit`
 
@@ -351,7 +351,7 @@ Reminder retry policy
 - successful retry re-schedules the reminder and enqueues `send-reminder`
 - invalid-state retries return conflict (`409`)
 
-3.9 Governance Capability Policy Endpoints (v1.8.0)
+3.9 Governance Capability Policy Endpoints (v1.9.0)
 
 Purpose
 
@@ -363,6 +363,11 @@ Catalog
 
 - `GET /admin/v1/governance/capabilities`
 - `GET /admin/v1/governance/bundles`
+- `POST /admin/v1/governance/bundles`
+- `PATCH /admin/v1/governance/bundles/:bundleKey`
+- `PUT /admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey`
+- `DELETE /admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey`
+- `GET /admin/v1/governance/settings`
 
 Effective policy views
 
@@ -394,7 +399,14 @@ Effective policy response shape (summary)
   - `denySource` (`tier_default` | `missing_bundle` | `explicit_override_deny` | `blocked_status` | `quota_denied` | `policy_flag` | `unknown` | `null`)
   - `tierDefaultAllowed`, `bundleAllowed`, `matchedBundles`, `explicitAllowSource`, `explicitDenySources`
 
-4. UI page mapping (Admin UI MVP v1.7.0)
+Governance settings response shape (summary)
+
+- `defaults.privateUser` (`status`, `tier`, `source`)
+- `defaults.group` (`status`, `tier`, `source`)
+- `onboarding` flags for private onboarding-friendly governance behavior
+- explicit separation rule: private defaults and group defaults are independently governed
+
+4. UI page mapping (Admin UI v1.9.0)
 4.1 Dashboard page
 
 Uses:
@@ -463,7 +475,49 @@ tier badge
 
 actions: approve / block / change tier / assign-remove bundle / set-clear capability override
 
-4.4 Licenses/Plans page
+4.4 Bundles page
+
+Uses:
+
+- `GET /admin/v1/governance/bundles`
+- `POST /admin/v1/governance/bundles`
+- `PATCH /admin/v1/governance/bundles/:bundleKey`
+- `PUT|DELETE /admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey`
+
+Widgets:
+
+bundle catalog table
+
+bundle create form
+
+bundle edit form (name/description/active/capability composition)
+
+4.5 Capabilities page
+
+Uses:
+
+- `GET /admin/v1/governance/capabilities`
+- `GET /admin/v1/governance/bundles` (for membership projection when needed)
+
+Widgets:
+
+capability catalog table (`key`, `category`, `description`, `active`)
+
+bundle membership column per capability
+
+4.6 Governance Settings page
+
+Uses:
+
+- `GET /admin/v1/governance/settings`
+
+Widgets:
+
+defaults cards for new private users and new groups
+
+onboarding governance flags and explicit separation notes (private vs group policy)
+
+4.7 Licenses/Plans page
 
 Uses:
 
@@ -475,7 +529,7 @@ tier cards/table
 
 plan metadata (`displayName`, `description`, `active`, capability defaults)
 
-4.5 Audit page
+4.8 Audit page
 
 Uses:
 
@@ -489,7 +543,7 @@ before/after summary where available
 
 subject filters where practical
 
-4.6 Jobs/Reminders page
+4.9 Jobs/Reminders page
 
 Uses:
 

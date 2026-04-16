@@ -466,7 +466,7 @@ model UserAccess {
   waUserId    String
   phoneNumber String?
   displayName String?
-  status      AccessStatus @default(PENDING)
+  status      AccessStatus @default(APPROVED)
   tier        LicenseTier  @default(FREE)
   approvedBy  String?
   approvedAt  DateTime?

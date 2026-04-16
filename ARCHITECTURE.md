@@ -261,7 +261,9 @@ Phase 2 do plano Admin adiciona a primeira base persistida do control plane:
   - `UsageCounter`
   - `ApprovalAudit`
 - adapter de governança refinado para ler estado persistido de aprovação/tier:
-  - materialização segura no primeiro contato (`status=PENDING`, `tier=FREE`)
+  - materialização no primeiro contato separada por subject:
+    - private user: `status=APPROVED`, `tier=FREE` (onboarding-friendly default)
+    - group: `status=PENDING`, `tier=FREE` (governança de grupo independente)
   - decisão continua em shadow mode, sem enforcement global forçado nesta fase
 - endpoints v1 para aprovações/licenças/uso/auditoria, com payloads admin-friendly e versionados.
 
@@ -377,3 +379,32 @@ Decisões arquiteturais da fase:
 - bundles e allow-override de usuário deixam de governar por padrão no escopo de grupo (usuário vira subject secundário)
 - observabilidade de governança passa a expor capability solicitada + fonte primária de deny para troubleshooting rápido
 - logs de runtime passam a expor resolução de subject (`scope`, subject primário/secundário, source efetiva de acesso)
+
+## 16. Governance Defaults + Admin Expansion (v1.9.0)
+
+Fase focada em onboarding privado default-friendly e expansão do control plane para gestão mais completa de bundles/capabilities:
+
+- `packages/adapters/src/admin/repository.ts`
+  - default de materialização para private user alterado para `APPROVED + FREE`
+  - default de grupo mantido em `PENDING + FREE`
+  - novas operações administrativas para bundles:
+    - criar bundle
+    - editar bundle
+    - adicionar/remover capability de bundle
+  - catálogo de capabilities passa a expor membership de bundles
+  - endpoint/data de settings de governança expõe defaults separados (private x group) + flags de onboarding
+- `apps/admin-api/src/http/routes.ts`
+  - novos endpoints de governança:
+    - `POST /admin/v1/governance/bundles`
+    - `PATCH /admin/v1/governance/bundles/:bundleKey`
+    - `PUT|DELETE /admin/v1/governance/bundles/:bundleKey/capabilities/:capabilityKey`
+    - `GET /admin/v1/governance/settings`
+- `apps/admin-ui/public/*`
+  - novas views operacionais:
+    - Bundles (list/create/edit/composição de capabilities)
+    - Capabilities (catálogo + membership)
+    - Governance Settings (defaults e separação private/group)
+
+Decisão-chave da fase:
+
+- defaults de private onboarding e governança de grupo seguem trilhas independentes; mudar um não implica alteração automática do outro.

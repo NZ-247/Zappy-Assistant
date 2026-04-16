@@ -59,6 +59,7 @@ export interface CapabilityDefinitionView {
   displayName: string;
   description?: string | null;
   category?: string | null;
+  bundles: string[];
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -72,6 +73,29 @@ export interface CapabilityBundleView {
   capabilities: string[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface GovernanceDefaultsView {
+  defaults: {
+    privateUser: {
+      status: AccessStatusValue;
+      tier: LicenseTierValue;
+      source: "system_default";
+    };
+    group: {
+      status: AccessStatusValue;
+      tier: LicenseTierValue;
+      source: "system_default";
+    };
+  };
+  onboarding: {
+    privateAssistantEnabled: boolean;
+    serviceExplanationEnabled: boolean;
+    basicQuoteHelpEnabled: boolean;
+  };
+  governance: {
+    separationRule: "private_and_group_defaults_are_independent";
+  };
 }
 
 export interface SubjectCapabilityPolicyView {
@@ -103,6 +127,18 @@ export interface SubjectCapabilityPolicyView {
 
 const DEFAULT_TENANT_NAME = "Default Tenant";
 
+const GOVERNANCE_DEFAULT_MATERIALIZATION = {
+  privateUser: {
+    status: AccessStatus.APPROVED,
+    tier: LicenseTier.FREE,
+    approvedBy: "system:private-default"
+  },
+  group: {
+    status: AccessStatus.PENDING,
+    tier: LicenseTier.FREE
+  }
+} as const;
+
 const DEFAULT_LICENSE_PLANS: Array<{
   tier: LicenseTier;
   displayName: string;
@@ -112,7 +148,7 @@ const DEFAULT_LICENSE_PLANS: Array<{
   {
     tier: LicenseTier.FREE,
     displayName: "Free",
-    description: "Safe default while access approval is pending.",
+    description: "Onboarding-friendly default entitlement for private users.",
     capabilityDefaults: {
       governanceShadowOnly: true,
       supportLevel: "community"
@@ -162,6 +198,13 @@ const DEFAULT_CAPABILITY_BUNDLES = GOVERNANCE_BUNDLE_DEFINITIONS.map((bundle) =>
   active: bundle.active,
   capabilities: bundle.capabilities.map((capability) => normalizeGovernanceCapabilityKey(capability))
 }));
+
+const normalizeBundleKey = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 
 const asJsonValue = (value: unknown): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined => {
   if (value === undefined) return undefined;
@@ -235,6 +278,11 @@ const mapCapabilityDefinitionRow = (row: {
   displayName: string;
   description: string | null;
   category: string | null;
+  bundleLinks?: Array<{
+    bundle: {
+      key: string;
+    };
+  }>;
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -243,6 +291,7 @@ const mapCapabilityDefinitionRow = (row: {
   displayName: row.displayName,
   description: row.description,
   category: row.category,
+  bundles: (row.bundleLinks ?? []).map((item) => item.bundle.key).sort((a, b) => a.localeCompare(b)),
   active: row.active,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt
@@ -431,8 +480,10 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
         waUserId: input.waUserId,
         phoneNumber: user.phoneNumber ?? input.phoneNumber ?? null,
         displayName: user.displayName ?? input.displayName ?? null,
-        status: AccessStatus.PENDING,
-        tier: LicenseTier.FREE
+        status: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.status,
+        tier: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.tier,
+        approvedBy: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.approvedBy,
+        approvedAt: now()
       }
     });
 
@@ -468,8 +519,8 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
         tenantId,
         waGroupId: input.waGroupId,
         groupName: group.name,
-        status: AccessStatus.PENDING,
-        tier: LicenseTier.FREE
+        status: GOVERNANCE_DEFAULT_MATERIALIZATION.group.status,
+        tier: GOVERNANCE_DEFAULT_MATERIALIZATION.group.tier
       }
     });
 
@@ -588,12 +639,45 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
   const listCapabilityDefinitions = async (): Promise<CapabilityDefinitionView[]> => {
     await ensureCapabilityPolicyCatalog();
     const rows = await deps.prisma.capabilityDefinition.findMany({
+      include: {
+        bundleLinks: {
+          include: {
+            bundle: {
+              select: { key: true }
+            }
+          }
+        }
+      },
       orderBy: {
         key: "asc"
       }
     });
     return rows.map(mapCapabilityDefinitionRow);
   };
+
+  const mapCapabilityBundleRow = (row: {
+    key: string;
+    displayName: string;
+    description: string | null;
+    active: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+    capabilityLinks: Array<{
+      capability: {
+        key: string;
+      };
+    }>;
+  }): CapabilityBundleView => ({
+    key: row.key,
+    displayName: row.displayName,
+    description: row.description,
+    active: row.active,
+    capabilities: row.capabilityLinks
+      .map((link) => link.capability.key)
+      .sort((a, b) => a.localeCompare(b)),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt
+  });
 
   const listCapabilityBundles = async (): Promise<CapabilityBundleView[]> => {
     await ensureCapabilityPolicyCatalog();
@@ -610,17 +694,7 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
       }
     });
 
-    return rows.map((row) => ({
-      key: row.key,
-      displayName: row.displayName,
-      description: row.description,
-      active: row.active,
-      capabilities: row.capabilityLinks
-        .map((link) => link.capability.key)
-        .sort((a, b) => a.localeCompare(b)),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt
-    }));
+    return rows.map(mapCapabilityBundleRow);
   };
 
   const resolveCapabilityPolicySnapshot = async (input: {
@@ -928,14 +1002,40 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     return mapGroupAccessRow(next);
   };
 
+  const toBundleView = async (bundleKey: string): Promise<CapabilityBundleView> => {
+    const normalizedBundleKey = normalizeBundleKey(bundleKey);
+    const row = await deps.prisma.capabilityBundle.findUnique({
+      where: { key: normalizedBundleKey },
+      include: {
+        capabilityLinks: {
+          include: {
+            capability: {
+              select: { key: true }
+            }
+          }
+        }
+      }
+    });
+    if (!row) throw new Error(`bundle_not_found:${bundleKey}`);
+    return mapCapabilityBundleRow(row);
+  };
+
+  const resolveBundleKey = (bundleKey: string): string => {
+    const normalized = normalizeBundleKey(bundleKey);
+    if (!normalized) throw new Error(`invalid_bundle_key:${bundleKey}`);
+    return normalized;
+  };
+
   const resolveBundle = async (bundleKey: string) => {
     await ensureCapabilityPolicyCatalog();
+    const normalized = resolveBundleKey(bundleKey);
     const bundle = await deps.prisma.capabilityBundle.findUnique({
-      where: { key: bundleKey },
+      where: { key: normalized },
       select: {
         id: true,
         key: true,
         displayName: true,
+        description: true,
         active: true
       }
     });
@@ -943,16 +1043,231 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     return bundle;
   };
 
-  const resolveCapabilityDefinition = async (capabilityKey: string) => {
+  const resolveCapabilityDefinitionRow = async (capabilityKey: string) => {
     await ensureCapabilityPolicyCatalog();
     const normalized = normalizeGovernanceCapabilityKey(capabilityKey);
     const definition = await deps.prisma.capabilityDefinition.findUnique({
       where: { key: normalized },
       select: {
+        id: true,
         key: true
       }
     });
     if (!definition) throw new Error(`capability_not_found:${capabilityKey}`);
+    return definition;
+  };
+
+  const resolveCapabilityDefinitions = async (capabilityKeys: string[]): Promise<Array<{ id: string; key: string }>> => {
+    await ensureCapabilityPolicyCatalog();
+    const normalizedKeys = [...new Set(capabilityKeys.map((key) => normalizeGovernanceCapabilityKey(key)).filter(Boolean))];
+    if (!normalizedKeys.length) return [];
+
+    const rows = await deps.prisma.capabilityDefinition.findMany({
+      where: {
+        key: {
+          in: normalizedKeys
+        }
+      },
+      select: {
+        id: true,
+        key: true
+      }
+    });
+
+    const found = new Set(rows.map((item) => item.key));
+    const missing = normalizedKeys.find((key) => !found.has(key));
+    if (missing) throw new Error(`capability_not_found:${missing}`);
+
+    return rows.sort((a, b) => a.key.localeCompare(b.key));
+  };
+
+  const replaceBundleCapabilities = async (input: { bundleId: string; capabilityKeys: string[] }) => {
+    const definitions = await resolveCapabilityDefinitions(input.capabilityKeys);
+    await deps.prisma.capabilityBundleCapability.deleteMany({
+      where: {
+        bundleId: input.bundleId
+      }
+    });
+
+    if (!definitions.length) return;
+    await deps.prisma.capabilityBundleCapability.createMany({
+      data: definitions.map((definition) => ({
+        bundleId: input.bundleId,
+        capabilityId: definition.id
+      })),
+      skipDuplicates: true
+    });
+  };
+
+  const createCapabilityBundle = async (input: {
+    key: string;
+    displayName: string;
+    description?: string | null;
+    active?: boolean;
+    capabilityKeys?: string[];
+    actor: string;
+  }): Promise<CapabilityBundleView> => {
+    await ensureCapabilityPolicyCatalog();
+    const key = resolveBundleKey(input.key);
+    const existing = await deps.prisma.capabilityBundle.findUnique({
+      where: { key },
+      select: { id: true }
+    });
+    if (existing) throw new Error(`bundle_exists:${key}`);
+
+    const created = await deps.prisma.capabilityBundle.create({
+      data: {
+        key,
+        displayName: input.displayName,
+        description: input.description ?? null,
+        active: input.active ?? true
+      },
+      select: {
+        id: true,
+        key: true
+      }
+    });
+
+    if (input.capabilityKeys) {
+      await replaceBundleCapabilities({
+        bundleId: created.id,
+        capabilityKeys: input.capabilityKeys
+      });
+    }
+
+    await maybeWriteLegacyAudit({
+      actor: input.actor,
+      action: AuditAction.CREATE,
+      entity: "CapabilityBundle",
+      entityId: created.key,
+      metadata: {
+        key: created.key,
+        capabilities: input.capabilityKeys ?? []
+      }
+    });
+
+    return toBundleView(created.key);
+  };
+
+  const updateCapabilityBundle = async (input: {
+    bundleKey: string;
+    displayName?: string;
+    description?: string | null;
+    active?: boolean;
+    capabilityKeys?: string[];
+    actor: string;
+  }): Promise<CapabilityBundleView> => {
+    const bundle = await resolveBundle(input.bundleKey);
+    const data: Prisma.CapabilityBundleUpdateInput = {};
+    if (input.displayName !== undefined) data.displayName = input.displayName;
+    if (input.description !== undefined) data.description = input.description;
+    if (input.active !== undefined) data.active = input.active;
+
+    if (Object.keys(data).length) {
+      await deps.prisma.capabilityBundle.update({
+        where: { id: bundle.id },
+        data
+      });
+    }
+
+    if (input.capabilityKeys) {
+      await replaceBundleCapabilities({
+        bundleId: bundle.id,
+        capabilityKeys: input.capabilityKeys
+      });
+    }
+
+    await maybeWriteLegacyAudit({
+      actor: input.actor,
+      action: AuditAction.UPDATE,
+      entity: "CapabilityBundle",
+      entityId: bundle.key,
+      metadata: {
+        key: bundle.key,
+        displayName: input.displayName,
+        description: input.description,
+        active: input.active,
+        capabilities: input.capabilityKeys
+      }
+    });
+
+    return toBundleView(bundle.key);
+  };
+
+  const assignCapabilityToBundle = async (input: {
+    bundleKey: string;
+    capabilityKey: string;
+    actor: string;
+  }) => {
+    const bundle = await resolveBundle(input.bundleKey);
+    const capability = await resolveCapabilityDefinitionRow(input.capabilityKey);
+
+    const row = await deps.prisma.capabilityBundleCapability.upsert({
+      where: {
+        bundleId_capabilityId: {
+          bundleId: bundle.id,
+          capabilityId: capability.id
+        }
+      },
+      create: {
+        bundleId: bundle.id,
+        capabilityId: capability.id
+      },
+      update: {}
+    });
+
+    await maybeWriteLegacyAudit({
+      actor: input.actor,
+      action: AuditAction.UPDATE,
+      entity: "CapabilityBundle",
+      entityId: bundle.key,
+      metadata: {
+        action: "ASSIGN_CAPABILITY",
+        capabilityKey: capability.key
+      }
+    });
+
+    return {
+      bundleKey: bundle.key,
+      capabilityKey: capability.key,
+      linkedAt: row.createdAt
+    };
+  };
+
+  const removeCapabilityFromBundle = async (input: {
+    bundleKey: string;
+    capabilityKey: string;
+    actor: string;
+  }) => {
+    const bundle = await resolveBundle(input.bundleKey);
+    const capability = await resolveCapabilityDefinitionRow(input.capabilityKey);
+
+    await deps.prisma.capabilityBundleCapability.deleteMany({
+      where: {
+        bundleId: bundle.id,
+        capabilityId: capability.id
+      }
+    });
+
+    await maybeWriteLegacyAudit({
+      actor: input.actor,
+      action: AuditAction.UPDATE,
+      entity: "CapabilityBundle",
+      entityId: bundle.key,
+      metadata: {
+        action: "REMOVE_CAPABILITY",
+        capabilityKey: capability.key
+      }
+    });
+
+    return {
+      bundleKey: bundle.key,
+      capabilityKey: capability.key
+    };
+  };
+
+  const resolveCapabilityDefinition = async (capabilityKey: string) => {
+    const definition = await resolveCapabilityDefinitionRow(capabilityKey);
     return definition.key;
   };
 
@@ -1483,6 +1798,29 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     });
   };
 
+  const getGovernanceDefaults = async (): Promise<GovernanceDefaultsView> => ({
+    defaults: {
+      privateUser: {
+        status: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.status,
+        tier: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.tier,
+        source: "system_default"
+      },
+      group: {
+        status: GOVERNANCE_DEFAULT_MATERIALIZATION.group.status,
+        tier: GOVERNANCE_DEFAULT_MATERIALIZATION.group.tier,
+        source: "system_default"
+      }
+    },
+    onboarding: {
+      privateAssistantEnabled: true,
+      serviceExplanationEnabled: true,
+      basicQuoteHelpEnabled: true
+    },
+    governance: {
+      separationRule: "private_and_group_defaults_are_independent"
+    }
+  });
+
   const listUsageCounters = async (input: {
     subjectType: AccessSubjectType;
     subjectId: string;
@@ -1574,10 +1912,15 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     getGroup,
     updateGroupAccessStatus,
     listLicensePlans,
+    getGovernanceDefaults,
     updateUserLicense,
     updateGroupLicense,
     listCapabilityDefinitions,
     listCapabilityBundles,
+    createCapabilityBundle,
+    updateCapabilityBundle,
+    assignCapabilityToBundle,
+    removeCapabilityFromBundle,
     getUserEffectiveCapabilityPolicy,
     getGroupEffectiveCapabilityPolicy,
     assignUserBundle,
