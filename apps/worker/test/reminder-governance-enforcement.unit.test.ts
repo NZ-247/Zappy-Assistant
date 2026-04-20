@@ -90,7 +90,7 @@ test("worker re-check denies reminder execution when policy changed after schedu
         gatewayClient: {
           sendText: async () => {
             gatewayCalls += 1;
-            return { waMessageId: "wa-1" };
+            return { dispatchAccepted: true, sendStatus: "sent", waMessageId: "wa-1" };
           }
         },
         logger: {

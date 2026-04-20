@@ -42,7 +42,13 @@ import {
   governancePort
 } from "@zappy/adapters";
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
-import { createLogger, loadEnv, printStartupBanner, withCategory, type InternalGatewaySendTextRequest } from "@zappy/shared";
+import {
+  createLogger,
+  loadEnv,
+  printStartupBanner,
+  withCategory,
+  type InternalGatewaySendTextRequest
+} from "@zappy/shared";
 import { buildBotAliases, jidMatchesBot, normalizeJid, normalizeLidJid, stripUser } from "./bot-alias.js";
 import { startInternalDispatchApi } from "./infrastructure/internal-dispatch-api.js";
 import { createCommandGuards } from "./infrastructure/command-guards.js";
@@ -51,6 +57,7 @@ import { createBotSelfLidService } from "./infrastructure/bot-self-lid.js";
 import { createBotAdminStatusService, GROUP_ADMIN_OPERATION_CACHE_TTL_MS } from "./infrastructure/bot-admin-status.js";
 import { createBaileysRuntimeLogger } from "./infrastructure/baileys-runtime-logger.js";
 import { executeOutboundActions } from "./infrastructure/outbound-actions.js";
+import { resolveOutboundTarget } from "./infrastructure/outbound/target-normalization.js";
 import { createGroupParticipantsUpdateHandler } from "./inbound/group-participants-handler.js";
 import { createMessagesUpsertHandler } from "./inbound/messages-upsert-handler.js";
 import { createGovernanceRuntimeEvaluator } from "./inbound/governance-shadow.js";
@@ -294,25 +301,47 @@ type OutboundSendInput = {
 
 const sendWithReplyFallback = async ({ to, content, quotedMessage, logContext }: OutboundSendInput) => {
   if (!socket) throw new Error("Socket not ready");
+  const target = resolveOutboundTarget(to);
+  if (target.normalizationApplied) {
+    logger.debug(
+      withCategory("WA-OUT", {
+        ...logContext,
+        status: "outbound_target_normalized",
+        requestedTo: to,
+        normalizedTo: target.normalizedTo
+      }),
+      "normalized outbound target before WA send"
+    );
+  }
+
   if (quotedMessage) {
     try {
-      return await socket.sendMessage(to, content, { quoted: quotedMessage });
+      return await socket.sendMessage(target.normalizedTo, content, { quoted: quotedMessage });
     } catch (error) {
       logger.debug(
-        withCategory("WA-OUT", { ...logContext, error, replyTo: quotedMessage?.key?.id, note: "quoted_send_failed" }),
+        withCategory("WA-OUT", {
+          ...logContext,
+          error,
+          replyTo: quotedMessage?.key?.id,
+          requestedTo: to,
+          normalizedTo: target.normalizedTo,
+          note: "quoted_send_failed"
+        }),
         "quoted send failed; falling back without reply context"
       );
     }
   } else {
     logger.debug(withCategory("WA-OUT", { ...logContext, note: "quoted_message_missing" }), "no quoted message available; sending without reply context");
   }
-  return socket.sendMessage(to, content);
+  return socket.sendMessage(target.normalizedTo, content);
 };
 
 const dispatchInternalText = async (input: InternalGatewaySendTextRequest): Promise<{ waMessageId: string; raw?: unknown }> => {
-  const scope = input.waGroupId || input.to.endsWith("@g.us") ? "group" : "direct";
+  const target = resolveOutboundTarget(input.to);
+  const scope = input.waGroupId || target.scope === "group" ? "group" : "direct";
+  const outboundWaUserId = scope === "direct" ? target.normalizedTo : input.waUserId ?? input.to;
   const sent = await sendWithReplyFallback({
-    to: input.to,
+    to: target.normalizedTo,
     content: { text: input.text },
     quotedMessage: undefined,
     logContext: {
@@ -320,7 +349,7 @@ const dispatchInternalText = async (input: InternalGatewaySendTextRequest): Prom
       scope,
       action: input.action,
       referenceId: input.referenceId,
-      waUserId: input.waUserId ?? input.to,
+      waUserId: outboundWaUserId,
       waGroupId: input.waGroupId
     }
   });
@@ -332,8 +361,10 @@ const dispatchInternalText = async (input: InternalGatewaySendTextRequest): Prom
       scope,
       action: input.action,
       referenceId: input.referenceId,
-      waUserId: input.waUserId ?? input.to,
+      waUserId: outboundWaUserId,
       waGroupId: input.waGroupId,
+      requestedTargetId: input.to,
+      normalizedTargetId: target.normalizedTo,
       waMessageId,
       textPreview: input.text.slice(0, 80),
       source: "worker_internal"

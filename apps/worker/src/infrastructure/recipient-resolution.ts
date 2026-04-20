@@ -1,3 +1,5 @@
+import { hasExplicitJidDomain, normalizeWhatsAppDirectTarget, normalizeWhatsAppGroupTarget } from "@zappy/shared";
+
 export type AsyncJobRecipientSource = "waGroupId" | "pnJid" | "lidJid" | "waUserId" | "phoneNumber" | "none";
 
 export interface ResolveAsyncJobRecipientInput {
@@ -21,14 +23,8 @@ const normalizeString = (value?: string | null): string | null => {
   return trimmed.length ? trimmed : null;
 };
 
-const normalizePhoneToJid = (phoneNumber?: string | null): string | null => {
-  const digits = normalizeString(phoneNumber)?.replace(/\D/g, "");
-  if (!digits) return null;
-  return `${digits}@s.whatsapp.net`;
-};
-
 export const resolveAsyncJobRecipient = (input: ResolveAsyncJobRecipientInput): AsyncJobRecipientResolution => {
-  const waGroupId = normalizeString(input.waGroupId);
+  const waGroupId = normalizeWhatsAppGroupTarget(input.waGroupId) ?? normalizeString(input.waGroupId);
   if (waGroupId) {
     return {
       scope: "group",
@@ -39,11 +35,14 @@ export const resolveAsyncJobRecipient = (input: ResolveAsyncJobRecipientInput): 
   }
 
   const originalRecipient = normalizeString(input.waUserId) ?? normalizeString(input.phoneNumber) ?? null;
+  const normalizedWaUserId = normalizeString(input.waUserId);
+  const waUserIdHasDomain = hasExplicitJidDomain(normalizedWaUserId);
   const candidates: Array<{ source: AsyncJobRecipientSource; value: string | null }> = [
-    { source: "pnJid", value: normalizeString(input.pnJid) },
-    { source: "lidJid", value: normalizeString(input.lidJid) },
-    { source: "waUserId", value: normalizeString(input.waUserId) },
-    { source: "phoneNumber", value: normalizePhoneToJid(input.phoneNumber) }
+    { source: "waUserId", value: waUserIdHasDomain ? normalizeWhatsAppDirectTarget(normalizedWaUserId) : null },
+    { source: "lidJid", value: normalizeWhatsAppDirectTarget(input.lidJid) },
+    { source: "pnJid", value: normalizeWhatsAppDirectTarget(input.pnJid) },
+    { source: "waUserId", value: !waUserIdHasDomain ? normalizeWhatsAppDirectTarget(normalizedWaUserId) : null },
+    { source: "phoneNumber", value: normalizeWhatsAppDirectTarget(input.phoneNumber) }
   ];
 
   const matched = candidates.find((entry) => entry.value);

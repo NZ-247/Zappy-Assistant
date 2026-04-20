@@ -12,7 +12,12 @@ type LoggerLike = {
 };
 
 export interface WaGatewayDispatchClient {
-  sendText: (input: InternalGatewaySendTextRequest) => Promise<{ waMessageId: string; raw?: unknown }>;
+  sendText: (input: InternalGatewaySendTextRequest) => Promise<{
+    dispatchAccepted: true;
+    sendStatus: "sent";
+    waMessageId: string;
+    raw?: unknown;
+  }>;
 }
 
 export interface WaGatewayDispatchClientInput {
@@ -77,12 +82,41 @@ export const createWaGatewayDispatchClient = (input: WaGatewayDispatchClientInpu
           tenantId: requestPayload.tenantId,
           action: requestPayload.action,
           referenceId: requestPayload.referenceId,
+          dispatchAccepted: parsed.data.dispatchAccepted,
+          sendStatus: parsed.data.sendStatus,
+          waMessageId: parsed.data.waMessageId,
+          errorCode: parsed.data.errorCode
+        }),
+        "gateway dispatch accepted"
+      );
+
+      if (parsed.data.sendStatus !== "sent" || !parsed.data.waMessageId) {
+        throw new Error(
+          `gateway_send_failed:${parsed.data.errorCode ?? parsed.data.errorMessage ?? "unknown_send_failure"}`
+        );
+      }
+
+      input.logger.debug?.(
+        withCategory("HTTP", {
+          route: INTERNAL_GATEWAY_SEND_TEXT_PATH,
+          method: "POST",
+          status: response.status,
+          tenantId: requestPayload.tenantId,
+          action: requestPayload.action,
+          referenceId: requestPayload.referenceId,
+          dispatchAccepted: parsed.data.dispatchAccepted,
+          sendStatus: parsed.data.sendStatus,
           waMessageId: parsed.data.waMessageId
         }),
         "gateway dispatch request succeeded"
       );
 
-      return { waMessageId: parsed.data.waMessageId, raw: parsed.data.raw };
+      return {
+        dispatchAccepted: parsed.data.dispatchAccepted,
+        sendStatus: parsed.data.sendStatus,
+        waMessageId: parsed.data.waMessageId,
+        raw: parsed.data.raw
+      };
     }
   };
 };

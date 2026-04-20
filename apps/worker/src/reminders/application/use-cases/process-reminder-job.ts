@@ -21,6 +21,7 @@ type ReminderProcessingStage =
   | "resolve_recipient"
   | "governance_check"
   | "dispatch_gateway"
+  | "confirm_gateway_send"
   | "mark_sent_status"
   | "persist_outbound"
   | "metrics_audit";
@@ -65,7 +66,9 @@ const failureCategoryByStage = (stage: ReminderProcessingStage): string => {
     case "governance_check":
       return "governance_execution_denied";
     case "dispatch_gateway":
-      return "gateway_dispatch_failed";
+      return "gateway_dispatch_request_failed";
+    case "confirm_gateway_send":
+      return "gateway_send_confirmation_failed";
     case "mark_sent_status":
       return "status_persistence_failed";
     case "persist_outbound":
@@ -88,6 +91,7 @@ export const buildReminderFailureLogPayload = (input: {
   originalRecipient?: string | null;
   resolvedRecipient?: string | null;
   recipientSource?: string | null;
+  persistedTarget?: string | null;
 }) => {
   const summarized = summarizeReminderJobError(input.error);
   return withCategory("ERROR", {
@@ -101,6 +105,7 @@ export const buildReminderFailureLogPayload = (input: {
     failureCategory: failureCategoryByStage(input.stage),
     operatorMessage: summarized.operatorMessage,
     errorName: summarized.errorName,
+    persistedTarget: input.persistedTarget ?? undefined,
     originalRecipient: input.originalRecipient ?? undefined,
     resolvedRecipient: input.resolvedRecipient ?? undefined,
     recipientSource: input.recipientSource ?? undefined
@@ -158,6 +163,7 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
   const referenceId = reminder.publicId ?? reminder.id;
   const text = `⏰ Lembrete: ${reminder.message}`;
   const tenantId = reminder.tenantId ?? "";
+  const persistedTarget = reminder.waGroupId ?? reminder.waUserId ?? null;
   const logContext = {
     reminderId: reminder.id,
     reminderPublicId: reminder.publicId ?? reminder.id,
@@ -165,6 +171,7 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
     tenantId,
     action: "send_reminder",
     referenceId,
+    persistedTarget,
     originalRecipient: recipient.originalRecipient,
     resolvedRecipient: recipient.resolvedRecipient,
     recipientSource: recipient.recipientSource
@@ -231,7 +238,15 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
     }
 
     stage = "dispatch_gateway";
-    deps.logger.info(withCategory("WA-OUT", { ...logContext, waMessageId: null, stage }), "dispatching reminder");
+    deps.logger.info(
+      withCategory("WA-OUT", {
+        ...logContext,
+        stage,
+        status: "dispatch_requested",
+        waMessageId: null
+      }),
+      "dispatching reminder to wa-gateway"
+    );
 
     // Worker does not speak to Baileys directly; it dispatches via the internal gateway API.
     const sent = await deps.gatewayClient.sendText({
@@ -243,13 +258,41 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
       waUserId: reminder.waUserId ?? undefined,
       waGroupId: reminder.waGroupId ?? undefined
     });
+    const sendStatus = (sent as { sendStatus?: string }).sendStatus;
+    if (sendStatus !== "sent" || !sent.waMessageId) {
+      throw new Error(`gateway_send_unconfirmed:${sendStatus ?? "unknown"}`);
+    }
+    stage = "confirm_gateway_send";
+    deps.logger.info(
+      withCategory("WA-OUT", {
+        ...logContext,
+        stage,
+        status: "dispatch_accepted_send_confirmed",
+        dispatchAccepted: sent.dispatchAccepted,
+        sendStatus: sent.sendStatus,
+        waMessageId: sent.waMessageId
+      }),
+      "wa-gateway accepted reminder dispatch and confirmed WA send"
+    );
 
     stage = "mark_sent_status";
     await persistence.updateReminderStatus(reminder.id, ReminderStatus.SENT);
     await persistence.markReminderMessage({ reminderId: reminder.id, messageId: sent.waMessageId });
+    deps.logger.info(
+      withCategory("WA-OUT", {
+        ...logContext,
+        stage,
+        status: "reminder_status_sent_recorded",
+        waMessageId: sent.waMessageId
+      }),
+      "reminder status recorded as sent"
+    );
 
     stage = "persist_outbound";
-    const outboundWaUserId = reminder.waUserId ?? recipient.resolvedRecipient;
+    const outboundWaUserId = reminder.waGroupId
+      ? reminder.waUserId ?? recipient.originalRecipient ?? recipient.resolvedRecipient
+      : recipient.resolvedRecipient;
+    if (!outboundWaUserId) throw new Error("reminder_outbound_user_id_missing");
     await persistence.persistOutboundMessage({
       tenantId,
       userId: reminder.userId ?? undefined,
@@ -272,6 +315,15 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
       status: "sent",
       message: reminder.message
     });
+    deps.logger.info(
+      withCategory("WA-OUT", {
+        ...logContext,
+        stage,
+        status: "reminder_final_status_sent",
+        waMessageId: sent.waMessageId
+      }),
+      "reminder final status recorded"
+    );
 
     deps.logger.info(withCategory("WA-OUT", { ...logContext, stage: "completed", waMessageId: sent.waMessageId }), "reminder delivered");
   } catch (error) {
@@ -280,13 +332,24 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
         withCategory("WARN", {
           ...logContext,
           stage: "mark_failed_status",
+          status: "reminder_status_failed_record_error",
           ...summarizeReminderJobError(statusError)
         }),
         "failed to persist reminder failed status"
       );
     });
+    deps.logger.info(
+      withCategory("WA-OUT", {
+        ...logContext,
+        stage: "mark_failed_status",
+        status: "reminder_status_failed_recorded"
+      }),
+      "reminder final status recorded as failed"
+    );
 
-    const auditWaUserId = reminder.waUserId ?? recipient.resolvedRecipient ?? reminder.waGroupId ?? "unknown";
+    const auditWaUserId = reminder.waGroupId
+      ? reminder.waUserId ?? recipient.resolvedRecipient ?? reminder.waGroupId ?? "unknown"
+      : recipient.resolvedRecipient ?? reminder.waUserId ?? "unknown";
     await deps.auditTrail.record({
       kind: "reminder",
       tenantId,
@@ -306,6 +369,7 @@ export const processReminderJob = async (reminderId: string, deps: ReminderJobDe
         stage,
         jobId: deps.jobId,
         error,
+        persistedTarget,
         originalRecipient: recipient.originalRecipient,
         resolvedRecipient: recipient.resolvedRecipient,
         recipientSource: recipient.recipientSource

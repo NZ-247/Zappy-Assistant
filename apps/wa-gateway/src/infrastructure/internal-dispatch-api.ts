@@ -19,6 +19,23 @@ export interface InternalDispatchApiDeps {
   dispatchText: (input: InternalGatewaySendTextRequest) => Promise<{ waMessageId: string; raw?: unknown }>;
 }
 
+const summarizeError = (error: unknown): { errorName: string; operatorMessage: string } => {
+  if (error instanceof Error) {
+    const message = error.message.replace(/\s+/g, " ").trim();
+    return {
+      errorName: error.name || "Error",
+      operatorMessage: message.length > 180 ? `${message.slice(0, 177)}...` : message
+    };
+  }
+  const raw = String(error ?? "unknown_error")
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    errorName: "UnknownError",
+    operatorMessage: raw.length > 180 ? `${raw.slice(0, 177)}...` : raw
+  };
+};
+
 const parseBearerToken = (authorizationHeader?: string | string[]): string | null => {
   if (!authorizationHeader) return null;
   const value = Array.isArray(authorizationHeader) ? authorizationHeader[0] : authorizationHeader;
@@ -90,35 +107,82 @@ export const startInternalDispatchApi = (deps: InternalDispatchApiDeps) => {
       return;
     }
 
+    deps.logger.info(
+      withCategory("HTTP", {
+        method,
+        route: path,
+        status: 200,
+        tenantId: parsed.data.tenantId,
+        action: parsed.data.action,
+        referenceId: parsed.data.referenceId,
+        to: parsed.data.to,
+        dispatchAccepted: true
+      }),
+      "internal dispatch accepted"
+    );
+
+    deps.logger.info(
+      withCategory("WA-OUT", {
+        action: parsed.data.action,
+        tenantId: parsed.data.tenantId,
+        referenceId: parsed.data.referenceId,
+        waUserId: parsed.data.waUserId ?? parsed.data.to,
+        waGroupId: parsed.data.waGroupId,
+        to: parsed.data.to,
+        status: "wa_send_attempted",
+        source: "worker_internal"
+      }),
+      "internal dispatch attempting wa send"
+    );
+
     try {
       const sent = await deps.dispatchText(parsed.data);
       deps.logger.info(
-        withCategory("HTTP", {
+        withCategory("WA-OUT", {
+          action: parsed.data.action,
+          tenantId: parsed.data.tenantId,
+          referenceId: parsed.data.referenceId,
+          waUserId: parsed.data.waUserId ?? parsed.data.to,
+          waGroupId: parsed.data.waGroupId,
+          to: parsed.data.to,
+          waMessageId: sent.waMessageId,
+          status: "wa_send_succeeded",
+          source: "worker_internal"
+        }),
+        "internal dispatch wa send succeeded"
+      );
+      writeJson(reply, 200, {
+        ok: true,
+        dispatchAccepted: true,
+        sendStatus: "sent",
+        waMessageId: sent.waMessageId,
+        raw: sent.raw
+      });
+    } catch (error) {
+      const summarized = summarizeError(error);
+      deps.logger.error(
+        withCategory("ERROR", {
           method,
           route: path,
           status: 200,
           tenantId: parsed.data.tenantId,
           action: parsed.data.action,
           referenceId: parsed.data.referenceId,
-          waMessageId: sent.waMessageId
+          to: parsed.data.to,
+          dispatchAccepted: true,
+          sendStatus: "failed",
+          errorName: summarized.errorName,
+          operatorMessage: summarized.operatorMessage
         }),
-        "internal dispatch sent"
+        "internal dispatch wa send failed"
       );
-      writeJson(reply, 200, { ok: true, waMessageId: sent.waMessageId, raw: sent.raw });
-    } catch (error) {
-      deps.logger.error(
-        withCategory("ERROR", {
-          method,
-          route: path,
-          status: 500,
-          tenantId: parsed.data.tenantId,
-          action: parsed.data.action,
-          referenceId: parsed.data.referenceId,
-          error
-        }),
-        "internal dispatch failed"
-      );
-      writeJson(reply, 500, { ok: false, error: "Dispatch failed", code: "DISPATCH_FAILED" });
+      writeJson(reply, 200, {
+        ok: true,
+        dispatchAccepted: true,
+        sendStatus: "failed",
+        errorCode: "WA_SEND_FAILED",
+        errorMessage: summarized.operatorMessage
+      });
     }
   });
 

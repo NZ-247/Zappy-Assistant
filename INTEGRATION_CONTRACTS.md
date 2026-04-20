@@ -715,25 +715,31 @@ Request shape
 - `send_reminder`
 - `fire_timer`
 
-Success response
+Accepted response (HTTP 200)
 
 ```json
 {
   "ok": true,
+  "dispatchAccepted": true,
+  "sendStatus": "sent",
   "waMessageId": "BAE5A9F4D0B...",
   "raw": {}
 }
 ```
 
-Failure response (minimal)
+Accepted but send failed response (HTTP 200)
 
 ```json
 {
-  "ok": false,
-  "error": "Dispatch failed",
-  "code": "DISPATCH_FAILED"
+  "ok": true,
+  "dispatchAccepted": true,
+  "sendStatus": "failed",
+  "errorCode": "WA_SEND_FAILED",
+  "errorMessage": "jid_invalid"
 }
 ```
+
+Validation/auth failures still return non-200 (`400`/`401`) with `ok=false`.
 
 Relevant env vars
 

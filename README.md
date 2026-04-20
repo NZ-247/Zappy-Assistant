@@ -31,6 +31,7 @@ npm run prisma:generate
 - External bridge knobs (internal auxiliary services): `YT_RESOLVER_ENABLED`, `YT_RESOLVER_BASE_URL`, `YT_RESOLVER_TOKEN`, `YT_RESOLVER_TIMEOUT_MS`, `YT_RESOLVER_MAX_BYTES`, `FB_RESOLVER_ENABLED`, `FB_RESOLVER_BASE_URL`, `FB_RESOLVER_TOKEN`, `FB_RESOLVER_TIMEOUT_MS`, `FB_RESOLVER_MAX_BYTES`.
 - Optional official metadata/auth hints (probe enrichment only): `YOUTUBE_API_KEY`, `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_GRAPH_API_VERSION`.
 - Internal worker -> gateway delivery uses `WA_GATEWAY_INTERNAL_BASE_URL`, `WA_GATEWAY_INTERNAL_PORT`, and `WA_GATEWAY_INTERNAL_TOKEN`.
+- Internal worker -> gateway dispatch responses use `sendStatus` to confirm WA send outcome; HTTP `200` alone means the dispatch request was accepted.
 - Consent config: `CONSENT_TERMS_VERSION`, `CONSENT_LINK`, `CONSENT_SOURCE` drive the onboarding/legal prompt for common users.
 - Governance runtime controls:
   - `GOVERNANCE_ENFORCEMENT_ENABLED` (default `true`) applies runtime allow/deny decisions for scoped governance capabilities.

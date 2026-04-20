@@ -23,8 +23,7 @@ test("reminder failure payload includes correlation fields and concise operator 
   assert.equal(payload.reminderPublicId, "RMD001");
   assert.equal(payload.referenceId, "RMD001");
   assert.equal(payload.stage, "dispatch_gateway");
-  assert.equal(payload.failureCategory, "gateway_dispatch_failed");
+  assert.equal(payload.failureCategory, "gateway_dispatch_request_failed");
   assert.match(String(payload.operatorMessage ?? ""), /gateway returned 500/i);
   assert.equal(payload.resolvedRecipient, "5511999999999@s.whatsapp.net");
 });
-

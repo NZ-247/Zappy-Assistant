@@ -14,11 +14,27 @@ export const internalGatewaySendTextRequestSchema = z.object({
   waGroupId: z.string().min(1).optional()
 });
 
-export const internalGatewaySendTextSuccessSchema = z.object({
-  ok: z.literal(true),
-  waMessageId: z.string().min(1),
-  raw: z.unknown().optional()
-});
+export const internalGatewaySendStatusSchema = z.enum(["sent", "failed"]);
+
+export const internalGatewaySendTextSuccessSchema = z
+  .object({
+    ok: z.literal(true),
+    dispatchAccepted: z.literal(true),
+    sendStatus: internalGatewaySendStatusSchema,
+    waMessageId: z.string().min(1).optional(),
+    errorCode: z.string().min(1).optional(),
+    errorMessage: z.string().min(1).optional(),
+    raw: z.unknown().optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.sendStatus === "sent" && !value.waMessageId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["waMessageId"],
+        message: "waMessageId is required when sendStatus=sent"
+      });
+    }
+  });
 
 export const internalGatewaySendTextErrorSchema = z.object({
   ok: z.literal(false),
