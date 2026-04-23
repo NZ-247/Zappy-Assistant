@@ -76,6 +76,7 @@ const buildMockAdminApi = async () => {
     {
       key: "basic_chat",
       displayName: "Basic Chat",
+      description: null,
       active: true,
       capabilities: ["command.ping"],
       createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
@@ -84,6 +85,7 @@ const buildMockAdminApi = async () => {
     {
       key: "moderation_tools",
       displayName: "Moderation Tools",
+      description: null,
       active: true,
       capabilities: ["command.hidetag"],
       createdAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
@@ -96,6 +98,60 @@ const buildMockAdminApi = async () => {
   const groupOverrides = new Map<string, Map<string, "allow" | "deny">>();
 
   const audit: any[] = [];
+  const preSalesKnowledge = {
+    schemaVersion: "services_net.pre_sales_knowledge.v1",
+    source: "services_net_seed",
+    readiness: "seeded_v1",
+    catalogVersion: "services_net.service_catalog.v1",
+    faqVersion: "services_net.faq.v1",
+    triageVersion: "services_net.triage.v1",
+    templatesVersion: "services_net.commercial_templates.v1",
+    serviceCategories: [
+      {
+        id: "infraestrutura_redes",
+        title: "Infraestrutura de Redes",
+        shortDescription: "Planejamento e estabilidade de rede",
+        keywords: ["rede", "wifi", "switch"]
+      }
+    ],
+    serviceOfferings: [
+      {
+        id: "offering_infraestrutura_redes",
+        title: "Infraestrutura e Performance de Redes",
+        shortDescription: "Analise de estabilidade e desempenho",
+        detailedDescription: "Apoio inicial para redes cabeadas e sem fio",
+        categoryId: "infraestrutura_redes",
+        keywords: ["rede lenta", "wifi ruim"],
+        clientProblemExamples: ["internet oscilando"],
+        safeForBasicQuoteOrientation: true,
+        recommendedNextStep: "Compartilhar topologia, impacto e urgencia."
+      }
+    ],
+    faqEntries: [
+      {
+        id: "faq_como_pedir_orcamento",
+        question: "Como pedir orcamento?",
+        answer: "Posso orientar o pre-atendimento. O valor final depende de avaliacao tecnica/comercial.",
+        keywords: ["orcamento", "preco", "valor"],
+        nextStepHint: "Envie contexto, urgencia e objetivo para triagem inicial."
+      }
+    ],
+    inquiryCategories: [
+      {
+        id: "quote_orientation",
+        title: "Orientacao comercial inicial",
+        description: "Perguntas sobre orcamento",
+        keywords: ["orcamento", "cotacao", "preco"]
+      }
+    ],
+    responseTemplates: [
+      {
+        id: "quote_boundary",
+        description: "Limite de resposta para preco/orcamento",
+        template: "Valores e prazos finais dependem de avaliacao tecnica/comercial."
+      }
+    ]
+  };
 
   const withAudit = (entry: any) => {
     audit.unshift({
@@ -277,19 +333,43 @@ const buildMockAdminApi = async () => {
         separationRule: "private_and_group_defaults_are_independent"
       },
       preSales: {
-        readiness: "placeholder_only",
+        readiness: preSalesKnowledge.readiness,
+        catalogVersion: preSalesKnowledge.catalogVersion,
+        faqVersion: preSalesKnowledge.faqVersion,
+        triageVersion: preSalesKnowledge.triageVersion,
+        templatesVersion: preSalesKnowledge.templatesVersion,
         serviceCatalog: {
-          schemaVersion: "services_net.service_catalog.v1",
-          source: "manual_placeholder",
-          entries: 0
+          schemaVersion: preSalesKnowledge.catalogVersion,
+          source: "services_net_seed",
+          categories: preSalesKnowledge.serviceCategories.length,
+          entries: preSalesKnowledge.serviceOfferings.length
         },
         faq: {
-          schemaVersion: "services_net.faq.v1",
-          source: "manual_placeholder",
-          entries: 0
+          schemaVersion: preSalesKnowledge.faqVersion,
+          source: "services_net_seed",
+          entries: preSalesKnowledge.faqEntries.length
         }
       }
     }
+  }));
+  app.get("/admin/v1/presales/knowledge", async () => ({
+    schemaVersion: "admin.presales.knowledge.v1",
+    item: preSalesKnowledge
+  }));
+  app.get("/admin/v1/presales/catalog", async () => ({
+    schemaVersion: "admin.presales.catalog.v1",
+    readiness: preSalesKnowledge.readiness,
+    catalogVersion: preSalesKnowledge.catalogVersion,
+    count: preSalesKnowledge.serviceOfferings.length,
+    categories: preSalesKnowledge.serviceCategories,
+    items: preSalesKnowledge.serviceOfferings
+  }));
+  app.get("/admin/v1/presales/faq", async () => ({
+    schemaVersion: "admin.presales.faq.v1",
+    readiness: preSalesKnowledge.readiness,
+    faqVersion: preSalesKnowledge.faqVersion,
+    count: preSalesKnowledge.faqEntries.length,
+    items: preSalesKnowledge.faqEntries
   }));
   app.get("/admin/v1/governance/users/:waUserId/effective", async (request) => {
     const params = request.params as { waUserId: string };
@@ -607,7 +687,17 @@ test("admin-ui proxy supports admin-api round-trips for dashboard, users/groups,
   const governanceSettings = await callUiProxy(uiBaseUrl, "/admin/v1/governance/settings");
   assert.equal(governanceSettings.status, 200);
   assert.equal(governanceSettings.payload.item.defaults.privateUser.status, "APPROVED");
-  assert.equal(governanceSettings.payload.item.preSales.readiness, "placeholder_only");
+  assert.equal(governanceSettings.payload.item.preSales.readiness, "seeded_v1");
+
+  const preSalesCatalog = await callUiProxy(uiBaseUrl, "/admin/v1/presales/catalog");
+  assert.equal(preSalesCatalog.status, 200);
+  assert.equal(preSalesCatalog.payload.schemaVersion, "admin.presales.catalog.v1");
+  assert.equal(preSalesCatalog.payload.count >= 1, true);
+
+  const preSalesFaq = await callUiProxy(uiBaseUrl, "/admin/v1/presales/faq");
+  assert.equal(preSalesFaq.status, 200);
+  assert.equal(preSalesFaq.payload.schemaVersion, "admin.presales.faq.v1");
+  assert.equal(preSalesFaq.payload.count >= 1, true);
 
   const assignGroupBundle = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/bundles/moderation_tools", {
     method: "PUT",

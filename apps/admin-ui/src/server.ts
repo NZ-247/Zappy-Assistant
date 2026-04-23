@@ -90,7 +90,7 @@ export const createAdminUiServer = async (configInput: Partial<AdminUiServerConf
   app.get("/ui-config", async () => ({
     schemaVersion: "admin.ui.config.v1",
     defaultAdminApiBaseUrl: config.defaultAdminApiBaseUrl,
-    uiVersion: "1.9.1"
+    uiVersion: "1.9.2"
   }));
 
   app.route({

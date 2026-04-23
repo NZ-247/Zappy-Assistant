@@ -31,8 +31,24 @@ const buildRuntime = () => {
     }
   ];
   const bundles = [
-    { key: "basic_chat", displayName: "Basic Chat", active: true, capabilities: ["command.ping"], createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") },
-    { key: "moderation_tools", displayName: "Moderation Tools", active: true, capabilities: ["command.hidetag"], createdAt: new Date("2026-04-14T00:00:00.000Z"), updatedAt: new Date("2026-04-14T00:00:00.000Z") }
+    {
+      key: "basic_chat",
+      displayName: "Basic Chat",
+      description: null,
+      active: true,
+      capabilities: ["command.ping"],
+      createdAt: new Date("2026-04-14T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z")
+    },
+    {
+      key: "moderation_tools",
+      displayName: "Moderation Tools",
+      description: null,
+      active: true,
+      capabilities: ["command.hidetag"],
+      createdAt: new Date("2026-04-14T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-14T00:00:00.000Z")
+    }
   ];
   const userBundleAssignments = new Map<string, Set<string>>();
   const groupBundleAssignments = new Map<string, Set<string>>();
@@ -40,6 +56,60 @@ const buildRuntime = () => {
   const groupOverrides = new Map<string, Map<string, "allow" | "deny">>();
 
   const nowIso = () => new Date("2026-04-14T12:00:00.000Z").toISOString();
+  const preSalesKnowledge = {
+    schemaVersion: "services_net.pre_sales_knowledge.v1",
+    source: "services_net_seed",
+    readiness: "seeded_v1",
+    catalogVersion: "services_net.service_catalog.v1",
+    faqVersion: "services_net.faq.v1",
+    triageVersion: "services_net.triage.v1",
+    templatesVersion: "services_net.commercial_templates.v1",
+    serviceCategories: [
+      {
+        id: "infraestrutura_redes",
+        title: "Infraestrutura de Redes",
+        shortDescription: "Planejamento e estabilizacao de redes",
+        keywords: ["rede", "wifi", "switch"]
+      }
+    ],
+    serviceOfferings: [
+      {
+        id: "offering_infraestrutura_redes",
+        title: "Infraestrutura e Performance de Redes",
+        shortDescription: "Analise de estabilidade e desempenho",
+        detailedDescription: "Apoio inicial para redes cabeadas e sem fio.",
+        categoryId: "infraestrutura_redes",
+        keywords: ["rede lenta", "wifi ruim"],
+        clientProblemExamples: ["internet oscilando"],
+        safeForBasicQuoteOrientation: true,
+        recommendedNextStep: "Compartilhar topologia, impacto e urgencia."
+      }
+    ],
+    faqEntries: [
+      {
+        id: "faq_como_pedir_orcamento",
+        question: "Como pedir orcamento?",
+        answer: "Posso orientar o pre-atendimento. O valor final depende de avaliacao tecnica/comercial.",
+        keywords: ["orcamento", "preco", "valor"],
+        nextStepHint: "Envie contexto, urgencia e objetivo para triagem inicial."
+      }
+    ],
+    inquiryCategories: [
+      {
+        id: "quote_orientation",
+        title: "Orientacao comercial inicial",
+        description: "Perguntas sobre orcamento e cotacao",
+        keywords: ["orcamento", "cotacao", "preco"]
+      }
+    ],
+    responseTemplates: [
+      {
+        id: "quote_boundary",
+        description: "Limite seguro para preco/orcamento",
+        template: "Valores e prazos finais dependem de avaliacao tecnica/comercial."
+      }
+    ]
+  };
 
   reminders.set("r-failed-1", {
     id: "r-failed-1",
@@ -278,19 +348,25 @@ const buildRuntime = () => {
         separationRule: "private_and_group_defaults_are_independent"
       },
       preSales: {
-        readiness: "placeholder_only",
+        readiness: preSalesKnowledge.readiness,
+        catalogVersion: preSalesKnowledge.catalogVersion,
+        faqVersion: preSalesKnowledge.faqVersion,
+        triageVersion: preSalesKnowledge.triageVersion,
+        templatesVersion: preSalesKnowledge.templatesVersion,
         serviceCatalog: {
-          schemaVersion: "services_net.service_catalog.v1",
-          source: "manual_placeholder",
-          entries: 0
+          schemaVersion: preSalesKnowledge.catalogVersion,
+          source: "services_net_seed",
+          categories: preSalesKnowledge.serviceCategories.length,
+          entries: preSalesKnowledge.serviceOfferings.length
         },
         faq: {
-          schemaVersion: "services_net.faq.v1",
-          source: "manual_placeholder",
-          entries: 0
+          schemaVersion: preSalesKnowledge.faqVersion,
+          source: "services_net_seed",
+          entries: preSalesKnowledge.faqEntries.length
         }
       }
     }),
+    getPreSalesKnowledge: async () => preSalesKnowledge,
     getUserEffectiveCapabilityPolicy: async ({ waUserId }: { waUserId: string }) => {
       const user = ensureUser(waUserId);
       const assigned = Array.from(userBundleAssignments.get(waUserId) ?? new Set<string>());
@@ -918,8 +994,53 @@ test("governance bundle catalog can be created/edited and settings expose defaul
   assert.equal(settings.json().schemaVersion, "admin.governance.settings.v1");
   assert.equal(settings.json().item.defaults.privateUser.status, "APPROVED");
   assert.equal(settings.json().item.defaults.group.status, "PENDING");
-  assert.equal(settings.json().item.preSales.readiness, "placeholder_only");
+  assert.equal(settings.json().item.preSales.readiness, "seeded_v1");
   assert.equal(settings.json().item.preSales.serviceCatalog.schemaVersion, "services_net.service_catalog.v1");
+  assert.equal(settings.json().item.preSales.serviceCatalog.entries > 0, true);
+  assert.equal(settings.json().item.preSales.faq.entries > 0, true);
+
+  await app.close();
+});
+
+test("admin pre-sales knowledge endpoints expose readiness, catalog seed and faq entries", async () => {
+  const app = Fastify();
+  registerAdminApiRoutes(app as any, buildRuntime());
+
+  const knowledge = await app.inject({
+    method: "GET",
+    url: "/admin/v1/presales/knowledge",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(knowledge.statusCode, 200);
+  assert.equal(knowledge.json().schemaVersion, "admin.presales.knowledge.v1");
+  assert.equal(knowledge.json().item.readiness, "seeded_v1");
+  assert.equal(knowledge.json().item.catalogVersion, "services_net.service_catalog.v1");
+
+  const catalog = await app.inject({
+    method: "GET",
+    url: "/admin/v1/presales/catalog",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(catalog.statusCode, 200);
+  assert.equal(catalog.json().schemaVersion, "admin.presales.catalog.v1");
+  assert.equal(catalog.json().count >= 1, true);
+  assert.equal(Array.isArray(catalog.json().categories), true);
+
+  const faq = await app.inject({
+    method: "GET",
+    url: "/admin/v1/presales/faq",
+    headers: {
+      authorization: "Bearer test-token"
+    }
+  });
+  assert.equal(faq.statusCode, 200);
+  assert.equal(faq.json().schemaVersion, "admin.presales.faq.v1");
+  assert.equal(faq.json().count >= 1, true);
+  assert.equal(Array.isArray(faq.json().items), true);
 
   await app.close();
 });
@@ -1029,7 +1150,7 @@ test("status endpoint returns dashboard-ready health summary", async () => {
   assert.equal(response.statusCode, 200);
   const payload = response.json();
   assert.equal(payload.schemaVersion, "admin.status.v2");
-  assert.equal(payload.version, "1.9.1");
+  assert.equal(payload.version, "1.9.2");
   assert.equal(typeof payload.services.gateway.online, "boolean");
   assert.equal(typeof payload.reminders.FAILED, "number");
   assert.equal(Array.isArray(payload.failures.recentFailedReminders), true);

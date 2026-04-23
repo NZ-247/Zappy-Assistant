@@ -182,19 +182,143 @@ test("admin-ui renders dashboard and jobs/reminders views with integration fetch
               separationRule: "private_and_group_defaults_are_independent"
             },
             preSales: {
-              readiness: "placeholder_only",
+              readiness: "seeded_v1",
+              catalogVersion: "services_net.service_catalog.v1",
+              faqVersion: "services_net.faq.v1",
+              triageVersion: "services_net.triage.v1",
+              templatesVersion: "services_net.commercial_templates.v1",
               serviceCatalog: {
                 schemaVersion: "services_net.service_catalog.v1",
-                source: "manual_placeholder",
-                entries: 0
+                source: "services_net_seed",
+                categories: 1,
+                entries: 1
               },
               faq: {
                 schemaVersion: "services_net.faq.v1",
-                source: "manual_placeholder",
-                entries: 0
+                source: "services_net_seed",
+                entries: 1
               }
             }
           }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
+    if (path.startsWith("/ui-api/admin/v1/presales/knowledge")) {
+      return new Response(
+        JSON.stringify({
+          schemaVersion: "admin.presales.knowledge.v1",
+          item: {
+            schemaVersion: "services_net.pre_sales_knowledge.v1",
+            source: "services_net_seed",
+            readiness: "seeded_v1",
+            catalogVersion: "services_net.service_catalog.v1",
+            faqVersion: "services_net.faq.v1",
+            triageVersion: "services_net.triage.v1",
+            templatesVersion: "services_net.commercial_templates.v1",
+            serviceCategories: [
+              {
+                id: "infraestrutura_redes",
+                title: "Infraestrutura de Redes",
+                shortDescription: "Planejamento e estabilidade de rede",
+                keywords: ["rede", "wifi", "switch"]
+              }
+            ],
+            serviceOfferings: [
+              {
+                id: "offering_infraestrutura_redes",
+                title: "Infraestrutura e Performance de Redes",
+                shortDescription: "Analise de estabilidade e desempenho",
+                detailedDescription: "Apoio inicial para redes cabeadas e sem fio",
+                categoryId: "infraestrutura_redes",
+                keywords: ["rede lenta", "wifi ruim"],
+                clientProblemExamples: ["internet oscilando"],
+                safeForBasicQuoteOrientation: true,
+                recommendedNextStep: "Compartilhar topologia, impacto e urgencia."
+              }
+            ],
+            faqEntries: [
+              {
+                id: "faq_como_pedir_orcamento",
+                question: "Como pedir orcamento?",
+                answer: "Posso orientar o pre-atendimento. O valor final depende de avaliacao tecnica/comercial.",
+                keywords: ["orcamento", "preco", "valor"],
+                nextStepHint: "Envie contexto, urgencia e objetivo para triagem inicial."
+              }
+            ],
+            inquiryCategories: [],
+            responseTemplates: []
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
+    if (path.startsWith("/ui-api/admin/v1/presales/catalog")) {
+      return new Response(
+        JSON.stringify({
+          schemaVersion: "admin.presales.catalog.v1",
+          readiness: "seeded_v1",
+          catalogVersion: "services_net.service_catalog.v1",
+          count: 1,
+          categories: [
+            {
+              id: "infraestrutura_redes",
+              title: "Infraestrutura de Redes",
+              shortDescription: "Planejamento e estabilidade de rede",
+              keywords: ["rede", "wifi", "switch"]
+            }
+          ],
+          items: [
+            {
+              id: "offering_infraestrutura_redes",
+              title: "Infraestrutura e Performance de Redes",
+              shortDescription: "Analise de estabilidade e desempenho",
+              detailedDescription: "Apoio inicial para redes cabeadas e sem fio",
+              categoryId: "infraestrutura_redes",
+              keywords: ["rede lenta", "wifi ruim"],
+              clientProblemExamples: ["internet oscilando"],
+              safeForBasicQuoteOrientation: true,
+              recommendedNextStep: "Compartilhar topologia, impacto e urgencia."
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
+    if (path.startsWith("/ui-api/admin/v1/presales/faq")) {
+      return new Response(
+        JSON.stringify({
+          schemaVersion: "admin.presales.faq.v1",
+          readiness: "seeded_v1",
+          faqVersion: "services_net.faq.v1",
+          count: 1,
+          items: [
+            {
+              id: "faq_como_pedir_orcamento",
+              question: "Como pedir orcamento?",
+              answer: "Posso orientar o pre-atendimento. O valor final depende de avaliacao tecnica/comercial.",
+              keywords: ["orcamento", "preco", "valor"],
+              nextStepHint: "Envie contexto, urgencia e objetivo para triagem inicial."
+            }
+          ]
         }),
         {
           status: 200,
@@ -257,6 +381,9 @@ test("admin-ui renders dashboard and jobs/reminders views with integration fetch
   const settingsText = dom.window.document.getElementById("view-root")?.textContent || "";
   assert.match(settingsText, /New Private User Default/i);
   assert.match(settingsText, /APPROVED/i);
-  assert.match(settingsText, /Future Pre-Sales Hook/i);
+  assert.match(settingsText, /Pre-Sales Knowledge/i);
   assert.match(settingsText, /services_net\.service_catalog\.v1/i);
+  assert.match(settingsText, /Service Catalog Seed/i);
+  assert.match(settingsText, /FAQ Seed/i);
+  assert.match(settingsText, /Infraestrutura e Performance de Redes/i);
 });

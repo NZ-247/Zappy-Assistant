@@ -10,6 +10,7 @@ import {
 import { createCommandRegistry } from "./commands/registry/index.js";
 import type { CommandRegistry } from "./commands/registry/command-types.js";
 import { AssistantAiModule } from "./modules/assistant-ai/index.js";
+import { maybeHandlePreSalesInquiry } from "./modules/pre-sales/application/use-cases/maybe-handle-pre-sales-inquiry.js";
 import { checkConsentGate } from "./modules/consent/application/use-cases/check-consent-gate.js";
 import { enforceConsent } from "./modules/consent/application/use-cases/enforce-consent.js";
 import { hasRootPrivileges, resolveRelationshipProfile } from "./modules/identity/domain/relationship-profile.js";
@@ -264,6 +265,7 @@ export type {
   DownloadProviderRouterPort
 } from "./modules/downloads/ports/download-provider.port.js";
 export * from "./modules/governance/index.js";
+export * from "./modules/pre-sales/index.js";
 
 export class Orchestrator {
   private readonly ports: CorePorts;
@@ -785,6 +787,11 @@ export class Orchestrator {
 
     const naturalActions = await this.assistantAi.handleAddressedMessage(ctx);
     if (naturalActions.length > 0) return naturalActions;
+
+    const preSalesActions = await maybeHandlePreSalesInquiry(ctx, {
+      stylizeReply: (text) => this.stylizeReply(ctx, text)
+    });
+    if (preSalesActions.length > 0) return preSalesActions;
 
     const fallbackActions = await this.assistantAi.runFallback(ctx);
     if (fallbackActions.length > 0) return fallbackActions;

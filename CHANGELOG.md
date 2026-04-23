@@ -1,5 +1,43 @@
 # Changelog
 
+## V1.9.2 - 2026-04-23
+- Implemented the real Services.NET pre-sales / pre-attendance layer with structured, server-authoritative knowledge in core:
+  - new `packages/core/src/modules/pre-sales` with domain models for:
+    - `ServiceCategory`
+    - `ServiceOffering`
+    - `PreSalesFAQ`
+    - `InquiryCategory`
+    - `CommercialResponseTemplate`
+  - seeded Services.NET catalog/FAQ coverage for:
+    - TI/suporte/tecnologia
+    - infraestrutura de redes
+    - servidores
+    - virtualizacao
+    - automacao
+    - seguranca da informacao
+    - gestao completa de TI
+  - lightweight triage (keyword + semantic-light) plus explicit uncertain fallback:
+    - `Posso te ajudar com uma triagem inicial...`
+  - safe commercial response boundaries for quote/orientation (no fabricated pricing/contract guarantees)
+- Integrated pre-sales handling into orchestrator natural-message flow (before generic AI fallback), preserving command/runtime stability.
+- Evolved governance settings preSales state from placeholder to seeded metadata:
+  - `preSales.readiness=seeded_v1`
+  - `catalogVersion`, `faqVersion`, `triageVersion`, `templatesVersion`
+  - catalog/faq seeded entry counts
+- Added admin-api read endpoints for pre-sales observability:
+  - `GET /admin/v1/presales/knowledge`
+  - `GET /admin/v1/presales/catalog`
+  - `GET /admin/v1/presales/faq`
+- Expanded admin-ui Settings view to render real pre-sales readiness/version metadata plus catalog/FAQ seed tables.
+- Added tests for:
+  - service catalog lookup
+  - FAQ lookup
+  - triage classification
+  - uncertain-category fallback
+  - quote response safety boundaries
+  - admin-api/admin-ui pre-sales contracts
+- Bumped workspace/project versions to `1.9.2`.
+
 ## V1.9.1 - 2026-04-23
 - Added a future-friendly Services.NET pre-sales knowledge placeholder to governance settings (without enabling ingestion in this phase):
   - `preSales.readiness=placeholder_only`

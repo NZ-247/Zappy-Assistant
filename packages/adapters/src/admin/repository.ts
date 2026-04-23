@@ -12,8 +12,15 @@ import {
   GOVERNANCE_CAPABILITY_DEFINITIONS,
   GOVERNANCE_TIER_DEFAULT_BUNDLES,
   createDefaultCapabilityPolicySnapshot,
+  getPreSalesKnowledge as getCorePreSalesKnowledge,
   listEffectiveCapabilities,
-  normalizeGovernanceCapabilityKey
+  normalizeGovernanceCapabilityKey,
+  type CommercialResponseTemplate,
+  type InquiryCategory,
+  type PreSalesFAQ,
+  type PreSalesReadiness,
+  type ServiceCategory,
+  type ServiceOffering
 } from "@zappy/core";
 
 export type AccessStatusValue = (typeof AccessStatus)[keyof typeof AccessStatus];
@@ -97,18 +104,38 @@ export interface GovernanceDefaultsView {
     separationRule: "private_and_group_defaults_are_independent";
   };
   preSales: {
-    readiness: "placeholder_only";
+    readiness: PreSalesReadiness;
+    catalogVersion: string;
+    faqVersion: string;
+    triageVersion: string;
+    templatesVersion: string;
     serviceCatalog: {
-      schemaVersion: "services_net.service_catalog.v1";
-      source: "manual_placeholder";
+      schemaVersion: string;
+      source: "services_net_seed";
+      categories: number;
       entries: number;
     };
     faq: {
-      schemaVersion: "services_net.faq.v1";
-      source: "manual_placeholder";
+      schemaVersion: string;
+      source: "services_net_seed";
       entries: number;
     };
   };
+}
+
+export interface PreSalesKnowledgeView {
+  schemaVersion: string;
+  source: "services_net_seed";
+  readiness: PreSalesReadiness;
+  catalogVersion: string;
+  faqVersion: string;
+  triageVersion: string;
+  templatesVersion: string;
+  serviceCategories: ServiceCategory[];
+  serviceOfferings: ServiceOffering[];
+  faqEntries: PreSalesFAQ[];
+  inquiryCategories: InquiryCategory[];
+  responseTemplates: CommercialResponseTemplate[];
 }
 
 export interface SubjectCapabilityPolicyView {
@@ -223,6 +250,24 @@ const asJsonValue = (value: unknown): Prisma.InputJsonValue | Prisma.NullableJso
   if (value === undefined) return undefined;
   if (value === null) return Prisma.JsonNull;
   return value as Prisma.InputJsonValue;
+};
+
+const buildPreSalesKnowledgeView = (): PreSalesKnowledgeView => {
+  const knowledge = getCorePreSalesKnowledge();
+  return {
+    schemaVersion: knowledge.schemaVersion,
+    source: knowledge.source,
+    readiness: knowledge.versions.readiness,
+    catalogVersion: knowledge.versions.catalogVersion,
+    faqVersion: knowledge.versions.faqVersion,
+    triageVersion: knowledge.versions.triageVersion,
+    templatesVersion: knowledge.versions.templatesVersion,
+    serviceCategories: knowledge.serviceCategories,
+    serviceOfferings: knowledge.serviceOfferings,
+    faqEntries: knowledge.faqEntries,
+    inquiryCategories: knowledge.inquiryCategories,
+    responseTemplates: knowledge.responseTemplates
+  };
 };
 
 const mapUserAccessRow = (row: {
@@ -1811,41 +1856,52 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     });
   };
 
-  const getGovernanceDefaults = async (): Promise<GovernanceDefaultsView> => ({
-    defaults: {
-      privateUser: {
-        status: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.status,
-        tier: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.tier,
-        source: "system_default"
+  const getGovernanceDefaults = async (): Promise<GovernanceDefaultsView> => {
+    const preSalesKnowledge = buildPreSalesKnowledgeView();
+
+    return {
+      defaults: {
+        privateUser: {
+          status: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.status,
+          tier: GOVERNANCE_DEFAULT_MATERIALIZATION.privateUser.tier,
+          source: "system_default"
+        },
+        group: {
+          status: GOVERNANCE_DEFAULT_MATERIALIZATION.group.status,
+          tier: GOVERNANCE_DEFAULT_MATERIALIZATION.group.tier,
+          source: "system_default"
+        }
       },
-      group: {
-        status: GOVERNANCE_DEFAULT_MATERIALIZATION.group.status,
-        tier: GOVERNANCE_DEFAULT_MATERIALIZATION.group.tier,
-        source: "system_default"
-      }
-    },
-    onboarding: {
-      privateAssistantEnabled: true,
-      serviceExplanationEnabled: true,
-      basicQuoteHelpEnabled: true
-    },
-    governance: {
-      separationRule: "private_and_group_defaults_are_independent"
-    },
-    preSales: {
-      readiness: "placeholder_only",
-      serviceCatalog: {
-        schemaVersion: "services_net.service_catalog.v1",
-        source: "manual_placeholder",
-        entries: 0
+      onboarding: {
+        privateAssistantEnabled: true,
+        serviceExplanationEnabled: true,
+        basicQuoteHelpEnabled: true
       },
-      faq: {
-        schemaVersion: "services_net.faq.v1",
-        source: "manual_placeholder",
-        entries: 0
+      governance: {
+        separationRule: "private_and_group_defaults_are_independent"
+      },
+      preSales: {
+        readiness: preSalesKnowledge.readiness,
+        catalogVersion: preSalesKnowledge.catalogVersion,
+        faqVersion: preSalesKnowledge.faqVersion,
+        triageVersion: preSalesKnowledge.triageVersion,
+        templatesVersion: preSalesKnowledge.templatesVersion,
+        serviceCatalog: {
+          schemaVersion: preSalesKnowledge.catalogVersion,
+          source: "services_net_seed",
+          categories: preSalesKnowledge.serviceCategories.length,
+          entries: preSalesKnowledge.serviceOfferings.length
+        },
+        faq: {
+          schemaVersion: preSalesKnowledge.faqVersion,
+          source: "services_net_seed",
+          entries: preSalesKnowledge.faqEntries.length
+        }
       }
-    }
-  });
+    };
+  };
+
+  const getPreSalesKnowledge = async (): Promise<PreSalesKnowledgeView> => buildPreSalesKnowledgeView();
 
   const listUsageCounters = async (input: {
     subjectType: AccessSubjectType;
@@ -1939,6 +1995,7 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     updateGroupAccessStatus,
     listLicensePlans,
     getGovernanceDefaults,
+    getPreSalesKnowledge,
     updateUserLicense,
     updateGroupLicense,
     listCapabilityDefinitions,

@@ -411,3 +411,60 @@ Fase focada em onboarding privado default-friendly e expansão do control plane 
 Decisão-chave da fase:
 
 - defaults de private onboarding e governança de grupo seguem trilhas independentes; mudar um não implica alteração automática do outro.
+
+## 17. Services.NET Pre-Sales Layer (v1.9.2)
+
+Fase de transformacao do placeholder de pre-sales em camada operacional real, estruturada e server-authoritative:
+
+- `packages/core/src/modules/pre-sales/*`
+  - novo modulo de dominio/application para pre-atendimento comercial Services.NET
+  - modelo estruturado:
+    - `ServiceCategory`
+    - `ServiceOffering`
+    - `PreSalesFAQ`
+    - `InquiryCategory` (triage intent)
+    - `CommercialResponseTemplate`
+  - seed inicial institucional com frentes:
+    - TI/suporte/tecnologia
+    - infraestrutura de redes
+    - servidores
+    - virtualizacao
+    - automacao
+    - seguranca da informacao
+    - gestao completa de TI
+  - triagem leve (keyword + semantic-light) com fallback seguro para baixa confianca
+  - geracao de resposta comercial segura:
+    - explicacao de servicos
+    - checagem de aderencia inicial
+    - orientacao de proximo passo
+    - limites claros de preco/garantia (sem promessas contratuais fabricadas)
+
+- `packages/core/src/index.ts`
+  - integra o modulo de pre-sales no fluxo natural antes do fallback generico de IA
+  - mantem comportamento de comandos e governanca sem regressao
+
+- `packages/adapters/src/admin/repository.ts`
+  - `preSales` em `getGovernanceDefaults()` evolui de `placeholder_only` para `seeded_v1`
+  - settings agora expõem:
+    - `catalogVersion`
+    - `faqVersion`
+    - `triageVersion`
+    - `templatesVersion`
+    - contagem de categorias/entries do catalogo + FAQ
+  - novo read-model `getPreSalesKnowledge()` para entrega autoritativa do seed ao admin-api
+
+- `apps/admin-api/src/http/routes.ts`
+  - novos endpoints read-only:
+    - `GET /admin/v1/presales/knowledge`
+    - `GET /admin/v1/presales/catalog`
+    - `GET /admin/v1/presales/faq`
+
+- `apps/admin-ui/public/main.js`
+  - Governance Settings deixa de exibir apenas placeholder
+  - passa a mostrar readiness/versionamento + tabelas de catalogo seed e FAQ seed carregadas via admin-api
+
+Decisoes arquiteturais da fase:
+
+- conhecimento comercial permanece no backend (core/adapters/admin-api), evitando duplicacao de regra no frontend
+- etapa atual prioriza governanca de conteudo estruturado (seed + triagem + templates), sem introduzir pipeline RAG/crawler complexo
+- em caso de incerteza, respostas forcam triagem inicial e escalonamento humano/comercial explicito

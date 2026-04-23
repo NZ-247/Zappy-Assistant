@@ -405,10 +405,20 @@ Governance settings response shape (summary)
 - `defaults.group` (`status`, `tier`, `source`)
 - `onboarding` flags for private onboarding-friendly governance behavior
 - explicit separation rule: private defaults and group defaults are independently governed
-- `preSales` placeholder block for future Services.NET business-knowledge hooks:
-  - `readiness` (`placeholder_only`)
-  - `serviceCatalog` (`schemaVersion`, `source`, `entries`)
+- `preSales` seeded block for Services.NET pre-attendance knowledge:
+  - `readiness` (`seeded_v1`)
+  - `catalogVersion`, `faqVersion`, `triageVersion`, `templatesVersion`
+  - `serviceCatalog` (`schemaVersion`, `source`, `categories`, `entries`)
   - `faq` (`schemaVersion`, `source`, `entries`)
+
+Pre-sales read endpoints (summary)
+
+- `GET /admin/v1/presales/knowledge`
+  - returns seeded metadata + versions + full catalog/faq/inquiry/templates payload
+- `GET /admin/v1/presales/catalog`
+  - returns read-only catalog view (`categories[]`, `items[]`, `catalogVersion`, `count`)
+- `GET /admin/v1/presales/faq`
+  - returns read-only FAQ view (`items[]`, `faqVersion`, `count`)
 
 4. UI page mapping (Admin UI v1.9.0)
 4.1 Dashboard page
@@ -514,6 +524,9 @@ bundle membership column per capability
 Uses:
 
 - `GET /admin/v1/governance/settings`
+- `GET /admin/v1/presales/knowledge`
+- `GET /admin/v1/presales/catalog`
+- `GET /admin/v1/presales/faq`
 
 Widgets:
 
@@ -521,7 +534,11 @@ defaults cards for new private users and new groups
 
 onboarding governance flags and explicit separation notes (private vs group policy)
 
-future pre-sales placeholder diagnostics (`serviceCatalog`/`faq` schema readiness)
+seeded pre-sales readiness/version diagnostics
+
+service catalog seed table (offering/category/safe-orientation/next-step)
+
+faq seed table (question/answer/next-step-hint)
 
 4.7 Licenses/Plans page
 

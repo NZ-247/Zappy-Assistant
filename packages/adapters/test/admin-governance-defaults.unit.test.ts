@@ -149,16 +149,36 @@ test("group defaults remain independent and start as PENDING + FREE", async () =
   assert.equal(group.tier, "FREE");
 });
 
-test("governance settings expose pre-sales placeholders for future Services.NET knowledge hooks", async () => {
+test("governance settings expose seeded Services.NET pre-sales readiness and catalog metadata", async () => {
   const repository = createAdminGovernanceRepository({
     prisma: buildFakePrisma() as any
   });
 
   const settings = await repository.getGovernanceDefaults();
 
-  assert.equal(settings.preSales.readiness, "placeholder_only");
+  assert.equal(settings.preSales.readiness, "seeded_v1");
+  assert.equal(settings.preSales.catalogVersion, "services_net.service_catalog.v1");
+  assert.equal(settings.preSales.faqVersion, "services_net.faq.v1");
+  assert.equal(settings.preSales.triageVersion, "services_net.triage.v1");
   assert.equal(settings.preSales.serviceCatalog.schemaVersion, "services_net.service_catalog.v1");
-  assert.equal(settings.preSales.serviceCatalog.entries, 0);
+  assert.equal(settings.preSales.serviceCatalog.categories > 0, true);
+  assert.equal(settings.preSales.serviceCatalog.entries > 0, true);
   assert.equal(settings.preSales.faq.schemaVersion, "services_net.faq.v1");
-  assert.equal(settings.preSales.faq.entries, 0);
+  assert.equal(settings.preSales.faq.entries > 0, true);
+});
+
+test("pre-sales knowledge view exposes seeded catalog and faq payloads", async () => {
+  const repository = createAdminGovernanceRepository({
+    prisma: buildFakePrisma() as any
+  });
+
+  const knowledge = await repository.getPreSalesKnowledge();
+
+  assert.equal(knowledge.readiness, "seeded_v1");
+  assert.equal(knowledge.catalogVersion, "services_net.service_catalog.v1");
+  assert.equal(Array.isArray(knowledge.serviceCategories), true);
+  assert.equal(Array.isArray(knowledge.serviceOfferings), true);
+  assert.equal(Array.isArray(knowledge.faqEntries), true);
+  assert.equal(knowledge.serviceOfferings.length > 0, true);
+  assert.equal(knowledge.faqEntries.length > 0, true);
 });

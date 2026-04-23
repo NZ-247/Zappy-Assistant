@@ -55,8 +55,8 @@ type GovernanceSnapshotQuery = {
   isReplyToBot?: string;
 };
 
-const ADMIN_API_VERSION = "1.9.1";
-const GOVERNANCE_VERSION = "v1.9.1";
+const ADMIN_API_VERSION = "1.9.2";
+const GOVERNANCE_VERSION = "v1.9.2";
 const HEALTH_CHECK_TIMEOUT_MS = 3_500;
 const reminderStatuses = ["SCHEDULED", "SENT", "FAILED", "CANCELED"] as const;
 
@@ -628,6 +628,40 @@ export const registerAdminApiRoutes = (app: AdminApiHttpApp, runtime: AdminApiRu
     return {
       schemaVersion: "admin.governance.settings.v1",
       item
+    };
+  });
+
+  app.get("/admin/v1/presales/knowledge", async () => {
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const item = await repository.getPreSalesKnowledge();
+    return {
+      schemaVersion: "admin.presales.knowledge.v1",
+      item
+    };
+  });
+
+  app.get("/admin/v1/presales/catalog", async () => {
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const knowledge = await repository.getPreSalesKnowledge();
+    return {
+      schemaVersion: "admin.presales.catalog.v1",
+      readiness: knowledge.readiness,
+      catalogVersion: knowledge.catalogVersion,
+      count: knowledge.serviceOfferings.length,
+      categories: knowledge.serviceCategories,
+      items: knowledge.serviceOfferings
+    };
+  });
+
+  app.get("/admin/v1/presales/faq", async () => {
+    const repository = runtime.adminGovernanceRepository ?? fallbackAdminGovernanceRepository;
+    const knowledge = await repository.getPreSalesKnowledge();
+    return {
+      schemaVersion: "admin.presales.faq.v1",
+      readiness: knowledge.readiness,
+      faqVersion: knowledge.faqVersion,
+      count: knowledge.faqEntries.length,
+      items: knowledge.faqEntries
     };
   });
 

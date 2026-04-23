@@ -277,7 +277,7 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - resolver health fails after delegation:
   - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
-Version note: current release line is `v1.9.1`.
+Version note: current release line is `v1.9.2`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -304,8 +304,14 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - bundle assignment/removal: `PUT|DELETE /admin/v1/governance/users/:waUserId/bundles/:bundleKey`, `PUT|DELETE /admin/v1/governance/groups/:waGroupId/bundles/:bundleKey`
   - capability override set/clear: `PUT|DELETE /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey`, `PUT|DELETE /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey`
   - governance defaults/settings view: `GET /admin/v1/governance/settings`
+  - pre-sales knowledge views: `GET /admin/v1/presales/knowledge`, `GET /admin/v1/presales/catalog`, `GET /admin/v1/presales/faq`
   - first-seen materialization defaults: private users `status=APPROVED`, `tier=FREE`; groups `status=PENDING`, `tier=FREE`
-  - settings payload also carries a light pre-sales readiness placeholder (`preSales.serviceCatalog` + `preSales.faq`) for future Services.NET institutional knowledge integration (no ingestion in this phase)
+  - settings payload now carries seeded Services.NET pre-sales readiness/version metadata (`preSales.readiness`, `catalogVersion`, `faqVersion`, `triageVersion`) plus catalog/faq entry counters
+- Structured Services.NET pre-sales module in core (`packages/core/src/modules/pre-sales`) provides:
+  - authoritative service catalog + FAQ seed
+  - lightweight keyword/semantic triage for service questions
+  - safe commercial response boundaries (no fabricated pricing/contract guarantees)
+  - onboarding/pre-attendance guidance and explicit human escalation path
 - Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe` (`/tr`, `/tss`), `/tts`, `/trl`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.

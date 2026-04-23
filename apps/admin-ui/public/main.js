@@ -168,6 +168,9 @@ const createApiClient = ({ fetchImpl, getSession }) => {
     removeCapabilityFromBundle: (bundleKey, capabilityKey, body) =>
       call(`/admin/v1/governance/bundles/${encodeURIComponent(bundleKey)}/capabilities/${encodeURIComponent(capabilityKey)}`, { method: "DELETE", body }),
     getGovernanceSettings: () => call("/admin/v1/governance/settings"),
+    getPreSalesKnowledge: () => call("/admin/v1/presales/knowledge"),
+    getPreSalesCatalog: () => call("/admin/v1/presales/catalog"),
+    getPreSalesFaq: () => call("/admin/v1/presales/faq"),
     getUserEffectiveGovernance: (waUserId, tenantId) =>
       call(`/admin/v1/governance/users/${encodeURIComponent(waUserId)}/effective${tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : ""}`),
     getGroupEffectiveGovernance: (waGroupId, query = "") =>
@@ -200,7 +203,7 @@ export const createAdminUiApp = ({
   storage,
   uiConfig = {
     defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-    uiVersion: "1.9.1"
+    uiVersion: "1.9.2"
   }
 }) => {
   const viewRoot = document.getElementById("view-root");
@@ -235,6 +238,9 @@ export const createAdminUiApp = ({
     dashboard: null,
     metrics: null,
     settings: null,
+    preSalesKnowledge: null,
+    preSalesCatalog: null,
+    preSalesFaq: null,
     filters: {
       usersSearch: "",
       groupsSearch: "",
@@ -761,6 +767,12 @@ export const createAdminUiApp = ({
     const preSales = settings.preSales || {};
     const preSalesServiceCatalog = preSales.serviceCatalog || {};
     const preSalesFaq = preSales.faq || {};
+    const preSalesKnowledge = state.preSalesKnowledge || {};
+    const preSalesCatalogPayload = state.preSalesCatalog || {};
+    const preSalesFaqPayload = state.preSalesFaq || {};
+    const serviceCategories = preSalesCatalogPayload.categories || preSalesKnowledge.serviceCategories || [];
+    const serviceOfferings = preSalesCatalogPayload.items || preSalesKnowledge.serviceOfferings || [];
+    const faqEntries = preSalesFaqPayload.items || preSalesKnowledge.faqEntries || [];
 
     viewRoot.innerHTML = `
       <div class="card-grid">
@@ -781,27 +793,63 @@ export const createAdminUiApp = ({
           <p class="subtext">basicQuoteHelpEnabled: ${onboarding.basicQuoteHelpEnabled ? "true" : "false"}</p>
         </article>
         <article class="info-card">
-          <h3>Future Pre-Sales Hook</h3>
+          <h3>Pre-Sales Knowledge</h3>
           <p class="subtext">readiness: ${escapeHtml(preSales.readiness || "placeholder_only")}</p>
-          <p class="subtext">service catalog: ${escapeHtml(preSalesServiceCatalog.schemaVersion || "-")} (${escapeHtml(preSalesServiceCatalog.source || "-")}, entries=${escapeHtml(preSalesServiceCatalog.entries ?? 0)})</p>
+          <p class="subtext">catalogVersion: ${escapeHtml(preSales.catalogVersion || preSalesKnowledge.catalogVersion || "-")}</p>
+          <p class="subtext">faqVersion: ${escapeHtml(preSales.faqVersion || preSalesKnowledge.faqVersion || "-")}</p>
+          <p class="subtext">triageVersion: ${escapeHtml(preSales.triageVersion || preSalesKnowledge.triageVersion || "-")}</p>
+          <p class="subtext">templatesVersion: ${escapeHtml(preSales.templatesVersion || preSalesKnowledge.templatesVersion || "-")}</p>
+          <p class="subtext">service catalog: ${escapeHtml(preSalesServiceCatalog.schemaVersion || "-")} (${escapeHtml(preSalesServiceCatalog.source || "-")}, categories=${escapeHtml(preSalesServiceCatalog.categories ?? 0)}, entries=${escapeHtml(preSalesServiceCatalog.entries ?? 0)})</p>
           <p class="subtext">faq: ${escapeHtml(preSalesFaq.schemaVersion || "-")} (${escapeHtml(preSalesFaq.source || "-")}, entries=${escapeHtml(preSalesFaq.entries ?? 0)})</p>
         </article>
       </div>
       <article class="info-card" style="margin-top:0.8rem">
-        <h3>Next UI Phase Plan</h3>
-        <pre>${escapeHtml(
-          JSON.stringify(
-            {
-              users: ["status/tier", "bundle assignment", "capability overrides", "usage summary"],
-              groups: ["status/tier", "bundle assignment", "capability overrides", "effective capability diagnostics"],
-              bundles: ["catalog list", "create/edit", "capability composition"],
-              capabilities: ["catalog list", "category/description", "bundle membership"],
-              settings: ["private/group defaults", "onboarding governance defaults"]
-            },
-            null,
-            2
-          )
-        )}</pre>
+        <h3>Service Catalog Seed (${escapeHtml(preSalesCatalogPayload.catalogVersion || preSales.catalogVersion || "-")})</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Service Offering</th><th>Category</th><th>Safe Orientation</th><th>Recommended Next Step</th></tr></thead>
+            <tbody>
+              ${
+                serviceOfferings.length
+                  ? serviceOfferings
+                      .map((item) => {
+                        const category = serviceCategories.find((entry) => entry.id === item.categoryId);
+                        return `<tr>
+                          <td><div>${escapeHtml(item.title)}</div><div class="subtext">${escapeHtml(item.shortDescription || "-")}</div></td>
+                          <td>${escapeHtml(category?.title || item.categoryId || "-")}</td>
+                          <td>${item.safeForBasicQuoteOrientation ? '<span class="badge status-approved">yes</span>' : '<span class="badge status-blocked">no</span>'}</td>
+                          <td>${escapeHtml(item.recommendedNextStep || "-")}</td>
+                        </tr>`;
+                      })
+                      .join("")
+                  : '<tr><td colspan="4">No pre-sales service catalog entries available.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+      </article>
+      <article class="info-card" style="margin-top:0.8rem">
+        <h3>FAQ Seed (${escapeHtml(preSalesFaqPayload.faqVersion || preSales.faqVersion || "-")})</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Question</th><th>Answer</th><th>Next Step Hint</th></tr></thead>
+            <tbody>
+              ${
+                faqEntries.length
+                  ? faqEntries
+                      .map(
+                        (item) => `<tr>
+                        <td>${escapeHtml(item.question)}</td>
+                        <td>${escapeHtml(item.answer)}</td>
+                        <td>${escapeHtml(item.nextStepHint || "-")}</td>
+                      </tr>`
+                      )
+                      .join("")
+                  : '<tr><td colspan="3">No FAQ entries available.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
       </article>
     `;
   };
@@ -970,7 +1018,17 @@ export const createAdminUiApp = ({
   };
 
   const loadSettings = async () => {
-    state.settings = await api.getGovernanceSettings();
+    const [settings, preSalesKnowledge, preSalesCatalog, preSalesFaq] = await Promise.all([
+      api.getGovernanceSettings(),
+      api.getPreSalesKnowledge(),
+      api.getPreSalesCatalog(),
+      api.getPreSalesFaq()
+    ]);
+
+    state.settings = settings;
+    state.preSalesKnowledge = preSalesKnowledge?.item ?? preSalesKnowledge;
+    state.preSalesCatalog = preSalesCatalog;
+    state.preSalesFaq = preSalesFaq;
   };
 
   const loadLicenses = async () => {
@@ -1371,7 +1429,7 @@ export const createAdminUiApp = ({
   };
 
   const init = async () => {
-    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.9.1"}`;
+    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.9.2"}`;
     fillFormFromSession();
     renderSessionBadge();
     wireEvents();
@@ -1392,14 +1450,14 @@ const fetchUiConfig = async () => {
     if (!response.ok) {
       return {
         defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-        uiVersion: "1.9.1"
+        uiVersion: "1.9.2"
       };
     }
     return await response.json();
   } catch {
     return {
       defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-      uiVersion: "1.9.1"
+      uiVersion: "1.9.2"
     };
   }
 };
