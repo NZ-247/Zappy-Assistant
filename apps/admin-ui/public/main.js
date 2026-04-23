@@ -200,7 +200,7 @@ export const createAdminUiApp = ({
   storage,
   uiConfig = {
     defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-    uiVersion: "1.9.0"
+    uiVersion: "1.9.1"
   }
 }) => {
   const viewRoot = document.getElementById("view-root");
@@ -758,6 +758,9 @@ export const createAdminUiApp = ({
     const privateDefault = settings.defaults?.privateUser || {};
     const groupDefault = settings.defaults?.group || {};
     const onboarding = settings.onboarding || {};
+    const preSales = settings.preSales || {};
+    const preSalesServiceCatalog = preSales.serviceCatalog || {};
+    const preSalesFaq = preSales.faq || {};
 
     viewRoot.innerHTML = `
       <div class="card-grid">
@@ -776,6 +779,12 @@ export const createAdminUiApp = ({
           <p class="subtext">privateAssistantEnabled: ${onboarding.privateAssistantEnabled ? "true" : "false"}</p>
           <p class="subtext">serviceExplanationEnabled: ${onboarding.serviceExplanationEnabled ? "true" : "false"}</p>
           <p class="subtext">basicQuoteHelpEnabled: ${onboarding.basicQuoteHelpEnabled ? "true" : "false"}</p>
+        </article>
+        <article class="info-card">
+          <h3>Future Pre-Sales Hook</h3>
+          <p class="subtext">readiness: ${escapeHtml(preSales.readiness || "placeholder_only")}</p>
+          <p class="subtext">service catalog: ${escapeHtml(preSalesServiceCatalog.schemaVersion || "-")} (${escapeHtml(preSalesServiceCatalog.source || "-")}, entries=${escapeHtml(preSalesServiceCatalog.entries ?? 0)})</p>
+          <p class="subtext">faq: ${escapeHtml(preSalesFaq.schemaVersion || "-")} (${escapeHtml(preSalesFaq.source || "-")}, entries=${escapeHtml(preSalesFaq.entries ?? 0)})</p>
         </article>
       </div>
       <article class="info-card" style="margin-top:0.8rem">
@@ -1362,7 +1371,7 @@ export const createAdminUiApp = ({
   };
 
   const init = async () => {
-    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.9.0"}`;
+    uiVersionBadge.textContent = `UI ${uiConfig.uiVersion || "1.9.1"}`;
     fillFormFromSession();
     renderSessionBadge();
     wireEvents();
@@ -1383,14 +1392,14 @@ const fetchUiConfig = async () => {
     if (!response.ok) {
       return {
         defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-        uiVersion: "1.9.0"
+        uiVersion: "1.9.1"
       };
     }
     return await response.json();
   } catch {
     return {
       defaultAdminApiBaseUrl: DEFAULT_SETTINGS.apiBase,
-      uiVersion: "1.9.0"
+      uiVersion: "1.9.1"
     };
   }
 };

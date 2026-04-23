@@ -148,3 +148,17 @@ test("group defaults remain independent and start as PENDING + FREE", async () =
   assert.equal(group.status, "PENDING");
   assert.equal(group.tier, "FREE");
 });
+
+test("governance settings expose pre-sales placeholders for future Services.NET knowledge hooks", async () => {
+  const repository = createAdminGovernanceRepository({
+    prisma: buildFakePrisma() as any
+  });
+
+  const settings = await repository.getGovernanceDefaults();
+
+  assert.equal(settings.preSales.readiness, "placeholder_only");
+  assert.equal(settings.preSales.serviceCatalog.schemaVersion, "services_net.service_catalog.v1");
+  assert.equal(settings.preSales.serviceCatalog.entries, 0);
+  assert.equal(settings.preSales.faq.schemaVersion, "services_net.faq.v1");
+  assert.equal(settings.preSales.faq.entries, 0);
+});

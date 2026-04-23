@@ -393,6 +393,9 @@ Fase focada em onboarding privado default-friendly e expansão do control plane 
     - adicionar/remover capability de bundle
   - catálogo de capabilities passa a expor membership de bundles
   - endpoint/data de settings de governança expõe defaults separados (private x group) + flags de onboarding
+  - settings inclui placeholder leve para evolução futura de pre-sales Services.NET:
+    - `preSales.serviceCatalog` (`services_net.service_catalog.v1`)
+    - `preSales.faq` (`services_net.faq.v1`)
 - `apps/admin-api/src/http/routes.ts`
   - novos endpoints de governança:
     - `POST /admin/v1/governance/bundles`

@@ -180,6 +180,19 @@ test("admin-ui renders dashboard and jobs/reminders views with integration fetch
             },
             governance: {
               separationRule: "private_and_group_defaults_are_independent"
+            },
+            preSales: {
+              readiness: "placeholder_only",
+              serviceCatalog: {
+                schemaVersion: "services_net.service_catalog.v1",
+                source: "manual_placeholder",
+                entries: 0
+              },
+              faq: {
+                schemaVersion: "services_net.faq.v1",
+                source: "manual_placeholder",
+                entries: 0
+              }
             }
           }
         }),
@@ -244,4 +257,6 @@ test("admin-ui renders dashboard and jobs/reminders views with integration fetch
   const settingsText = dom.window.document.getElementById("view-root")?.textContent || "";
   assert.match(settingsText, /New Private User Default/i);
   assert.match(settingsText, /APPROVED/i);
+  assert.match(settingsText, /Future Pre-Sales Hook/i);
+  assert.match(settingsText, /services_net\.service_catalog\.v1/i);
 });

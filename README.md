@@ -277,7 +277,7 @@ Operator guide (lifecycle + Redis strategy): `docs/runtime-lifecycle-operator-gu
 - resolver health fails after delegation:
   - root logs `health_fail_after_delegate:*`; inspect the module directly by running its `scripts/run.sh` and module logs.
 
-Version note: current release line is `v1.9.0`.
+Version note: current release line is `v1.9.1`.
 
 ## Pairing WhatsApp (wa-gateway)
 
@@ -305,6 +305,7 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
   - capability override set/clear: `PUT|DELETE /admin/v1/governance/users/:waUserId/capabilities/:capabilityKey`, `PUT|DELETE /admin/v1/governance/groups/:waGroupId/capabilities/:capabilityKey`
   - governance defaults/settings view: `GET /admin/v1/governance/settings`
   - first-seen materialization defaults: private users `status=APPROVED`, `tier=FREE`; groups `status=PENDING`, `tier=FREE`
+  - settings payload also carries a light pre-sales readiness placeholder (`preSales.serviceCatalog` + `preSales.faq`) for future Services.NET institutional knowledge integration (no ingestion in this phase)
 - Commands: `/help`, `/task add/list/done`, `/note add/list/rm`, `/agenda`, `/calc`, `/timer`, `/mute <duration|off>`, `/whoami`, `/status`, `/reminder in/at`, `/sticker` (`/s`, `/stk`, `/fig`), `/toimg`, `/rnfig`, `/transcribe` (`/tr`, `/tss`), `/tts`, `/trl`, `/search`, `/google`, `/search-ai` (`/sai`), `/img` (`/gimage`), `/imglink`, `/dl`.
 - Stickers capability:
   - `/sticker` gera figurinha a partir de imagem ou vídeo curto (resposta ou legenda), com ajuste `contain` (sem crop) e padding transparente.

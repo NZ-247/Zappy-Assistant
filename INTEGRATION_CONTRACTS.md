@@ -405,6 +405,10 @@ Governance settings response shape (summary)
 - `defaults.group` (`status`, `tier`, `source`)
 - `onboarding` flags for private onboarding-friendly governance behavior
 - explicit separation rule: private defaults and group defaults are independently governed
+- `preSales` placeholder block for future Services.NET business-knowledge hooks:
+  - `readiness` (`placeholder_only`)
+  - `serviceCatalog` (`schemaVersion`, `source`, `entries`)
+  - `faq` (`schemaVersion`, `source`, `entries`)
 
 4. UI page mapping (Admin UI v1.9.0)
 4.1 Dashboard page
@@ -516,6 +520,8 @@ Widgets:
 defaults cards for new private users and new groups
 
 onboarding governance flags and explicit separation notes (private vs group policy)
+
+future pre-sales placeholder diagnostics (`serviceCatalog`/`faq` schema readiness)
 
 4.7 Licenses/Plans page
 

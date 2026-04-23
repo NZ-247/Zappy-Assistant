@@ -1,5 +1,14 @@
 # Changelog
 
+## V1.9.1 - 2026-04-23
+- Added a future-friendly Services.NET pre-sales knowledge placeholder to governance settings (without enabling ingestion in this phase):
+  - `preSales.readiness=placeholder_only`
+  - `preSales.serviceCatalog` with schema marker `services_net.service_catalog.v1`
+  - `preSales.faq` with schema marker `services_net.faq.v1`
+- Expanded admin-ui Governance Settings view to surface pre-sales placeholder readiness alongside private/group defaults.
+- Added test coverage for the new governance settings placeholder shape in adapters, admin-api, and admin-ui integration tests.
+- Updated architecture/contracts docs to document the placeholder hook and keep this phase focused on governance/admin usability.
+
 ## V1.9.0 - 2026-04-16
 - Changed first-seen private/direct user materialization default to onboarding-friendly governance:
   - `status=APPROVED`

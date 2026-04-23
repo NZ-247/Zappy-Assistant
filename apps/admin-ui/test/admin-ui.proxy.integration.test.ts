@@ -275,6 +275,19 @@ const buildMockAdminApi = async () => {
       },
       governance: {
         separationRule: "private_and_group_defaults_are_independent"
+      },
+      preSales: {
+        readiness: "placeholder_only",
+        serviceCatalog: {
+          schemaVersion: "services_net.service_catalog.v1",
+          source: "manual_placeholder",
+          entries: 0
+        },
+        faq: {
+          schemaVersion: "services_net.faq.v1",
+          source: "manual_placeholder",
+          entries: 0
+        }
       }
     }
   }));
@@ -594,6 +607,7 @@ test("admin-ui proxy supports admin-api round-trips for dashboard, users/groups,
   const governanceSettings = await callUiProxy(uiBaseUrl, "/admin/v1/governance/settings");
   assert.equal(governanceSettings.status, 200);
   assert.equal(governanceSettings.payload.item.defaults.privateUser.status, "APPROVED");
+  assert.equal(governanceSettings.payload.item.preSales.readiness, "placeholder_only");
 
   const assignGroupBundle = await callUiProxy(uiBaseUrl, "/admin/v1/governance/groups/g-100/bundles/moderation_tools", {
     method: "PUT",

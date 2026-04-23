@@ -55,8 +55,8 @@ type GovernanceSnapshotQuery = {
   isReplyToBot?: string;
 };
 
-const ADMIN_API_VERSION = "1.9.0";
-const GOVERNANCE_VERSION = "v1.9.0";
+const ADMIN_API_VERSION = "1.9.1";
+const GOVERNANCE_VERSION = "v1.9.1";
 const HEALTH_CHECK_TIMEOUT_MS = 3_500;
 const reminderStatuses = ["SCHEDULED", "SENT", "FAILED", "CANCELED"] as const;
 

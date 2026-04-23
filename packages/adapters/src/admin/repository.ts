@@ -96,6 +96,19 @@ export interface GovernanceDefaultsView {
   governance: {
     separationRule: "private_and_group_defaults_are_independent";
   };
+  preSales: {
+    readiness: "placeholder_only";
+    serviceCatalog: {
+      schemaVersion: "services_net.service_catalog.v1";
+      source: "manual_placeholder";
+      entries: number;
+    };
+    faq: {
+      schemaVersion: "services_net.faq.v1";
+      source: "manual_placeholder";
+      entries: number;
+    };
+  };
 }
 
 export interface SubjectCapabilityPolicyView {
@@ -1818,6 +1831,19 @@ export const createAdminGovernanceRepository = (deps: AdminGovernanceRepositoryD
     },
     governance: {
       separationRule: "private_and_group_defaults_are_independent"
+    },
+    preSales: {
+      readiness: "placeholder_only",
+      serviceCatalog: {
+        schemaVersion: "services_net.service_catalog.v1",
+        source: "manual_placeholder",
+        entries: 0
+      },
+      faq: {
+        schemaVersion: "services_net.faq.v1",
+        source: "manual_placeholder",
+        entries: 0
+      }
     }
   });
 

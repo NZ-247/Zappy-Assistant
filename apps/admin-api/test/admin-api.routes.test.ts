@@ -276,6 +276,19 @@ const buildRuntime = () => {
       },
       governance: {
         separationRule: "private_and_group_defaults_are_independent"
+      },
+      preSales: {
+        readiness: "placeholder_only",
+        serviceCatalog: {
+          schemaVersion: "services_net.service_catalog.v1",
+          source: "manual_placeholder",
+          entries: 0
+        },
+        faq: {
+          schemaVersion: "services_net.faq.v1",
+          source: "manual_placeholder",
+          entries: 0
+        }
       }
     }),
     getUserEffectiveCapabilityPolicy: async ({ waUserId }: { waUserId: string }) => {
@@ -905,6 +918,8 @@ test("governance bundle catalog can be created/edited and settings expose defaul
   assert.equal(settings.json().schemaVersion, "admin.governance.settings.v1");
   assert.equal(settings.json().item.defaults.privateUser.status, "APPROVED");
   assert.equal(settings.json().item.defaults.group.status, "PENDING");
+  assert.equal(settings.json().item.preSales.readiness, "placeholder_only");
+  assert.equal(settings.json().item.preSales.serviceCatalog.schemaVersion, "services_net.service_catalog.v1");
 
   await app.close();
 });
@@ -1014,7 +1029,7 @@ test("status endpoint returns dashboard-ready health summary", async () => {
   assert.equal(response.statusCode, 200);
   const payload = response.json();
   assert.equal(payload.schemaVersion, "admin.status.v2");
-  assert.equal(payload.version, "1.9.0");
+  assert.equal(payload.version, "1.9.1");
   assert.equal(typeof payload.services.gateway.online, "boolean");
   assert.equal(typeof payload.reminders.FAILED, "number");
   assert.equal(Array.isArray(payload.failures.recentFailedReminders), true);
