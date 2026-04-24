@@ -18,6 +18,7 @@ export interface InternalMediaResolverApiDeps {
   token: string;
   logger?: LoggerLike;
   resolveMedia: (request: MediaResolverResolveRequest) => Promise<MediaResolverResolveResult>;
+  onListening?: () => void;
 }
 
 const parseBearerToken = (authorizationHeader?: string | string[]): string | null => {
@@ -169,6 +170,7 @@ export const startInternalMediaResolverApi = (deps: InternalMediaResolverApiDeps
       },
       "media resolver api started"
     );
+    deps.onListening?.();
   });
 
   return {

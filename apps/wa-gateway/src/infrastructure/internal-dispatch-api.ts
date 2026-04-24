@@ -17,6 +17,7 @@ export interface InternalDispatchApiDeps {
   token: string;
   logger: LoggerLike;
   dispatchText: (input: InternalGatewaySendTextRequest) => Promise<{ waMessageId: string; raw?: unknown }>;
+  onListening?: () => void;
 }
 
 const summarizeError = (error: unknown): { errorName: string; operatorMessage: string } => {
@@ -191,6 +192,7 @@ export const startInternalDispatchApi = (deps: InternalDispatchApiDeps) => {
       withCategory("HTTP", { method: "POST", route: INTERNAL_GATEWAY_SEND_TEXT_PATH, port: deps.port }),
       "wa internal dispatch api started"
     );
+    deps.onListening?.();
   });
 
   return {

@@ -127,3 +127,4 @@ process.on("uncaughtException", (error) => {
 });
 
 logger.info(withCategory("QUEUE", { queue: env.QUEUE_NAME, status: "Worker OK" }), "worker started");
+process.send?.("ready");

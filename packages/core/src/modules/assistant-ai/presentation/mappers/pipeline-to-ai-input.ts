@@ -29,5 +29,6 @@ export const mapPipelineToAiInput = (
   settings: { timezone: ctx.timezone },
   now: ctx.now,
   llmEnabled: ctx.assistantMode !== "off",
-  personaId: ctx.flags.assistant_persona ?? undefined
+  personaId: ctx.flags.assistant_persona ?? undefined,
+  traceId: ctx.event.executionId,
 });

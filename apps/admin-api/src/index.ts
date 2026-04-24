@@ -30,6 +30,7 @@ const start = async () => {
     await reportStartupStatus(runtime);
     await app.listen({ port: runtime.env.ADMIN_API_PORT, host: "0.0.0.0" });
     runtime.logger.info(withCategory("HTTP", { port: runtime.env.ADMIN_API_PORT }), "admin-api started");
+    process.send?.("ready");
   } catch (error) {
     runtime.logger.error(withCategory("ERROR", { err: error }), "admin-api failed");
     process.exit(1);

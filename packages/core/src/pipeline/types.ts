@@ -259,6 +259,8 @@ export interface AiAssistantInput {
   now: Date;
   llmEnabled?: boolean;
   personaId?: string;
+  /** Correlation ID from the originating inbound message. Populated from executionId at the WA-IN entry point. */
+  traceId?: string;
 }
 
 export interface AiAssistantPort {

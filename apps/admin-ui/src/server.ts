@@ -195,5 +195,6 @@ const isEntrypoint = resolve(process.argv[1] ?? "") === fileURLToPath(import.met
 
 if (isEntrypoint) {
   const server = await createAdminUiServer();
-  void server.start();
+  await server.start();
+  process.send?.("ready");
 }

@@ -183,7 +183,8 @@ const server = startInternalMediaResolverApi({
   port: env.MEDIA_RESOLVER_API_PORT,
   token: env.MEDIA_RESOLVER_API_TOKEN,
   logger,
-  resolveMedia: resolverService.resolve
+  resolveMedia: resolverService.resolve,
+  onListening: () => process.send?.("ready")
 });
 
 void reportStartupStatus();

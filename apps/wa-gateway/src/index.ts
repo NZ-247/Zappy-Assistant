@@ -379,7 +379,8 @@ const internalDispatchApi = startInternalDispatchApi({
   port: env.WA_GATEWAY_INTERNAL_PORT,
   token: env.WA_GATEWAY_INTERNAL_TOKEN,
   logger,
-  dispatchText: dispatchInternalText
+  dispatchText: dispatchInternalText,
+  onListening: () => process.send?.("ready")
 });
 const heartbeat = setInterval(() => {
   void markGatewayHeartbeat(redis, Boolean(socket?.user));

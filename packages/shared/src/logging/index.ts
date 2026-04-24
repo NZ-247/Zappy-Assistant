@@ -76,6 +76,7 @@ const CORE_DETAIL_FIELDS = [
   "waMessageId",
   "inboundWaMessageId",
   "executionId",
+  "traceId",
   "commandExecutionId",
   "responseActionId"
 ] as const;
@@ -366,6 +367,7 @@ const formatWaLine = (obj: any, ctx: PrettyContext): string => {
     obj.waMessageId ? `msg=${obj.waMessageId}` : null,
     obj.inboundWaMessageId ? `in=${obj.inboundWaMessageId}` : null,
     obj.executionId ? `exec=${obj.executionId}` : null,
+    obj.traceId && obj.traceId !== obj.executionId ? `trace=${obj.traceId}` : null,
     obj.responseActionId ? `resp=${obj.responseActionId}` : null
   ]
     .filter(Boolean)

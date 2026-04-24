@@ -91,7 +91,37 @@ export class AiService {
 
     const toolIntent = detectToolIntent(input.userText, input.availableTools);
     const messages = this.toConversationMessages(prompt, input.userText);
+
+    this.logger?.info?.(
+      {
+        category: "AI",
+        traceId: input.traceId,
+        waUserId: input.waUserId,
+        waGroupId: input.waGroupId,
+        conversationId: input.conversationId,
+        chatScope: input.chatScope,
+        status: "llm_call_start",
+        memoryMessages: recentMemory.length,
+        hasToolIntent: Boolean(toolIntent)
+      },
+      "AI generate"
+    );
+
     const text = await this.llm.chat({ system: prompt.systemPrompt, messages });
+
+    this.logger?.info?.(
+      {
+        category: "AI",
+        traceId: input.traceId,
+        waUserId: input.waUserId,
+        conversationId: input.conversationId,
+        status: "llm_call_done",
+        responseLength: text?.length ?? 0,
+        hasToolIntent: Boolean(toolIntent)
+      },
+      "AI response ready"
+    );
+
     if (text) await this.appendMemory(input, text, memoryLimit);
     if (toolIntent) return { kind: "tool_suggestion", tool: toolIntent, text };
     return { kind: "text", text };

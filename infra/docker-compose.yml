@@ -1,3 +1,25 @@
+###############################################################################
+# Zappy Assistant — Docker Compose (infra + containerised services)
+#
+# API LAYER DECISION:
+#   This compose file uses `assistant-api` as the API backend served on :3333.
+#   assistant-api is a lightweight, read-oriented subset of admin-api routes:
+#     flags, triggers, logs, messages, queues, metrics, governance snapshot, status.
+#
+#   `admin-api` (full control-plane with governance CRUD, license management,
+#     capability bundles, etc.) is the canonical service for:
+#       • Local development (npm run dev, npm run start:dev)
+#       • PM2 supervision (ecosystem.config.cjs / ecosystem.prod.config.cjs)
+#
+#   In containerised environments where full admin CRUD is not needed from the
+#   UI (or is performed via direct DB/migrations), assistant-api is sufficient.
+#   Switch this service to `admin-api` if you need full governance CRUD in Docker.
+#
+#   wa-gateway is intentionally absent from this compose file.
+#   It requires filesystem access to the Baileys WA session and is run
+#   directly on the host (or via PM2) alongside these Docker services.
+###############################################################################
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -29,6 +51,8 @@ services:
       retries: 12
       start_period: 3s
 
+  # assistant-api: lightweight API backend for Docker deployments.
+  # Canonical local/PM2 backend is admin-api — see comment above.
   assistant-api:
     build:
       context: ..
@@ -55,6 +79,8 @@ services:
     ports:
       - "3335:3335"
 
+  # admin-ui proxies /ui-api/* to assistant-api:3333 inside Docker.
+  # In PM2 mode it proxies to admin-api:3333 — same port, different binary.
   admin-ui:
     build:
       context: ..
