@@ -10,7 +10,8 @@ import {
   type MessageDirection,
   type Prisma
 } from "@prisma/client";
-import { Queue } from "bullmq";
+import { QueueCtor } from "./bullmq-compat.js";
+import type { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import OpenAI from "openai";
 import { toFile } from "openai/uploads";
@@ -50,8 +51,8 @@ import { createAdminJobsRepository } from "./admin/jobs-repository.js";
 
 export const prisma = new PrismaClient();
 export const createRedisConnection = (redisUrl: string) => new Redis(redisUrl, { maxRetriesPerRequest: null });
-export const createQueue = (queueName: string, redisUrl: string) =>
-  new Queue(queueName, { connection: createRedisConnection(redisUrl) as unknown as any });
+export const createQueue = (queueName: string, redisUrl: string): Queue =>
+  new QueueCtor(queueName, { connection: createRedisConnection(redisUrl) as unknown as any }) as unknown as Queue;
 
 const metricKeys: MetricKey[] = [
   "messages_received_total",

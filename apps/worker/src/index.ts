@@ -1,4 +1,4 @@
-import { Worker } from "bullmq";
+import { Worker } from "./bullmq-compat.js";
 import {
   createRedisConnection,
   markWorkerHeartbeat,
