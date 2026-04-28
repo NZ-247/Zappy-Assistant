@@ -90,6 +90,7 @@ module.exports = {
       wait_ready: true,
       listen_timeout: 15000,
       instances: 1,
+      exec_mode: 'fork',
       env: devEnv,
     },
 

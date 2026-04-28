@@ -42,9 +42,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.base.json"
   },
   "devDependencies": {
-    "cfonts": "^3.3.0",
     "@types/node": "^20.17.19",
+    "cfonts": "^3.3.0",
     "concurrently": "^9.1.2",
+    "pm2": "^6.0.14",
     "prisma": "^6.4.1",
     "typescript": "^5.7.3"
   },

@@ -15,11 +15,15 @@ PM2 is recommended for any environment where the processes must survive after th
 
 ## Prerequisites
 
+PM2 is included as a devDependency — no global install required. `npm install` at the project root is sufficient.
+
+If you prefer a global install for the `pm2` command to be available system-wide:
+
 ```bash
-npm install -g pm2
+sudo npm install -g pm2
 ```
 
-Verify: `pm2 --version`
+> When using `npm run pm2:*` scripts, PM2 is resolved from `node_modules/.bin/pm2` automatically.
 
 ---
 
