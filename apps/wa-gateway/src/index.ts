@@ -39,7 +39,8 @@ import {
   consentRepository,
   groupAccessRepository,
   botAdminRepository,
-  governancePort
+  governancePort as _baseGovernancePort,
+  createCachedGovernancePort
 } from "@zappy/adapters";
 import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
 import {
@@ -73,6 +74,7 @@ const baileysLogger = createBaileysRuntimeLogger({
   withCategory
 });
 const redis = createRedisConnection(env.REDIS_URL);
+const governancePort = createCachedGovernancePort(_baseGovernancePort, redis);
 const metrics = createMetricsRecorder(redis);
 const queue = createQueue(env.QUEUE_NAME, env.REDIS_URL);
 const queueAdapter = createQueueAdapter(queue);

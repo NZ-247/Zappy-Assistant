@@ -5,7 +5,8 @@ import {
   prisma,
   createMetricsRecorder,
   createAuditTrail,
-  governancePort
+  governancePort as _baseGovernancePort,
+  createCachedGovernancePort
 } from "@zappy/adapters";
 import { createLogger, loadEnv, printStartupBanner, withCategory } from "@zappy/shared";
 import { createWaGatewayDispatchClient } from "./infrastructure/wa-gateway-dispatch-client.js";
@@ -15,6 +16,7 @@ import { processTimerJob } from "./timers/application/use-cases/process-timer-jo
 const env = loadEnv();
 const logger = createLogger("worker");
 const connection = createRedisConnection(env.REDIS_URL);
+const governancePort = createCachedGovernancePort(_baseGovernancePort, connection);
 const metrics = createMetricsRecorder(connection);
 const auditTrail = createAuditTrail();
 const gatewayClient = createWaGatewayDispatchClient({
@@ -106,6 +108,14 @@ worker.on("failed", (job, error) => {
     }),
     "job failed"
   );
+});
+
+worker.on("stalled", (jobId) => {
+  logger.warn(withCategory("WARN", { action: "queue_job_stalled", jobId }), "job stalled — will be retried");
+});
+
+worker.on("error", (error) => {
+  logger.error(withCategory("ERROR", { action: "worker_error", err: error }), "worker connection error");
 });
 
 const shutdown = async () => {

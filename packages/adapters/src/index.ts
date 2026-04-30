@@ -46,6 +46,7 @@ import {
   markWorkerHeartbeat
 } from "./status/repository.js";
 import { createReadOnlyGovernancePort } from "./governance/read-only-governance-port.js";
+export { createCachedGovernancePort } from "./governance/cached-governance-port.js";
 import { createAdminGovernanceRepository } from "./admin/repository.js";
 import { createAdminJobsRepository } from "./admin/jobs-repository.js";
 
