@@ -9,7 +9,9 @@ const run = { query: "Como funciona backup no Proxmox?", conversationKey: "fixtu
 const mockBackend = (results = searchSourcesFixture): WebSearchPort => ({
   search: async () => ({ provider: "fixture", results })
 });
-const claim = (text: string, ...sourceIds: string[]) => JSON.stringify({ claims: [{ text, sourceIds }] });
+const claim = (text: string, ...sourceIds: string[]) => JSON.stringify({ claims: [{
+  text, sourceIds, quote: searchSourcesFixture[Number(sourceIds[0]?.slice(1)) - 1]?.snippet
+}] });
 const mockLlm = (output: string): LlmPort => ({ chat: async () => output });
 
 test("uses only retrieved links, canonicalizes duplicates and keeps snippets as data", async () => {
@@ -30,11 +32,11 @@ test("uses only retrieved links, canonicalizes duplicates and keeps snippets as 
       assert.equal(input.evidence[0].snippet, searchSourcesFixture[0].snippet);
       assert.equal(input.evidence[1].snippet, contaminated);
       assert.ok(input.evidence.every((e: object) => !("url" in e)));
-      return claim("Use vzdump para criar backups.", "F1", "F1");
+      return claim("O utilitário vzdump permite criar backups de máquinas virtuais.", "F1");
     } }
   });
   const reply = await search(run);
-  assert.match(reply, /backups\. \[F1\]/);
+  assert.match(reply, /máquinas virtuais\. \[F1\]/);
   assert.equal(reply.split(searchSourcesFixture[0].link).length - 1, 1);
   assert.doesNotMatch(reply, /nextcloud|javascript|secret|utm_source|section/i);
 });
@@ -102,7 +104,7 @@ test("Ollama timeout cancels synthesis and preserves retrieved links", async () 
 test("limits concurrent searches per conversation and releases after completion", async () => {
   const search = createSearchWithSources({
     backend: mockBackend(), model: "fixture",
-    llm: { chat: async () => { await delay(15); return claim("Use vzdump.", "F1"); } }
+    llm: { chat: async () => { await delay(15); return claim("O utilitário vzdump permite criar backups de máquinas virtuais.", "F1"); } }
   });
   const first = search(run);
   assert.match(await search(run), /andamento/);
@@ -112,28 +114,61 @@ test("limits concurrent searches per conversation and releases after completion"
 
 test("retains API identifiers that appear verbatim in the cited evidence", async () => {
   const reply = await createSearchWithSources({
-    backend: mockBackend(), llm: mockLlm(claim("Use event.get para consultar eventos.", "F3")), model: "fixture"
+    backend: mockBackend(), llm: mockLlm(claim("O método event.get permite consultar eventos com filtros de tempo.", "F3")), model: "fixture"
   })(run);
-  assert.match(reply, /event\.get para consultar eventos\. \[F3\]/);
+  assert.match(reply, /event\.get permite consultar eventos com filtros de tempo\. \[F3\]/);
   assert.ok(reply.includes(searchSourcesFixture[2].link));
 });
 
 test("retains cron.php from the cited snippet without treating it as an external link", async () => {
   const hit = { ...searchSourcesFixture[1], snippet: "Execute o script cron.php para processar tarefas em segundo plano." };
   const reply = await createSearchWithSources({
-    backend: mockBackend([hit]), llm: mockLlm(claim("Execute cron.php para processar tarefas.", "F1")), model: "fixture"
+    backend: mockBackend([hit]), llm: mockLlm(JSON.stringify({ claims: [{ text: hit.snippet, sourceIds: ["F1"], quote: hit.snippet }] })), model: "fixture"
   })(run);
-  assert.match(reply, /Execute cron\.php para processar tarefas\. \[F1\]/);
+  assert.match(reply, /Execute o script cron\.php para processar tarefas em segundo plano\. \[F1\]/);
   assert.ok(reply.includes(hit.link));
 });
 
 test("admits two distinct conversations and rejects a third while both are active", async () => {
   const search = createSearchWithSources({
     backend: mockBackend(), model: "fixture",
-    llm: { chat: async () => { await delay(15); return claim("Use vzdump.", "F1"); } }
+    llm: { chat: async () => { await delay(15); return claim("O utilitário vzdump permite criar backups de máquinas virtuais.", "F1"); } }
   });
   const first = search(run);
   const second = search({ ...run, conversationKey: "second" });
   assert.match(await search({ ...run, conversationKey: "third" }), /andamento/);
   for (const reply of await Promise.all([first, second])) assert.match(reply, /vzdump/);
+});
+
+test("does not publish English claims or claims without a literal supporting excerpt", async () => {
+  for (const output of [
+    claim("Proxmox VE backups include virtual machine configuration and all data.", "F1"),
+    JSON.stringify({ claims: [{ text: "O utilitário permite criar backups de máquinas virtuais.", sourceIds: ["F1"], quote: "Trecho que não pertence à fonte recuperada." }] })
+  ]) {
+    const reply = await createSearchWithSources({ backend: mockBackend(), llm: mockLlm(output), model: "fixture" })(run);
+    assert.match(reply, /evidência suficiente/);
+    assert.ok(reply.includes(searchSourcesFixture[0].link));
+  }
+});
+
+test("webcron alone does not support local cron and triggers a version-scoped complement", async () => {
+  const queries: string[] = [];
+  const webcron = { ...searchSourcesFixture[1], link: "https://docs.nextcloud.com/server/35/admin_manual/cron.html",
+    snippet: "Registre o endereço cron.php em um serviço webcron externo, como easyCron." };
+  const search = createSearchWithSources({ model: "fixture", backend: {
+    search: async ({ query }) => { queries.push(query); return { provider: "fixture", results: [webcron] }; }
+  }, llm: { chat: async () => assert.fail("webcron cannot support local cron") } });
+  const result = await search({ ...run, query: "Como configurar cron local no Nextcloud 35?" });
+  assert.equal(queries.length, 2);
+  assert.match(queries[1], /site:docs.nextcloud.com\/server\/35\/admin_manual/);
+  assert.match(result, /cron local/);
+  assert.ok(result.includes(webcron.link));
+});
+
+test("keeps the exact housekeeper condition or returns sources instead", async () => {
+  const hit = { ...searchSourcesFixture[2], snippet: "O método event.get pode retornar problemas de uma entidade excluída se ainda não tiverem sido removidos pelo housekeeper." };
+  const search = (text: string) => createSearchWithSources({ model: "fixture", backend: mockBackend([hit]),
+    llm: mockLlm(JSON.stringify({ claims: [{ text, sourceIds: ["F1"], quote: hit.snippet }] })) })(run);
+  assert.match(await search(hit.snippet), /se ainda não tiverem sido removidos pelo housekeeper\. \[F1\]/);
+  assert.match(await search("O método event.get retorna problemas de uma entidade excluída."), /evidência suficiente/);
 });

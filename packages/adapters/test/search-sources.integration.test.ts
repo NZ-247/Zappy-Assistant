@@ -30,7 +30,7 @@ function setup({ admin = true, root = false, identityAdmin = false, natural = tr
     assert.deepEqual(body.format, SEARCH_SOURCES_RESPONSE_SCHEMA);
     assert.match(body.messages[1].content, /histórico de eventos/);
     return Response.json({ done: true, message: {
-      content: JSON.stringify({ claims: [{ text: "Consulte eventos por intervalo de tempo.", sourceIds: ["F1"] }] })
+      content: JSON.stringify({ claims: [{ text: "A API permite consultar um histórico de eventos filtrado por intervalo de tempo.", sourceIds: ["F1"], quote: "A API permite consultar um histórico de eventos filtrado por intervalo de tempo." }] })
     } });
   });
   const webSearch: WebSearchPort = { search: async ({ mode }) => {
