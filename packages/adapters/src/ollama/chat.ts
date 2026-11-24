@@ -4,12 +4,14 @@ export function createOllamaChatAdapter(config: {
   baseUrl: string;
   model: string;
   timeoutMs: number;
+  format?: Record<string, unknown>;
 }, request: typeof fetch = fetch): LlmPort {
   const url = new URL("/api/chat", config.baseUrl);
 
   return {
-    async chat({ system, messages }) {
-      const signal = AbortSignal.timeout(config.timeoutMs);
+    async chat({ system, messages, signal: parentSignal }) {
+      const timeout = AbortSignal.timeout(config.timeoutMs);
+      const signal = parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
       try {
         const response = await request(url, {
           method: "POST",
@@ -19,6 +21,7 @@ export function createOllamaChatAdapter(config: {
           body: JSON.stringify({
             model: config.model,
             stream: false,
+            format: config.format,
             think: false,
             options: { num_ctx: 2048, temperature: 0, num_predict: 256 },
             messages: [{ role: "system", content: system }, ...messages]

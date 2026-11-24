@@ -503,3 +503,9 @@ Confira `correlationId`, `model`, `latencyMs` e `decision` nos eventos bem-suced
 - Creator (556699064658): “Preciso de um plano para o lançamento.” → proactive, strategic outline + suggested next actions.
 - Mother (556692283438): “Me lembra de tomar o remédio às 20h.” → gentle confirmation using soft address and schedules the reminder.
 - Regular member: “cria uma tarefa para ligar para o cliente amanhã” → parses intent, asks for missing time if needed, then creates the task.
+
+### Busca local com fontes
+
+`SEARCH_AI_PROVIDER=ollama_sources` habilita o canário de `/search-ai` e `/sai` no chat direto de operadores autorizados. `SEARCH_SOURCES_NATURAL_ENABLED=true` habilita pedidos explícitos como “Pesquise na web sobre backup no Proxmox”. Os dois caminhos recuperam trechos, sintetizam em português no Ollama e exibem referências validadas. Quando os trechos não sustentam a síntese, o bot informa a limitação e apresenta os links recuperados, quando disponíveis.
+
+O canário vem desativado. `SEARCH_SOURCES_BACKEND=existing|searxng` escolhe o backend da síntese. `SEARXNG_BASE_URL` é obrigatório para SearXNG. `/search` e `/google` continuam com o adaptador textual e modos atuais. Consulte o [roteiro da bancada e liberação](docs/search-sources-rollout.md).

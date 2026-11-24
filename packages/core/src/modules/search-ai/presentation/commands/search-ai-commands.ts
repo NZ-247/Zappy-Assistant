@@ -2,10 +2,13 @@ import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
 import { parseSearchAiCommand } from "../../infrastructure/search-ai-command-parser.js";
 import { executeSearchAi, type SearchAiUseCaseConfig } from "../../application/use-cases/search-ai.js";
-import type { SearchAiPort } from "../../ports.js";
+import type { SearchAiPort, SearchWithSources } from "../../ports.js";
 import type { LoggerPort } from "../../../../pipeline/ports.js";
+import { runSearchSources } from "../search-sources-entry.js";
 
 export interface SearchAiCommandDeps {
+  searchWithSources?: SearchWithSources;
+  isRoot?: boolean;
   searchAi?: SearchAiPort;
   config: SearchAiUseCaseConfig;
   formatUsage?: (command: "search-ai") => string | null;
@@ -48,6 +51,10 @@ export const handleSearchAiCommand = async (input: {
     const text = parseFailureMessage({ reason: parsed.reason, usage });
     const formatted = deps.stylizeReply ? deps.stylizeReply(text) : text;
     return [{ kind: "reply_text", text: formatted }];
+  }
+
+  if (deps.config.enabled && deps.searchWithSources) {
+    return runSearchSources(ctx, deps.searchWithSources, parsed.query, "command", deps.isRoot === true, deps.config.maxSources);
   }
 
   return executeSearchAi({

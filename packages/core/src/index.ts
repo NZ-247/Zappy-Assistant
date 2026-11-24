@@ -788,6 +788,9 @@ export class Orchestrator {
       if (followUp.length > 0) return followUp;
     }
 
+    const webSearchActions = await this.assistantAi.handleExplicitWebSearch(ctx);
+    if (webSearchActions.length > 0) return webSearchActions;
+
     const naturalActions = await this.assistantAi.handleAddressedMessage(ctx);
     if (naturalActions.length > 0) return naturalActions;
 
@@ -959,3 +962,5 @@ export class Orchestrator {
     return this.formatActionsForDelivery([{ kind: "noop", reason: "no_action" }]);
   }
 }
+
+export { createSearchWithSources, SEARCH_SOURCES_RESPONSE_SCHEMA } from "./modules/search-ai/application/use-cases/answer-with-sources.js";

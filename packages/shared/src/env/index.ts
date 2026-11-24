@@ -82,8 +82,20 @@ const envSchema = z.object({
   SEARCH_PROVIDER: z.enum(["google", "duckduckgo"]).default("google"),
   SEARCH_MAX_RESULTS: z.coerce.number().int().min(1).max(8).default(3),
   SEARCH_TIMEOUT_MS: z.coerce.number().int().min(2_000).max(60_000).default(10_000),
-  SEARCH_AI_ENABLED: z.coerce.boolean().default(true),
-  SEARCH_AI_PROVIDER: z.enum(["openai", "gemini"]).default("openai"),
+  SEARCH_AI_ENABLED: booleanFlag("true"),
+  SEARCH_AI_PROVIDER: z.enum(["openai", "gemini", "ollama_sources"]).default("openai"),
+  SEARCH_SOURCES_BACKEND: z.enum(["existing", "searxng"]).default("existing"),
+  SEARCH_SOURCES_NATURAL_ENABLED: booleanFlag("false"),
+  SEARXNG_BASE_URL: z.preprocess((value) => value === "" ? undefined : value,
+    z.string().url().refine((value) => {
+      try {
+        const url = new URL(value);
+        return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+      } catch {
+        return false;
+      }
+    }, "Expected an HTTP(S) base URL without credentials, query or fragment").optional()
+  ),
   SEARCH_AI_MODEL: z.string().default("gpt-4.1-mini"),
   SEARCH_AI_TIMEOUT_MS: z.coerce.number().int().min(2_000).max(120_000).default(25_000),
   SEARCH_AI_MAX_SOURCES: z.coerce.number().int().min(1).max(8).default(4),
@@ -136,7 +148,10 @@ const envSchema = z.object({
   CONSENT_TERMS_VERSION: z.string().default("2026-03"),
   CONSENT_LINK: z.string().default("https://services.net.br/politicas"),
   CONSENT_SOURCE: z.string().default("wa-gateway")
-});
+}).refine(
+  (env) => env.SEARCH_AI_PROVIDER !== "ollama_sources" || env.SEARCH_SOURCES_BACKEND !== "searxng" || Boolean(env.SEARXNG_BASE_URL),
+  { path: ["SEARXNG_BASE_URL"], message: "Required for the SearXNG evidence backend" }
+);
 
 export type AppEnv = z.infer<typeof envSchema>;
 

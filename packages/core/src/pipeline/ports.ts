@@ -169,7 +169,7 @@ export interface QueuePort {
 }
 
 export interface LlmPort {
-  chat(input: { system: string; messages: ConversationMessage[] }): Promise<string>;
+  chat(input: { system: string; messages: ConversationMessage[]; signal?: AbortSignal }): Promise<string>;
 }
 
 export interface TextToSpeechPort {
@@ -279,6 +279,7 @@ export interface WebSearchPort {
     limit: number;
     locale?: string;
     mode?: "generic" | "google_strict";
+    signal?: AbortSignal;
   }): Promise<{
     provider: string;
     results: WebSearchResultItem[];
@@ -457,6 +458,8 @@ export interface CorePorts {
   textTranslation?: TextTranslationPort;
   webSearch?: WebSearchPort;
   searchAi?: SearchAiPort;
+  searchWithSources?: import("../modules/search-ai/ports.js").SearchWithSources;
+  searchSourcesNaturalEnabled?: boolean;
   imageSearch?: ImageSearchPort;
   mediaDownload?: MediaDownloadPort;
   llmModel?: string;

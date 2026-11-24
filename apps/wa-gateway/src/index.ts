@@ -1,5 +1,5 @@
 import { downloadMediaMessage } from "baileys";
-import { Orchestrator } from "@zappy/core";
+import { Orchestrator, createSearchWithSources, SEARCH_SOURCES_RESPONSE_SCHEMA } from "@zappy/core";
 import { attemptGroupAdminAction } from "./admin-actions.js";
 import {
   coreFlagsRepository,
@@ -32,6 +32,7 @@ import {
   createOpenAiTextToSpeechAdapter,
   createOpenAiTranslationAdapter,
   createWebSearchAdapter,
+  createSearxngWebSearchAdapter,
   createOpenAiSearchAiAdapter,
   createGeminiSearchAiAdapter,
   createImageSearchAdapter,
@@ -121,16 +122,31 @@ const textTranslationAdapter = createOpenAiTranslationAdapter({
   timeoutMs: env.TTS_TRANSLATION_TIMEOUT_MS
 });
 const googleSearchEngineId = env.GOOGLE_SEARCH_ENGINE_ID ?? env.GOOGLE_SEARCH_CX;
-const webSearchAdapter = env.SEARCH_ENABLED
-  ? createWebSearchAdapter({
-      googleApiKey: env.GOOGLE_SEARCH_API_KEY,
-      googleSearchEngineId,
-      googleCx: env.GOOGLE_SEARCH_CX,
-      timeoutMs: env.SEARCH_TIMEOUT_MS,
-      preferredProvider: env.SEARCH_PROVIDER
+const existingWebSearchAdapter = createWebSearchAdapter({
+  googleApiKey: env.GOOGLE_SEARCH_API_KEY,
+  googleSearchEngineId,
+  googleCx: env.GOOGLE_SEARCH_CX,
+  timeoutMs: env.SEARCH_TIMEOUT_MS,
+  preferredProvider: env.SEARCH_PROVIDER
+});
+const webSearchAdapter = env.SEARCH_ENABLED ? existingWebSearchAdapter : undefined;
+const useSearchSources = env.SEARCH_AI_PROVIDER === "ollama_sources";
+const searchWithSources = env.SEARCH_AI_ENABLED && useSearchSources
+  ? createSearchWithSources({
+      backend: env.SEARCH_SOURCES_BACKEND === "searxng"
+        ? createSearxngWebSearchAdapter(env.SEARXNG_BASE_URL!)
+        : existingWebSearchAdapter,
+      llm: createOllamaChatAdapter({
+        baseUrl: env.OLLAMA_BASE_URL,
+        model: env.OLLAMA_CHAT_MODEL,
+        timeoutMs: env.OLLAMA_CHAT_TIMEOUT_MS,
+        format: SEARCH_SOURCES_RESPONSE_SCHEMA
+      }),
+      model: env.OLLAMA_CHAT_MODEL,
+      logger
     })
   : undefined;
-const searchAiAdapter = env.SEARCH_AI_ENABLED
+const searchAiAdapter = env.SEARCH_AI_ENABLED && !useSearchSources
   ? env.SEARCH_AI_PROVIDER === "gemini"
     ? createGeminiSearchAiAdapter({
         apiKey: env.GEMINI_API_KEY,
@@ -419,6 +435,8 @@ const orchestrator = new Orchestrator({
   textTranslation: textTranslationAdapter,
   webSearch: webSearchAdapter,
   searchAi: searchAiAdapter,
+  searchWithSources,
+  searchSourcesNaturalEnabled: env.SEARCH_SOURCES_NATURAL_ENABLED,
   imageSearch: imageSearchAdapter,
   mediaDownload: mediaDownloadAdapter,
   llmModel,

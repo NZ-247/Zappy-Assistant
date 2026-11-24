@@ -44,7 +44,7 @@ const normalizeOptional = (value?: string): string | undefined => {
 const resolveGoogleEngineId = (input: WebSearchAdapterInput): string | undefined =>
   normalizeOptional(input.googleSearchEngineId) ?? normalizeOptional(input.googleCx);
 
-const fetchJson = async <T>(url: string, timeoutMs: number): Promise<T> => {
+const fetchJson = async <T>(url: string, timeoutMs: number, signal?: AbortSignal): Promise<T> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -54,7 +54,7 @@ const fetchJson = async <T>(url: string, timeoutMs: number): Promise<T> => {
         Accept: "application/json",
         "User-Agent": "zappy-assistant/1.5 (+web-search)"
       },
-      signal: controller.signal
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
     });
     if (!response.ok) {
       throw new Error(`http_${response.status}`);
@@ -65,7 +65,7 @@ const fetchJson = async <T>(url: string, timeoutMs: number): Promise<T> => {
   }
 };
 
-const fetchText = async (url: string, timeoutMs: number): Promise<string> => {
+const fetchText = async (url: string, timeoutMs: number, signal?: AbortSignal): Promise<string> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -75,7 +75,7 @@ const fetchText = async (url: string, timeoutMs: number): Promise<string> => {
         Accept: "text/html,application/xhtml+xml",
         "User-Agent": "Mozilla/5.0 (compatible; zappy-assistant/1.5; +https://services.net.br)"
       },
-      signal: controller.signal
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
     });
     if (!response.ok) {
       throw new Error(`http_${response.status}`);
@@ -257,6 +257,7 @@ const googleSearch = async (input: {
   query: string;
   limit: number;
   timeoutMs: number;
+  signal?: AbortSignal;
 }): Promise<{ results: WebSearchResultItem[]; correctedQuery?: string }> => {
   const runGoogleQuery = async (query: string) => {
     const url = new URL("https://www.googleapis.com/customsearch/v1");
@@ -268,7 +269,7 @@ const googleSearch = async (input: {
     const payload = await fetchJson<{
       items?: Array<{ title?: string; snippet?: string; link?: string }>;
       spelling?: { correctedQuery?: string };
-    }>(url.toString(), input.timeoutMs);
+    }>(url.toString(), input.timeoutMs, input.signal);
 
     const mapped = (payload.items ?? [])
       .filter((item) => item && item.title && item.link)
@@ -298,12 +299,13 @@ const duckDuckGoSearch = async (input: {
   query: string;
   limit: number;
   timeoutMs: number;
+  signal?: AbortSignal;
 }): Promise<WebSearchResultItem[]> => {
   const htmlUrl = new URL("https://html.duckduckgo.com/html/");
   htmlUrl.searchParams.set("q", input.query);
   htmlUrl.searchParams.set("kl", "wt-wt");
 
-  const html = await fetchText(htmlUrl.toString(), input.timeoutMs);
+  const html = await fetchText(htmlUrl.toString(), input.timeoutMs, input.signal);
   const htmlParsed = parseDuckDuckGoHtml(html);
   const rankedHtml = rankAndFilterWebResults({ query: input.query, items: htmlParsed, limit: input.limit });
   if (rankedHtml.length > 0) {
@@ -322,7 +324,7 @@ const duckDuckGoSearch = async (input: {
     AbstractURL?: string;
     Heading?: string;
     RelatedTopics?: any[];
-  }>(instantUrl.toString(), input.timeoutMs);
+  }>(instantUrl.toString(), input.timeoutMs, input.signal);
 
   const fallback: WebSearchResultItem[] = [];
   if (payload.AbstractText && payload.AbstractURL) {
@@ -347,7 +349,7 @@ export const createWebSearchAdapter = (input: WebSearchAdapterInput): WebSearchP
   const hasGoogleConfig = Boolean(googleApiKey && googleEngineId);
 
   return {
-    search: async ({ query, limit, mode }) => {
+    search: async ({ query, limit, mode, signal }) => {
       const preferred = input.preferredProvider ?? "google";
       const searchMode = mode ?? "generic";
 
@@ -358,7 +360,8 @@ export const createWebSearchAdapter = (input: WebSearchAdapterInput): WebSearchP
           cx: googleEngineId!,
           query,
           limit,
-          timeoutMs
+          timeoutMs,
+          signal
         });
       };
 
@@ -407,12 +410,13 @@ export const createWebSearchAdapter = (input: WebSearchAdapterInput): WebSearchP
             fallbackUsed = true;
             fallbackReason = "google_no_results";
           } catch {
+            signal?.throwIfAborted();
             fallbackUsed = true;
             fallbackReason = "google_error";
           }
         }
 
-        const ddgResults = await duckDuckGoSearch({ query, limit, timeoutMs });
+        const ddgResults = await duckDuckGoSearch({ query, limit, timeoutMs, signal });
         if (ddgResults.length > 0) {
           return {
             provider: "duckduckgo",
@@ -434,7 +438,7 @@ export const createWebSearchAdapter = (input: WebSearchAdapterInput): WebSearchP
         };
       }
 
-      const ddgResults = await duckDuckGoSearch({ query, limit, timeoutMs });
+      const ddgResults = await duckDuckGoSearch({ query, limit, timeoutMs, signal });
       if (ddgResults.length > 0) {
         return {
           provider: "duckduckgo",
@@ -462,6 +466,7 @@ export const createWebSearchAdapter = (input: WebSearchAdapterInput): WebSearchP
             };
           }
         } catch {
+          signal?.throwIfAborted();
           fallbackReason = "duckduckgo_no_results+google_error";
         }
       }

@@ -484,3 +484,9 @@ O caso de uso valida a decisão em runtime e registra `SEMANTIC_SHADOW` com corr
 O handler de mensagens do `wa-gateway` normaliza o evento, aplica a governança de ingresso e chama o `Orchestrator`. Após os fluxos determinísticos, `AiFallbackService` mapeia o contexto para `AiAssistantPort`. A `AiService` compõe persona e histórico persistido e chama `LlmPort.chat`. O gateway injeta o adaptador OpenAI ou Ollama por `LLM_PROVIDER`. A resposta volta como ação do pipeline e o adaptador de saída do WhatsApp envia e persiste o texto. Falhas tipadas do provedor retornam a mensagem habitual de indisponibilidade com os comandos de uso direto.
 
 A seleção é independente da observação semântica e dos adaptadores de STT, TTS, tradução e busca com IA. Sugestões da conversa são convertidas em texto na saída. A execução determinística existente usa casos de uso e permissões próprias. Uma futura execução a partir de propostas do modelo requer autorização, validação de parâmetros, orçamento e auditoria antes de chamar qualquer adapter.
+
+## Busca local com fontes
+
+O módulo `search-ai` contém o caso de uso `answer-with-sources`. O registry encaminha `/search-ai` e `/sai`, e o módulo `assistant-ai` encaminha apenas pedidos explícitos de busca quando a flag natural está ativa. Ambos passam pela autorização de chat direto do canário antes do caso de uso. Claim de ingresso, política, deduplicação e roteamento de comandos continuam no pipeline existente.
+
+O gateway injeta `WebSearchPort` e um `LlmPort` Ollama dedicado. O backend SearXNG adapta JSON ao contrato existente. A síntese recebe dados de busca delimitados, sem ferramentas. O módulo valida a estrutura e referências, associa as URLs obtidas e retorna links com limitação explícita quando a síntese falha. Os ports aceitam sinal de cancelamento opcional. A telemetria registra execução, backend, modelo, estágio e resultado.
