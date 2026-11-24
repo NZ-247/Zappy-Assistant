@@ -11,7 +11,7 @@ import {
   triggerRepository
 } from "@zappy/adapters";
 import { resolveGovernanceDecision, type DecisionInput, type GovernanceRequiredRole } from "@zappy/core";
-import { featureFlagSchema, triggerSchema } from "@zappy/shared";
+import { featureFlagSchema, isConversationProviderConfigured, triggerSchema } from "@zappy/shared";
 import { z } from "zod";
 import { checkDatabaseHealth, checkRedisHealth } from "../bootstrap/startup-status.js";
 import type { AdminApiRuntime } from "../bootstrap/runtime.js";
@@ -391,7 +391,7 @@ export const registerAdminApiRoutes = (app: AdminApiHttpApp, runtime: AdminApiRu
         checkExternalServiceHealth({ baseUrl: assistantApiBaseUrl })
       ]);
 
-    const llmConfigured = Boolean(runtime.env.OPENAI_API_KEY);
+    const llmConfigured = isConversationProviderConfigured(runtime.env);
     const now = new Date().toISOString();
 
     const warnings: string[] = [];

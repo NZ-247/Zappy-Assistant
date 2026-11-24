@@ -149,7 +149,13 @@ export class AiFallbackService {
       } catch (error) {
         await this.bumpMetric("ai_failures_total");
         this.deps.logger?.warn?.(
-          { err: error, tenantId: ctx.event.tenantId, waGroupId: ctx.event.waGroupId, waUserId: ctx.event.waUserId },
+          {
+            category: "AI",
+            traceId: ctx.event.executionId ?? ctx.event.waMessageId,
+            status: "llm_call_failed",
+            llmReason: error instanceof LlmError ? error.reason : "unknown",
+            httpStatus: error instanceof LlmError ? error.status : undefined
+          },
           "ai assistant failed"
         );
         return [{ kind: "reply_text", text: this.llmUnavailableText }];

@@ -267,6 +267,9 @@ export type {
 export * from "./modules/governance/index.js";
 export * from "./modules/pre-sales/index.js";
 
+export { ZABBIX_REPORT_MAX_HOURS } from "./modules/assistant-ai/domain/semantic-decision.js";
+export type { SemanticDecisionPort } from "./modules/assistant-ai/ports/outbound/semantic-decision.port.js";
+
 export class Orchestrator {
   private readonly ports: CorePorts;
   private readonly llmUnavailableText: string;
@@ -793,6 +796,7 @@ export class Orchestrator {
     });
     if (preSalesActions.length > 0) return preSalesActions;
 
+    this.assistantAi.observeSemanticDecision(ctx);
     const fallbackActions = await this.assistantAi.runFallback(ctx);
     if (fallbackActions.length > 0) return fallbackActions;
 

@@ -9,7 +9,7 @@ declare module "openai" {
   }
 
   export default class OpenAI {
-    constructor(options: { apiKey?: string });
+    constructor(options: { apiKey?: string; maxRetries?: number; timeout?: number });
     chat: {
       completions: {
         create(input: { model: string; messages: ChatMessage[] }): Promise<ChatCompletionResponse>;

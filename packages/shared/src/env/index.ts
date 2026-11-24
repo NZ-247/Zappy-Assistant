@@ -1,5 +1,11 @@
+import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { z } from "zod";
+
+const booleanFlag = (defaultValue: "true" | "false") => z.string().trim().toLowerCase()
+  .pipe(z.enum(["true", "false", "1", "0"]))
+  .default(defaultValue)
+  .transform((value) => value === "true" || value === "1");
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -22,9 +28,16 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   LLM_MODEL: z.string().default("gpt-4o-mini"),
-  LLM_ENABLED: z.coerce.boolean().default(true),
+  LLM_ENABLED: booleanFlag("true"),
+  LLM_PROVIDER: z.enum(["openai", "ollama"]).default("openai"),
   LLM_MEMORY_MESSAGES: z.coerce.number().int().min(0).default(10),
   LLM_PERSONA: z.string().default("secretary_default"),
+  OLLAMA_SEMANTIC_SHADOW_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  OLLAMA_BASE_URL: z.string().url().regex(/^https?:\/\//).default("http://127.0.0.1:11434"),
+  OLLAMA_MODEL: z.string().trim().min(1).default("qwen3:1.7b"),
+  OLLAMA_CHAT_MODEL: z.string().trim().min(1).default("qwen3:1.7b"),
+  OLLAMA_CHAT_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(15_000),
+  OLLAMA_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(5_000),
   BOT_TIMEZONE: z.string().default("America/Cuiaba"),
   BOT_PREFIX: z.string().default("/"),
   LOG_FORMAT: z.enum(["pretty", "json"]).optional(),
@@ -98,12 +111,12 @@ const envSchema = z.object({
   DOWNLOADS_PROVIDER_FB_ENABLED: z.coerce.boolean().default(true),
   DOWNLOADS_PROVIDER_DIRECT_ENABLED: z.coerce.boolean().default(true),
   DOWNLOADS_DIRECT_TIMEOUT_MS: z.coerce.number().int().min(2_000).max(60_000).default(12_000),
-  YT_RESOLVER_ENABLED: z.coerce.boolean().default(false),
+  YT_RESOLVER_ENABLED: booleanFlag("false"),
   YT_RESOLVER_BASE_URL: z.string().url().default("http://localhost:3401"),
   YT_RESOLVER_TOKEN: z.string().optional(),
   YT_RESOLVER_TIMEOUT_MS: z.coerce.number().int().min(2_000).max(120_000).default(20_000),
   YT_RESOLVER_MAX_BYTES: z.coerce.number().int().min(1024).max(104_857_600).default(16_777_216),
-  FB_RESOLVER_ENABLED: z.coerce.boolean().default(false),
+  FB_RESOLVER_ENABLED: booleanFlag("false"),
   FB_RESOLVER_BASE_URL: z.string().url().default("http://localhost:3402"),
   FB_RESOLVER_TOKEN: z.string().optional(),
   FB_RESOLVER_TIMEOUT_MS: z.coerce.number().int().min(2_000).max(120_000).default(20_000),
@@ -127,7 +140,10 @@ const envSchema = z.object({
 
 export type AppEnv = z.infer<typeof envSchema>;
 
+export const isConversationProviderConfigured = (env: Pick<AppEnv, "LLM_PROVIDER" | "OPENAI_API_KEY">): boolean =>
+  env.LLM_PROVIDER === "ollama" || Boolean(env.OPENAI_API_KEY);
+
 export const loadEnv = (): AppEnv => {
-  dotenv.config();
+  dotenv.config({ path: fileURLToPath(new URL("../../../../.env", import.meta.url)) });
   return envSchema.parse(process.env);
 };

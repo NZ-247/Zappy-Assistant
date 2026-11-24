@@ -592,14 +592,14 @@ export const createQueueAdapter = (queue: Queue) => ({
 });
 
 const classifyOpenAiError = (error: unknown): { reason: LlmErrorReason; status?: number; code?: string } => {
-  const asAny = error as { status?: unknown; code?: unknown; type?: unknown };
+  const asAny = error as { status?: unknown; code?: unknown; type?: unknown; name?: unknown };
   const status = typeof asAny?.status === "number" ? asAny.status : undefined;
   const code = typeof asAny?.code === "string" ? asAny.code : undefined;
   const type = typeof asAny?.type === "string" ? asAny.type : undefined;
 
   if (code === "insufficient_quota" || type === "insufficient_quota") return { reason: "insufficient_quota", status, code };
   if (status === 429 || code === "rate_limit_exceeded" || type === "rate_limit_exceeded") return { reason: "rate_limit", status, code };
-  if (status === 408 || code === "ETIMEDOUT" || code === "ETIMEOUT") return { reason: "timeout", status, code };
+  if (status === 408 || code === "ETIMEDOUT" || code === "ETIMEOUT" || asAny?.name === "APIConnectionTimeoutError") return { reason: "timeout", status, code };
   if (code && ["ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH"].includes(code)) return { reason: "network", status, code };
   if (status && status >= 500) return { reason: "network", status, code };
 
@@ -607,7 +607,7 @@ const classifyOpenAiError = (error: unknown): { reason: LlmErrorReason; status?:
 };
 
 export const createOpenAiAdapter = (apiKey: string | undefined, model: string): LlmPort => {
-  const client = apiKey ? new OpenAI({ apiKey }) : null;
+  const client = apiKey ? new OpenAI({ apiKey, maxRetries: 0, timeout: 15_000 }) : null;
   return {
     chat: async (input: { system: string; messages: ConversationMessage[] }) => {
       if (!client) return "Assistant is not configured.";
@@ -1046,3 +1046,6 @@ export const createStatusPort = (deps: {
     remindersRepository,
     timersRepository
   });
+
+export { createOllamaChatAdapter } from "./ollama/chat.js";
+export { createOllamaSemanticDecisionAdapter } from "./ollama/semantic-decision.js";

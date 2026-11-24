@@ -26,6 +26,8 @@ import {
   timersRepository,
   createMuteAdapter,
   createOpenAiAdapter,
+  createOllamaSemanticDecisionAdapter,
+  createOllamaChatAdapter,
   createOpenAiSpeechToTextAdapter,
   createOpenAiTextToSpeechAdapter,
   createOpenAiTranslationAdapter,
@@ -45,6 +47,7 @@ import { AiService, buildBaseSystemPrompt } from "@zappy/ai";
 import {
   createLogger,
   loadEnv,
+  isConversationProviderConfigured,
   printStartupBanner,
   withCategory,
   type InternalGatewaySendTextRequest
@@ -82,14 +85,17 @@ const INBOUND_STARTUP_WATERMARK_ISO = new Date(INBOUND_STARTUP_WATERMARK_MS).toI
 const INBOUND_STARTUP_SESSION_ID = `wa-gateway-${process.pid}-${INBOUND_STARTUP_WATERMARK_MS.toString(36)}`;
 const INBOUND_WATERMARK_REDIS_TTL_SECONDS = Math.max(3600, INBOUND_MESSAGE_CLAIM_TTL_SECONDS);
 const INBOUND_STARTUP_WATERMARK_KEY = `wa:inbound:startup-watermark:${INBOUND_STARTUP_SESSION_ID}`;
-const llmConfigured = Boolean(env.OPENAI_API_KEY);
-const llmModel = env.LLM_MODEL ?? env.OPENAI_MODEL;
+const usesOllamaChat = env.LLM_PROVIDER === "ollama";
+const llmConfigured = isConversationProviderConfigured(env);
+const llmModel = usesOllamaChat ? env.OLLAMA_CHAT_MODEL : env.LLM_MODEL;
 const baseSystemPrompt = buildBaseSystemPrompt({
   personaId: env.LLM_PERSONA,
   settings: { timezone: env.BOT_TIMEZONE },
   policyNotes: ["Priorize o contexto do chat atual."]
 });
-const llmAdapter = createOpenAiAdapter(env.OPENAI_API_KEY, llmModel);
+const llmAdapter = usesOllamaChat
+  ? createOllamaChatAdapter({ baseUrl: env.OLLAMA_BASE_URL, model: llmModel, timeoutMs: env.OLLAMA_CHAT_TIMEOUT_MS })
+  : createOpenAiAdapter(env.OPENAI_API_KEY, llmModel);
 const speechToTextAdapter = createOpenAiSpeechToTextAdapter({
   apiKey: env.OPENAI_API_KEY,
   model: env.AUDIO_STT_MODEL,
@@ -178,7 +184,7 @@ const aiService = new AiService({
   llm: llmAdapter,
   memory: conversationMemoryRepository as any,
   config: {
-    enabled: env.LLM_ENABLED,
+    enabled: env.LLM_ENABLED && llmConfigured,
     personaId: env.LLM_PERSONA,
     memoryWindow: env.LLM_MEMORY_MESSAGES,
     commandPrefix: env.BOT_PREFIX
@@ -402,6 +408,13 @@ const orchestrator = new Orchestrator({
   rateLimit: createRateLimitAdapter(redis),
   queue: queueAdapter,
   llm: llmAdapter,
+  semanticDecision: env.OLLAMA_SEMANTIC_SHADOW_ENABLED
+    ? createOllamaSemanticDecisionAdapter({
+        baseUrl: env.OLLAMA_BASE_URL,
+        model: env.OLLAMA_MODEL,
+        timeoutMs: env.OLLAMA_TIMEOUT_MS
+      })
+    : undefined,
   textToSpeech: textToSpeechAdapter,
   textTranslation: textTranslationAdapter,
   webSearch: webSearchAdapter,

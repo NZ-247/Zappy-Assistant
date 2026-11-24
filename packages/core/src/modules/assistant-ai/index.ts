@@ -9,6 +9,7 @@ import { AiRoutingService } from "./services/ai-routing-service.js";
 import { AiFallbackService } from "./services/ai-fallback-service.js";
 import type { ToolExecutionDeps } from "./application/use-cases/execute-tool-intent.js";
 import { clearConversationState } from "./services/conversation-state-helpers.js";
+import { SemanticDecisionObserver } from "./application/use-cases/observe-semantic-decision.js";
 
 export type AssistantAiModuleDeps = {
   ports: CorePorts;
@@ -24,9 +25,13 @@ export class AssistantAiModule {
   private readonly routing: AiRoutingService;
   private readonly fallbackService: AiFallbackService;
   private readonly deps: AssistantAiModuleDeps;
+  private readonly semanticObserver?: SemanticDecisionObserver;
 
   constructor(deps: AssistantAiModuleDeps) {
     this.deps = deps;
+    if (deps.ports.semanticDecision) {
+      this.semanticObserver = new SemanticDecisionObserver(deps.ports.semanticDecision, deps.ports.logger);
+    }
     this.routing = new AiRoutingService({ hasRootPrivilege: deps.hasRootPrivilege });
     this.fallbackService = new AiFallbackService({
       routing: this.routing,
@@ -80,6 +85,18 @@ export class AssistantAiModule {
       toolExecution,
       commandPrefix: this.deps.commandPrefix
     });
+  }
+
+  observeSemanticDecision(ctx: PipelineContext): void {
+    if (!this.semanticObserver) return;
+    const { event } = ctx;
+    if (event.isGroup || event.waGroupId || event.hasMedia || event.ingressSource === "audio_stt") return;
+    if (event.messageKind !== "text" || !event.normalizedText) return;
+    if (ctx.consentRequired || ctx.policyMuted || ctx.assistantMode === "off") return;
+    if (ctx.classification.kind !== "ai_candidate" && ctx.classification.kind !== "trigger_candidate") return;
+    if (!ctx.requesterIsAdmin && !this.deps.hasRootPrivilege(ctx)) return;
+
+    this.semanticObserver.observe(event.executionId ?? event.waMessageId, event.normalizedText);
   }
 
   async runFallback(ctx: PipelineContext): Promise<ResponseAction[]> {

@@ -453,6 +453,52 @@ If `ONLY_GROUP_ID` is set, gateway processes only that group; otherwise it auto-
 7. Intent: “Me lembre de pagar o boleto amanhã” → tool intent `create_reminder` suggested.
 8. Group chat: ask a short question → concise reply with context.
 
+### Provedor da conversa
+
+`LLM_PROVIDER=openai` é o padrão. Em uma instância de teste, use `LLM_PROVIDER=ollama` com `OLLAMA_BASE_URL`, `OLLAMA_CHAT_MODEL` (padrão `qwen3:1.7b`) e `OLLAMA_CHAT_TIMEOUT_MS` (padrão 15000). A instância envia a persona e o histórico do chat para o provedor escolhido. O piloto semântico tem sua própria flag, modelo e timeout. Serviços de áudio, tradução e busca com IA têm provedores próprios.
+
+### Piloto de decisão semântica com Ollama
+
+O modo sombra vem desligado. Quando habilitado, observa mensagens de texto em conversa direta de operadores com privilégio de root ou reconhecidos pela política de administração do bot, depois dos fluxos determinísticos. O catálogo contém apenas `zabbix_report`, para períodos retrospectivos de 1 a 168 horas inteiras. A decisão fica nos logs, enquanto a resposta do WhatsApp segue o fluxo habitual. O piloto opera sem chamadas ao Zabbix ou a outras ferramentas e aceita uma inferência por vez no gateway.
+
+Após a revisão, configure o Ollama no IP privado do CT de inferência no Host0. No firewall do CT de inferência ou na interface do CT no Host0, permita TCP 11434 somente a partir do IP privado do CT 110 e bloqueie os demais endereços de origem, inclusive na mesma VLAN. Aplique a restrição também a IPv6 se o serviço escutar nesse protocolo. Um filtro apenas no roteador entre VLANs deixa de fora o tráfego local da VLAN.
+
+No CT 110, confira a conectividade e a presença de `qwen3:1.7b` na lista:
+
+```bash
+curl --fail --silent --show-error --max-time 5 'http://<IP_PRIVADO_CT_INFERENCIA>:11434/api/tags'
+```
+
+Repita o teste de outro endereço na mesma VLAN e confirme que a API fica inacessível. No `.env` do CT 110, substitua o placeholder antes de aplicar a configuração:
+
+```dotenv
+OLLAMA_SEMANTIC_SHADOW_ENABLED=true
+OLLAMA_BASE_URL=http://<IP_PRIVADO_CT_INFERENCIA>:11434
+OLLAMA_MODEL=qwen3:1.7b
+OLLAMA_TIMEOUT_MS=5000
+LOG_FORMAT=json
+LOG_LEVEL=info
+```
+
+Com a versão do piloto já instalada, reinicie o gateway e filtre os logs:
+
+```bash
+npm exec -- pm2 restart wa-gateway --update-env
+npm exec -- pm2 logs wa-gateway --raw --lines 100 | rg --line-buffered 'SEMANTIC_SHADOW'
+```
+
+Envie os textos abaixo em conversa direta a partir da conta autorizada. Aguarde o log de cada mensagem antes de enviar a seguinte, para evitar descarte por concorrência.
+
+| Mensagem | Decisão esperada |
+| --- | --- |
+| Gere um relatório do Zabbix das últimas 24 horas | `propose`, `hours: 24` |
+| Gere um relatório do Zabbix dos últimos dois dias | `propose`, `hours: 48` |
+| Gere um relatório do Zabbix | `clarify` |
+| Qual é a previsão do tempo? | `unsupported` |
+| `/ping` (use o prefixo ativo) | Sem amostra |
+
+Confira `correlationId`, `model`, `latencyMs` e `decision` nos eventos bem-sucedidos. Erros usam `status: error` e `reason`, enquanto concorrência usa `status: skipped` e `reason: busy`. O evento inclui apenas metadados e a decisão validada. Para desligar, configure `OLLAMA_SEMANTIC_SHADOW_ENABLED=false` e reinicie o gateway.
+
 ## Examples
 - Creator (556699064658): “Preciso de um plano para o lançamento.” → proactive, strategic outline + suggested next actions.
 - Mother (556692283438): “Me lembra de tomar o remédio às 20h.” → gentle confirmation using soft address and schedules the reminder.

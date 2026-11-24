@@ -468,3 +468,19 @@ Decisoes arquiteturais da fase:
 - conhecimento comercial permanece no backend (core/adapters/admin-api), evitando duplicacao de regra no frontend
 - etapa atual prioriza governanca de conteudo estruturado (seed + triagem + templates), sem introduzir pipeline RAG/crawler complexo
 - em caso de incerteza, respostas forcam triagem inicial e escalonamento humano/comercial explicito
+
+
+## 18. Decisão semântica local em modo sombra
+
+O `wa-gateway` injeta `SemanticDecisionPort` no módulo `assistant-ai` quando a flag do piloto está ativa. O adaptador em `packages/adapters/src/ollama` usa `POST /api/chat` com JSON Schema. A geração de texto continua no fluxo atual de IA, independente dessa porta.
+
+A observação ocorre após identidade, deduplicação, políticas de acesso, consentimento e rotas determinísticas (incluindo comandos, gatilhos e fluxos em andamento). Antes do fallback habitual, o módulo admite apenas texto direto de um operador root ou admin do bot. Cada instância do gateway mantém uma inferência em andamento e descarta novas amostras enquanto ocupada, sem fila.
+
+O caso de uso valida a decisão em runtime e registra `SEMANTIC_SHADOW` com correlação, modelo, latência e decisão ou motivo de falha ou descarte. O caminho de observação termina no log e é independente do retorno do pipeline, da execução de ferramentas e do roteamento para provedores de texto.
+
+
+## 19. Seleção do provedor de conversa
+
+O handler de mensagens do `wa-gateway` normaliza o evento, aplica a governança de ingresso e chama o `Orchestrator`. Após os fluxos determinísticos, `AiFallbackService` mapeia o contexto para `AiAssistantPort`. A `AiService` compõe persona e histórico persistido e chama `LlmPort.chat`. O gateway injeta o adaptador OpenAI ou Ollama por `LLM_PROVIDER`. A resposta volta como ação do pipeline e o adaptador de saída do WhatsApp envia e persiste o texto. Falhas tipadas do provedor retornam a mensagem habitual de indisponibilidade com os comandos de uso direto.
+
+A seleção é independente da observação semântica e dos adaptadores de STT, TTS, tradução e busca com IA. Sugestões da conversa são convertidas em texto na saída. A execução determinística existente usa casos de uso e permissões próprias. Uma futura execução a partir de propostas do modelo requer autorização, validação de parâmetros, orçamento e auditoria antes de chamar qualquer adapter.

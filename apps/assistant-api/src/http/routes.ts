@@ -9,7 +9,7 @@ import {
   triggerRepository
 } from "@zappy/adapters";
 import { resolveGovernanceDecision, type DecisionInput, type GovernanceRequiredRole } from "@zappy/core";
-import { featureFlagSchema, triggerSchema } from "@zappy/shared";
+import { featureFlagSchema, isConversationProviderConfigured, triggerSchema } from "@zappy/shared";
 import { checkDatabaseHealth, checkRedisHealth } from "../bootstrap/startup-status.js";
 import { registerAdminAuthHook } from "./auth-hook.js";
 import type { AssistantApiRuntime } from "../bootstrap/runtime.js";
@@ -204,7 +204,7 @@ export const registerAssistantApiRoutes = (app: AssistantApiHttpApp, runtime: As
       checkRedisHealth(runtime),
       runtime.queue.getJobCounts("waiting", "active", "completed", "failed", "delayed")
     ]);
-    const llmConfigured = Boolean(runtime.env.OPENAI_API_KEY);
+    const llmConfigured = isConversationProviderConfigured(runtime.env);
     return {
       services: {
         gateway: { online: gateway.online, connected: gateway.isConnected, lastHeartbeat: gateway.at, ageSeconds: gateway.ageSeconds },

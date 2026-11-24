@@ -890,3 +890,8 @@ Auxiliary internal bridge services (vendored)
   - `infra/external-services/youtube-resolver/scripts/run.sh`
   - `infra/external-services/facebook-resolver/scripts/bootstrap.sh`
   - `infra/external-services/facebook-resolver/scripts/run.sh`
+
+
+### Indicadores da conversa no status administrativo
+
+`llm.configured` indica configuração para o provedor selecionado em `LLM_PROVIDER`. OpenAI requer uma chave, enquanto Ollama usa a URL configurada. `llm.ok` reflete a habilitação e configuração nessa versão do contrato. Para diagnosticar disponibilidade da inferência, consulte o log de requisições da IA, que distingue timeout, rede, quota e rate limit.

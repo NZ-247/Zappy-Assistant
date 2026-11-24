@@ -1,3 +1,4 @@
+import type { SemanticDecisionPort } from "../modules/assistant-ai/ports/outbound/semantic-decision.port.js";
 import type {
   AiAssistantPort,
   AuditEvent,
@@ -437,6 +438,7 @@ export interface AuditPort {
 }
 
 export interface CorePorts {
+  semanticDecision?: SemanticDecisionPort;
   flagsRepository: FlagsRepositoryPort;
   triggersRepository: TriggersRepositoryPort;
   tasksRepository: TasksRepositoryPort;

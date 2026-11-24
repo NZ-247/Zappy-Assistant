@@ -57,7 +57,7 @@ npm run build
 npm run pm2:start:prod
 ```
 
-For boot persistence after `pm2:start:prod`:
+For hosts that provision a systemd startup unit for PM2:
 
 ```bash
 pm2 save
@@ -65,6 +65,28 @@ pm2 startup   # follow the output instruction (one sudo command)
 ```
 
 ---
+
+## Recuperação automática no CT 110
+
+Neste CT, o Docker habilitado no systemd restaura o PostgreSQL do Compose, enquanto o `redis-server.service` atende o Redis local. Confira a política do contêiner PostgreSQL existente e seu volume persistente. Para corrigir divergência de política sem recriar o contêiner, identifique o contêiner pelos labels do Compose e use `docker update --restart unless-stopped <CONTAINER_POSTGRES>`. O volume em uso no CT 110 é `infra_postgres_data`. O Redis de Compose fica fora desse deploy.
+
+O crontab de `botadmin` dispara o script abaixo no boot. Ele espera até cinco minutos por `SELECT 1` e `PING` usando as URLs configuradas. Com dependências prontas, restaura o snapshot dos cinco processos PM2 no daemon vazio. Quando os cinco estão online, preserva os processos. Um snapshot inválido ou uma lista parcial pede inspeção do operador. Mantenha apenas um gatilho de boot para o mesmo PM2 home.
+
+```cron
+@reboot umask 077; /bin/bash /home/botadmin/services/Zappy-Assistant/scripts/pm2-boot.sh >> /home/botadmin/.pm2/zappy-boot.log 2>&1
+```
+
+O snapshot `~/.pm2/dump.pm2` contém o ambiente dos processos e deve ficar com modo `0600`. Salve os cinco processos principais do checkout correto. Se resolvers locais estiverem ativos, preserve o snapshot dos cinco principais e gerencie os auxiliares via `node scripts/pm2-resolvers.mjs`. O boot inicia no PM2 apenas auxiliares habilitados com endpoint local e virtualenv provisionado, e verifica `/health`. Endpoints externos permanecem sob supervisão própria.
+
+```bash
+systemctl is-enabled docker redis-server cron
+node scripts/check-infra.mjs --wait=10
+crontab -l
+tail -n 50 ~/.pm2/zappy-boot.log
+pm2 status
+```
+
+Para aceitar uma recuperação após reinício real, registre o horário de boot, a sequência PostgreSQL e Redis prontos → PM2 → saúde da API e do painel → heartbeat de worker e sessão conectada. Verifique os auxiliares habilitados e confirme um envio e recebimento controlados. Faça isso em janela de manutenção. Uma execução manual do hook ou uma simulação com daemon isolado verifica o script, mas não comprova que o cron o acionou no boot.
 
 ## Services in PM2
 
@@ -125,10 +147,10 @@ The `?.` call operator ensures `process.send('ready')` is a no-op when the proce
 `scripts/check-infra.mjs` validates prerequisites before PM2 starts:
 
 - Required env vars present (`DATABASE_URL`, `REDIS_URL`, `ADMIN_API_TOKEN`)
-- PostgreSQL TCP reachable
-- Redis TCP reachable
+- Authenticated PostgreSQL `SELECT 1`
+- Authenticated Redis `PING`
 
-It is called automatically by `pm2:start:dev` and `pm2:start:prod`. To run manually:
+Both `pm2:start:dev` and `pm2:start:prod` allow up to 60 seconds for the dependencies to become ready. To check once:
 
 ```bash
 npm run pm2:check-infra
@@ -136,13 +158,13 @@ npm run pm2:check-infra
 
 Exit code `0` = all clear. Exit code `1` = fix the reported issues first.
 
-The script loads `.env` and `.env.local` from the project root (same files used by the apps).
+The script loads the project root `.env` and respects process environment overrides.
 
 ---
 
 ## Infra: Docker vs native
 
-The check-infra script probes TCP. Whether Redis/Postgres run in Docker or natively is transparent — it only needs the host/port from `REDIS_URL` / `DATABASE_URL` to be reachable.
+The precheck uses the configured Redis and PostgreSQL connections. The same checks apply whether the services run natively or in Docker.
 
 For Docker-managed infra, start it first:
 
@@ -247,3 +269,20 @@ pm2 restart admin-api
 ### wa-gateway not connecting to WhatsApp
 
 The `pm2 restart wa-gateway` command triggers a full reconnect. The first restart after a session drop will show the QR/pairing flow in `pm2 logs wa-gateway`. Session files are preserved between restarts at `WA_SESSION_PATH`.
+
+## Provedor conversacional no CT 110
+
+O gateway em perfil `dev` executa o código TypeScript do aplicativo e importa os pacotes compartilhados compilados. O gateway seleciona o adaptador por `LLM_PROVIDER`. A configuração persistente da conversa fica no `.env` da raiz.
+
+```dotenv
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://10.200.48.120:11434
+OLLAMA_CHAT_MODEL=qwen3:1.7b
+OLLAMA_CHAT_TIMEOUT_MS=15000
+```
+
+O ambiente entregue ao processo pelo PM2 tem precedência sobre o `.env`, pois `dotenv.config` mantém as variáveis já presentes. O ecosystem de dev define `NODE_ENV` e `ZAPPY_RUNTIME_MODE`. Na restauração, o dump do PM2 fornece o ambiente salvo. Variáveis ausentes nos dois níveis recebem o padrão do schema. Antes de mudar o `.env`, confira as chaves selecionadas no daemon e no dump sem imprimir o ambiente completo. No CT 110, o gateway já tem `OLLAMA_BASE_URL` no dump com o mesmo endereço acima e `OLLAMA_SEMANTIC_SHADOW_ENABLED=true`. `OLLAMA_MODEL` e `OLLAMA_TIMEOUT_MS` configuram o observador semântico.
+
+Após editar o `.env`, use `pm2 restart wa-gateway admin-api`. O gateway usa o provedor na conversa, e a API o usa para calcular o status de configuração da IA. O restart comum preserva o ambiente PM2 e relê o `.env`. A sessão Baileys continua no caminho já configurado. Confirme a reconexão e o tráfego do WhatsApp. O worker, o painel e o media-resolver mantêm seus processos. A restauração do snapshot existente relê o mesmo `.env`.
+
+Para reverter a rodada de 23/11/2026, retire as quatro linhas adicionadas ao `.env` e reinicie `wa-gateway` e `admin-api`. A ausência de `LLM_PROVIDER` recupera o padrão OpenAI com `gpt-4o-mini`. O modo sombra e seu endpoint continuam no snapshot do gateway. Verifique a reconexão e os comandos após a reversão. O OpenAI registrou falha de quota antes da troca.

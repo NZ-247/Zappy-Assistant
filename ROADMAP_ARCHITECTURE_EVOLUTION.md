@@ -24,6 +24,20 @@ It assumes the architectural foundation described in:
 
 ---
 
+## Sequência operacional para o assistente de infraestrutura
+
+O objetivo é usar o Zappy para pesquisar informações, consultar serviços e inventário, registrar conhecimento e supervisionar rotinas. A operação atual já inclui comandos de busca e mídia, tarefas, notas, lembretes e timers, fila e governança com auditoria. A conversa preserva contexto e pode sugerir ações, enquanto o piloto semântico registra propostas Zabbix. Consulta de inventário, relatórios Zabbix reais, documentação versionada e supervisão de infraestrutura ainda precisam de integração.
+
+| Ordem | Entrega | Critérios de aceite |
+| --- | --- | --- |
+| 1 | Recuperação confiável no CT 110 | Boot real em janela de manutenção. Banco e Redis autenticados antes do PM2. Restaurar API, UI, media-resolver, worker e sessão WhatsApp sem intervenção. Conferir heartbeat, fila e ida e volta de uma mensagem. Validar também a recuperação independente do banco e usar o perfil PM2 compilado no deploy para que builds no checkout de trabalho não reiniciem a aplicação ativa. |
+| 2 | Conversa local controlada | Começar com `qwen3:1.7b` no CT 120. Rodar uma amostra versionada de conversas PT-BR, memória de vários turnos e casos frios e aquecidos, com avaliação separada de qualidade e latência. Medir p50/p95 com e sem concorrência do modo sombra e registrar rate de timeout, truncamento e erros. Conferir degradação com os dois provedores indisponíveis, sem encaminhamento automático entre eles. Trocar o provedor de produção por configuração só após o aceite. |
+| 3 | Ferramentas de leitura | Criar registro de capacidades com schemas, escopo por tenant, controle de acesso, deadline e auditoria correlacionada. Reusar busca web e portas dos módulos existentes. Integrar um relatório histórico do Zabbix por uma conta somente leitura com faixa de 1–168 h. Validar proposta, autorização, período, resposta com fonte e negativa para operador sem acesso. Em seguida, incluir inventário e consultas de serviços. |
+| 4 | Supervisão e documentação | Usar o worker para rotinas idempotentes com tentativas limitadas e métricas. Iniciar com resumo de eventos do Zabbix e inventário reconciliado. Validar deduplicação, atraso, falhas, retomada e registro versionado das fontes. Enviar relatórios a destinos aprovados e registrar o resultado das entregas. |
+| 5 | Ações sobre infraestrutura e publicação externa | Definir permissões específicas, catálogo de destinos e minimização de dados. Exigir aprovação do operador com prévia do alvo, efeito e dados de saída, vinculada à solicitação, expiração e ID de execução. Revalidar permissões no envio ou mudança, auditar a execução e testar rejeição, repetição e recuperação. |
+
+O modelo propõe parâmetros ou redige a resposta. As portas de domínio executam operações após autorização. O piloto Zabbix avança de observação para leitura controlada antes de ganhar rotinas recorrentes ou qualquer capacidade de mutação.
+
 # Phase 1 — Modular Core Foundation (Completed / In Progress)
 
 Objective:
