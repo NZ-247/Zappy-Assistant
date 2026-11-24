@@ -62,7 +62,7 @@ function runTurn(id, query, model, captured) {
 
 const emit = (data) => console.log(JSON.stringify(data));
 if (process.argv.includes("--captured")) {
-  for (const candidate of ["qwen3:1.7b", "qwen3:4b"]) {
+  for (const candidate of env.SEARCH_MODEL ? [model] : ["qwen3:1.7b", "qwen3:4b"]) {
     for (const record of captures) emit(await runTurn(record.id, record.query, candidate, record));
   }
 } else {

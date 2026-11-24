@@ -36,7 +36,7 @@ test("uses only retrieved links, canonicalizes duplicates and keeps snippets as 
     } }
   });
   const reply = await search(run);
-  assert.match(reply, /máquinas virtuais\. \[F1\]/);
+  assert.match(reply, /máquinas virtuais e contêineres\. \[F1\]/);
   assert.equal(reply.split(searchSourcesFixture[0].link).length - 1, 1);
   assert.doesNotMatch(reply, /nextcloud|javascript|secret|utm_source|section/i);
 });
@@ -142,7 +142,7 @@ test("admits two distinct conversations and rejects a third while both are activ
 
 test("does not publish English claims or claims without a literal supporting excerpt", async () => {
   for (const output of [
-    claim("Proxmox VE backups include virtual machine configuration and all data.", "F1"),
+    JSON.stringify({ claims: [{ text: "O Proxmox permite criar backups.", sourceIds: ["F1"], quote: "A literal English excerpt about complete backups." }] }),
     JSON.stringify({ claims: [{ text: "O utilitário permite criar backups de máquinas virtuais.", sourceIds: ["F1"], quote: "Trecho que não pertence à fonte recuperada." }] })
   ]) {
     const reply = await createSearchWithSources({ backend: mockBackend(), llm: mockLlm(output), model: "fixture" })(run);
@@ -171,4 +171,24 @@ test("keeps the exact housekeeper condition or returns sources instead", async (
     llm: mockLlm(JSON.stringify({ claims: [{ text, sourceIds: ["F1"], quote: hit.snippet }] })) })(run);
   assert.match(await search(hit.snippet), /se ainda não tiverem sido removidos pelo housekeeper\. \[F1\]/);
   assert.match(await search("O método event.get retorna problemas de uma entidade excluída."), /evidência suficiente/);
+});
+
+test("publishes a Portuguese excerpt rather than a paraphrase with extra unsupported facts", async () => {
+  const output = claim("O Proxmox usa vzdump para criar backups e oferece armazenamento ilimitado.", "F1");
+  const reply = await createSearchWithSources({ model: "fixture", backend: mockBackend(), llm: mockLlm(output) })(run);
+  assert.match(reply, /Trecho da fonte/);
+  assert.ok(reply.includes(searchSourcesFixture[0].snippet));
+  assert.doesNotMatch(reply, /ilimitado/);
+});
+
+test("a literal English source still yields links when the model proposes a Portuguese translation", async () => {
+  const hit = { ...searchSourcesFixture[0], snippet: "Proxmox VE backups always include the virtual machine configuration and all data." };
+  const output = JSON.stringify({ claims: [{
+    text: "Os backups incluem a configuração da máquina virtual e todos os dados.",
+    sourceIds: ["F1"], quote: hit.snippet
+  }] });
+  const reply = await createSearchWithSources({ backend: mockBackend([hit]), llm: mockLlm(output), model: "fixture" })(run);
+  assert.match(reply, /evidência suficiente/);
+  assert.ok(reply.includes(hit.link));
+  assert.doesNotMatch(reply, /virtual machine configuration/);
 });
