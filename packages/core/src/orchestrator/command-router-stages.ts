@@ -218,6 +218,7 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     deps: {
       searchAi: deps.ports.searchAi,
       searchWithSources: deps.ports.searchWithSources,
+      cooldown: deps.ports.cooldown,
       isRoot: deps.ports.searchWithSources ? deps.hasRootPrivilege(ctx) : undefined,
       config: {
         enabled: deps.ports.searchAiEnabled ?? true,

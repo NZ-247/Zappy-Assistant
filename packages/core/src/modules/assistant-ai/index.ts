@@ -62,7 +62,7 @@ export class AssistantAiModule {
     if (event.messageKind !== "text" || event.hasMedia || event.ingressSource === "audio_stt" || ctx.assistantMode === "off") return [];
     const query = explicitWebSearchQuery(event.normalizedText);
     if (query === undefined) return [];
-    return runSearchSources(ctx, searchWithSources, query, "conversation", this.deps.hasRootPrivilege(ctx), searchAiMaxSources ?? 4);
+    return runSearchSources(ctx, searchWithSources, query, "conversation", this.deps.hasRootPrivilege(ctx), searchAiMaxSources ?? 4, this.deps.ports.cooldown);
   }
 
   async handleAddressedMessage(ctx: PipelineContext): Promise<ResponseAction[]> {

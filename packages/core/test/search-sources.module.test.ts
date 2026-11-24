@@ -47,6 +47,7 @@ test("rejects invalid references, invented links, and empty or invalid summaries
     claim("Acesse event.get.example para detalhes.", "F3"),
     claim("Use event.get quando necessário.", "F1"),
     claim("Afirmação sem fonte"),
+    JSON.stringify({ claims: Array(3).fill({ text: "Afirmação a mais", sourceIds: ["F1"] }) }),
     '{"claims":[]}', "JSON truncado"
   ]) {
     const reply = await createSearchWithSources({ backend: mockBackend(), llm: mockLlm(output), model: "fixture" })(run);
@@ -115,4 +116,24 @@ test("retains API identifiers that appear verbatim in the cited evidence", async
   })(run);
   assert.match(reply, /event\.get para consultar eventos\. \[F3\]/);
   assert.ok(reply.includes(searchSourcesFixture[2].link));
+});
+
+test("retains cron.php from the cited snippet without treating it as an external link", async () => {
+  const hit = { ...searchSourcesFixture[1], snippet: "Execute o script cron.php para processar tarefas em segundo plano." };
+  const reply = await createSearchWithSources({
+    backend: mockBackend([hit]), llm: mockLlm(claim("Execute cron.php para processar tarefas.", "F1")), model: "fixture"
+  })(run);
+  assert.match(reply, /Execute cron\.php para processar tarefas\. \[F1\]/);
+  assert.ok(reply.includes(hit.link));
+});
+
+test("admits two distinct conversations and rejects a third while both are active", async () => {
+  const search = createSearchWithSources({
+    backend: mockBackend(), model: "fixture",
+    llm: { chat: async () => { await delay(15); return claim("Use vzdump.", "F1"); } }
+  });
+  const first = search(run);
+  const second = search({ ...run, conversationKey: "second" });
+  assert.match(await search({ ...run, conversationKey: "third" }), /andamento/);
+  for (const reply of await Promise.all([first, second])) assert.match(reply, /vzdump/);
 });

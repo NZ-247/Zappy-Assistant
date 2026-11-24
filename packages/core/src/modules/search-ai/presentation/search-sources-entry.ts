@@ -1,4 +1,5 @@
 import type { ResponseAction } from "../../../pipeline/actions.js";
+import type { CooldownPort } from "../../../pipeline/ports.js";
 import type { PipelineContext } from "../../../pipeline/context.js";
 import type { SearchWithSources } from "../ports.js";
 
@@ -8,17 +9,26 @@ export async function runSearchSources(
   query: string,
   origin: "command" | "conversation",
   isRoot: boolean,
-  maxSources: number
+  maxSources: number,
+  cooldown: CooldownPort
 ): Promise<ResponseAction[]> {
   const { event } = ctx;
-  if (event.isGroup || event.waGroupId || ctx.consentRequired || ctx.policyMuted || (!ctx.requesterIsAdmin && !isRoot)) {
+  const isAdmin = ctx.requesterIsAdmin || (ctx.identity?.permissionRole ?? ctx.identity?.role)?.toUpperCase() === "ADMIN";
+  if (event.isGroup || event.waGroupId || ctx.consentRequired || ctx.policyMuted || (!isAdmin && !isRoot)) {
     return [{ kind: "reply_text", text: "A busca local com fontes está disponível no chat direto de operadores autorizados." }];
+  }
+  const conversationKey = JSON.stringify([event.tenantId, event.waUserId]);
+  const replayKey = `search:sources:turn:${JSON.stringify([event.tenantId, event.waUserId, event.waMessageId])}`;
+  try {
+    if (!await cooldown.canFire(replayKey, 120)) return [{ kind: "noop", reason: "search_replay" }];
+  } catch {
+    return [{ kind: "reply_text", text: "A busca está indisponível no momento. Tente novamente em instantes." }];
   }
   return [{
     kind: "reply_text",
     text: await search({
       query, origin, maxSources,
-      conversationKey: JSON.stringify([event.tenantId, event.waUserId]),
+      conversationKey,
       executionId: event.executionId ?? event.waMessageId
     })
   }];

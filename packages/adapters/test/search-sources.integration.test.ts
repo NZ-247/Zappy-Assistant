@@ -6,9 +6,9 @@ import { createSearxngWebSearchAdapter } from "../src/search/searxng-web-search-
 
 const official = "https://www.zabbix.com/documentation/current/en/manual/api/reference/event/get";
 const noExternalAi = () => assert.fail("legacy AI must not run");
-type Options = { admin?: boolean; natural?: boolean; local?: boolean; consent?: boolean };
+type Options = { admin?: boolean; root?: boolean; identityAdmin?: boolean; natural?: boolean; local?: boolean; consent?: boolean };
 
-function setup({ admin = true, natural = true, local = true, consent = true }: Options = {}) {
+function setup({ admin = true, root = false, identityAdmin = false, natural = true, local = true, consent = true }: Options = {}) {
   const webModes: string[] = [];
   const calls: URL[] = [];
   const seen = new Set<string>();
@@ -48,6 +48,7 @@ function setup({ admin = true, natural = true, local = true, consent = true }: O
       }),
       setConsentStatus: noExternalAi
     },
+    identity: root || identityAdmin ? { getIdentity: async () => ({ role: root ? "ROOT" : "ADMIN", permissions: [] }) } : undefined,
     adminAccess: { isAdmin: async () => admin, add: noExternalAi, remove: noExternalAi, list: noExternalAi },
     rateLimit: { allow: async () => true },
     cooldown: { canFire: async (key) => {
@@ -112,4 +113,29 @@ test("retains normal conversation, legacy search-ai and both textual modes", asy
   const off = setup({ local: false });
   assert.match(JSON.stringify(await off.send("/search-ai histórico do Zabbix")), /Resposta legada/);
   assert.equal(off.calls.length, 0);
+});
+
+test("ROOT without the admin-list entry may use both direct search entries", async () => {
+  const { send, calls } = setup({ admin: false, root: true });
+  assert.match(JSON.stringify(await send("/sai histórico de eventos", "root-a")), /\[F1\]/);
+  assert.match(JSON.stringify(await send("Pesquise na web histórico de eventos", "root-b")), /\[F1\]/);
+  assert.equal(calls.length, 4);
+});
+
+test("uses direct identity ADMIN and suppresses the same WA event across both routes", async () => {
+  const { send, calls } = setup({ admin: false, identityAdmin: true });
+  assert.match(JSON.stringify(await send("Pesquise na web histórico de eventos", "same")), /\[F1\]/);
+  assert.match(JSON.stringify(await send("/sai histórico de eventos", "same")), /search_replay/);
+  assert.equal(calls.length, 2);
+});
+
+test("distinguishes an upstream failure from an empty SearXNG search", async () => {
+  const adapter = createSearxngWebSearchAdapter("http://private.test", async () => Response.json({
+    results: [], unresponsive_engines: [["duckduckgo", "CAPTCHA"]]
+  }));
+  await assert.rejects(adapter.search({ query: "Proxmox", limit: 3 }), /searxng_engines_unavailable/);
+  const emptyAdapter = createSearxngWebSearchAdapter("http://private.test", async () => Response.json({
+    results: [], unresponsive_engines: []
+  }));
+  assert.deepEqual(await emptyAdapter.search({ query: "Proxmox", limit: 3 }), { provider: "searxng", results: [] });
 });

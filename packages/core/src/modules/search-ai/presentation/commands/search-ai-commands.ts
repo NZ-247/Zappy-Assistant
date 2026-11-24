@@ -3,11 +3,12 @@ import type { ResponseAction } from "../../../../pipeline/actions.js";
 import { parseSearchAiCommand } from "../../infrastructure/search-ai-command-parser.js";
 import { executeSearchAi, type SearchAiUseCaseConfig } from "../../application/use-cases/search-ai.js";
 import type { SearchAiPort, SearchWithSources } from "../../ports.js";
-import type { LoggerPort } from "../../../../pipeline/ports.js";
+import type { CooldownPort, LoggerPort } from "../../../../pipeline/ports.js";
 import { runSearchSources } from "../search-sources-entry.js";
 
 export interface SearchAiCommandDeps {
   searchWithSources?: SearchWithSources;
+  cooldown: CooldownPort;
   isRoot?: boolean;
   searchAi?: SearchAiPort;
   config: SearchAiUseCaseConfig;
@@ -54,7 +55,7 @@ export const handleSearchAiCommand = async (input: {
   }
 
   if (deps.config.enabled && deps.searchWithSources) {
-    return runSearchSources(ctx, deps.searchWithSources, parsed.query, "command", deps.isRoot === true, deps.config.maxSources);
+    return runSearchSources(ctx, deps.searchWithSources, parsed.query, "command", deps.isRoot === true, deps.config.maxSources, deps.cooldown);
   }
 
   return executeSearchAi({
