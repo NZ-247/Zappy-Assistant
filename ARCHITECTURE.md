@@ -490,3 +490,7 @@ A seleção é independente da observação semântica e dos adaptadores de STT,
 O módulo `search-ai` contém o caso de uso `answer-with-sources`. O registry encaminha `/search-ai` e `/sai`, e o módulo `assistant-ai` encaminha apenas pedidos explícitos de busca quando a flag natural está ativa. Ambos passam pela autorização de chat direto do canário antes do caso de uso. Claim de ingresso, política, deduplicação e roteamento de comandos continuam no pipeline existente.
 
 O gateway injeta `WebSearchPort` e um `LlmPort` Ollama dedicado. O backend SearXNG adapta JSON ao contrato existente. A síntese recebe dados de busca delimitados, sem ferramentas. O módulo valida a estrutura e referências, associa as URLs obtidas e retorna links com limitação explícita quando a síntese falha. Os ports aceitam sinal de cancelamento opcional. A telemetria registra execução, backend, modelo, estágio e resultado.
+
+### Separação das buscas e configuração em execução
+
+O módulo `pesquisar` expõe a recuperação e a seleção local de trechos. O módulo `search-ai` mantém os adaptadores externos. A seleção lê configuração inicial e flags tipadas de execução. O módulo `configuracao-runtime` valida comandos ROOT e grava flags via port do core, com auditoria no adapter Prisma. [Fluxo e operação](docs/pesquisar-e-controles-runtime.md)

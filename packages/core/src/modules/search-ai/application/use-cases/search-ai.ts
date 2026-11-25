@@ -7,14 +7,14 @@ import { formatSearchAiReply } from "../../infrastructure/search-ai-reply-format
 export interface SearchAiUseCaseConfig {
   enabled: boolean;
   maxSources: number;
+  provider?: "gemini" | "openai";
+  model?: string;
 }
 
 const clampSources = (value: number): number => {
   if (!Number.isFinite(value)) return 4;
   return Math.min(8, Math.max(1, Math.trunc(value)));
 };
-
-const shorten = (value: string, max = 180): string => (value.length <= max ? value : `${value.slice(0, max - 3)}...`);
 
 const compactText = (value: string): string => value.replace(/\s+/g, " ").trim();
 
@@ -36,6 +36,8 @@ const logSearchAi = (
     sourcesCount?: number;
     responseMode?: string;
     reason?: string;
+    executionId?: string;
+    latencyMs?: number;
   }
 ) => {
   logger?.info?.(
@@ -43,7 +45,8 @@ const logSearchAi = (
       capability: "search-ai",
       action: payload.action,
       status: payload.status,
-      queryPreview: shorten(payload.query, 120),
+      executionId: payload.executionId,
+      latencyMs: payload.latencyMs,
       provider: payload.provider,
       model: payload.model,
       responseMode: payload.responseMode,
@@ -60,6 +63,7 @@ export const executeSearchAi = async (input: {
   config: SearchAiUseCaseConfig;
   stylizeReply?: (text: string) => string;
   logger?: LoggerPort;
+  executionId?: string;
 }): Promise<ResponseAction[]> => {
   const replyText = (text: string): ResponseAction[] => [{ kind: "reply_text", text: input.stylizeReply ? input.stylizeReply(text) : text }];
 
@@ -91,6 +95,7 @@ export const executeSearchAi = async (input: {
   }
 
   const maxSources = clampSources(input.config.maxSources);
+  const started = performance.now();
 
   try {
     const result = await input.searchAi.search({
@@ -114,6 +119,8 @@ export const executeSearchAi = async (input: {
       provider: result.provider,
       model: result.model,
       sourcesCount: topSources.length,
+      executionId: input.executionId,
+      latencyMs: Math.round(performance.now() - started),
       responseMode: "summarized"
     });
 
@@ -125,8 +132,18 @@ export const executeSearchAi = async (input: {
       status: "failure",
       query: normalizedQuery,
       reason: message,
+      provider: input.config.provider,
+      model: input.config.model,
+      sourcesCount: 0,
+      executionId: input.executionId,
+      latencyMs: Math.round(performance.now() - started),
       responseMode: "summarized"
     });
+    if (input.config.provider === "gemini") {
+      if (message === "gemini_http_429") return replyText("O Gemini atingiu o limite de pesquisa com o Google. Tente novamente mais tarde.");
+      if (message === "gemini_no_grounding") return replyText("O Gemini não forneceu fontes verificáveis do Google para esta consulta.");
+      return replyText("A busca com fontes do Google pelo Gemini está indisponível no momento.");
+    }
     return replyText(`Falha na busca assistida por IA: ${message}.`);
   }
 };

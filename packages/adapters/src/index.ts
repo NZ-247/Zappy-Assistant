@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   AccessSubjectType,
   AuditAction,
@@ -387,6 +388,22 @@ export const createAuditTrail = () => ({
 });
 
 export const coreFlagsRepository = {
+  setTenantRuntimeFlag: async ({ tenantId, actor, key, value }: {
+    tenantId: string; actor: string; key: string; value: string;
+  }) => {
+    const digest = createHash("sha256").update(JSON.stringify([tenantId, key])).digest("hex");
+    const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+    await prisma.$transaction([
+      prisma.featureFlag.upsert({
+        where: { id },
+        create: { id, tenantId, scope: Scope.TENANT, key, value, enabled: true },
+        update: { value, enabled: true }
+      }),
+      prisma.auditLog.create({ data: {
+        actor, action: AuditAction.UPDATE, entity: "FeatureFlag", entityId: id, metadata: { tenantId, key, value }
+      } })
+    ]);
+  },
   resolveFlags: async (input: { tenantId: string; waGroupId?: string; waUserId: string }) => {
     const { user, group } = await resolveScopedUserAndGroup({
       tenantId: input.tenantId,
@@ -406,7 +423,7 @@ export const coreFlagsRepository = {
     });
 
     const out: Record<string, string> = {};
-    for (const scope of scopeOrder.reverse()) {
+    for (const scope of [...scopeOrder].reverse()) {
       for (const flag of flags.filter((f) => f.scope === scope)) out[flag.key] = flag.value;
     }
     return out;

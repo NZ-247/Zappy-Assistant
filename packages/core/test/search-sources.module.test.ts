@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { createSearchWithSources } from "../src/modules/search-ai/application/use-cases/answer-with-sources.js";
+import { createSearchWithSources } from "../src/modules/pesquisar/application/use-cases/responder-com-fontes.js";
 import type { LlmPort, WebSearchPort } from "../src/pipeline/ports.js";
 import { searchSourcesFixture } from "./fixtures/search-sources.js";
 

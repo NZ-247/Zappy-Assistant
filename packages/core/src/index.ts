@@ -411,7 +411,8 @@ export class Orchestrator {
     const now = this.ports.clock?.now() ?? new Date();
     const defaultReminderTime = this.ports.defaultReminderTime ?? DEFAULT_REMINDER_TIME;
 
-    const assistantMode = (flags.assistant_mode ?? this.ports.defaultAssistantMode ?? "professional") as
+    const assistantMode = (flags["runtime.ia"] === "off" ? "off" : flags["runtime.ia"] === "on" ? "professional" :
+      flags.assistant_mode ?? this.ports.defaultAssistantMode ?? "professional") as
       | "off"
       | "professional"
       | "fun"
@@ -963,4 +964,4 @@ export class Orchestrator {
   }
 }
 
-export { createSearchWithSources, SEARCH_SOURCES_RESPONSE_SCHEMA } from "./modules/search-ai/application/use-cases/answer-with-sources.js";
+export { createSearchWithSources, SEARCH_SOURCES_RESPONSE_SCHEMA } from "./modules/pesquisar/application/use-cases/responder-com-fontes.js";

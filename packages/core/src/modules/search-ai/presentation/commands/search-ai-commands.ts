@@ -2,14 +2,10 @@ import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
 import { parseSearchAiCommand } from "../../infrastructure/search-ai-command-parser.js";
 import { executeSearchAi, type SearchAiUseCaseConfig } from "../../application/use-cases/search-ai.js";
-import type { SearchAiPort, SearchWithSources } from "../../ports.js";
-import type { CooldownPort, LoggerPort } from "../../../../pipeline/ports.js";
-import { runSearchSources } from "../search-sources-entry.js";
+import type { SearchAiPort } from "../../ports.js";
+import type { LoggerPort } from "../../../../pipeline/ports.js";
 
 export interface SearchAiCommandDeps {
-  searchWithSources?: SearchWithSources;
-  cooldown: CooldownPort;
-  isRoot?: boolean;
   searchAi?: SearchAiPort;
   config: SearchAiUseCaseConfig;
   formatUsage?: (command: "search-ai") => string | null;
@@ -39,7 +35,7 @@ export const handleSearchAiCommand = async (input: {
   if (!handledCommands.has(commandKey)) return null;
 
   const parsed = parseSearchAiCommand(cmd, {
-    replyContext: {
+    replyContext: deps.config.provider === "gemini" ? undefined : {
       quotedWaMessageId: ctx.event.quotedWaMessageId,
       quotedMessageType: ctx.event.quotedMessageType,
       quotedText: ctx.event.quotedText,
@@ -48,18 +44,17 @@ export const handleSearchAiCommand = async (input: {
   });
 
   if (!parsed.ok) {
-    const usage = deps.formatUsage?.("search-ai") ?? "Uso correto: search-ai <termo da busca>";
+    const usage = deps.config.provider === "gemini"
+      ? "Informe explicitamente uma consulta pública após o comando."
+      : deps.formatUsage?.("search-ai") ?? "Uso correto: search-ai <termo da busca>";
     const text = parseFailureMessage({ reason: parsed.reason, usage });
     const formatted = deps.stylizeReply ? deps.stylizeReply(text) : text;
     return [{ kind: "reply_text", text: formatted }];
   }
 
-  if (deps.config.enabled && deps.searchWithSources) {
-    return runSearchSources(ctx, deps.searchWithSources, parsed.query, "command", deps.isRoot === true, deps.config.maxSources, deps.cooldown);
-  }
-
   return executeSearchAi({
     query: parsed.query,
+    executionId: ctx.event.executionId ?? ctx.event.waMessageId,
     searchAi: deps.searchAi,
     config: deps.config,
     stylizeReply: deps.stylizeReply,

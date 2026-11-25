@@ -29,6 +29,7 @@ const envSchema = z.object({
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   LLM_MODEL: z.string().default("gpt-4o-mini"),
   LLM_ENABLED: booleanFlag("true"),
+  LLM_RUNTIME_PROVIDER_ENABLED: booleanFlag("false"),
   LLM_PROVIDER: z.enum(["openai", "ollama"]).default("openai"),
   LLM_MEMORY_MESSAGES: z.coerce.number().int().min(0).default(10),
   LLM_PERSONA: z.string().default("secretary_default"),
@@ -83,7 +84,9 @@ const envSchema = z.object({
   SEARCH_MAX_RESULTS: z.coerce.number().int().min(1).max(8).default(3),
   SEARCH_TIMEOUT_MS: z.coerce.number().int().min(2_000).max(60_000).default(10_000),
   SEARCH_AI_ENABLED: booleanFlag("true"),
-  SEARCH_AI_PROVIDER: z.enum(["openai", "gemini", "ollama_sources"]).default("openai"),
+  SEARCH_AI_PROVIDER: z.enum(["openai", "gemini"]).default("openai"),
+  PESQUISAR_ENABLED: booleanFlag("false"),
+  PESQUISAR_MODELO: z.string().trim().min(1).optional(),
   SEARCH_SOURCES_BACKEND: z.enum(["existing", "searxng"]).default("existing"),
   SEARCH_SOURCES_NATURAL_ENABLED: booleanFlag("false"),
   SEARXNG_BASE_URL: z.preprocess((value) => value === "" ? undefined : value,
@@ -101,7 +104,7 @@ const envSchema = z.object({
   SEARCH_AI_MAX_SOURCES: z.coerce.number().int().min(1).max(8).default(4),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_SEARCH_AI_MODEL: z.string().default("gemini-2.5-flash"),
-  GEMINI_SEARCH_GROUNDING_ENABLED: z.coerce.boolean().default(true),
+  GEMINI_SEARCH_GROUNDING_ENABLED: booleanFlag("true"),
   GOOGLE_SEARCH_API_KEY: z.string().optional(),
   GOOGLE_SEARCH_ENGINE_ID: z.string().optional(),
   GOOGLE_SEARCH_CX: z.string().optional(),
@@ -149,7 +152,7 @@ const envSchema = z.object({
   CONSENT_LINK: z.string().default("https://services.net.br/politicas"),
   CONSENT_SOURCE: z.string().default("wa-gateway")
 }).refine(
-  (env) => env.SEARCH_AI_PROVIDER !== "ollama_sources" || env.SEARCH_SOURCES_BACKEND !== "searxng" || Boolean(env.SEARXNG_BASE_URL),
+  (env) => !env.PESQUISAR_ENABLED || env.SEARCH_SOURCES_BACKEND !== "searxng" || Boolean(env.SEARXNG_BASE_URL),
   { path: ["SEARXNG_BASE_URL"], message: "Required for the SearXNG evidence backend" }
 );
 

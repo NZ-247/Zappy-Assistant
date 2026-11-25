@@ -11,7 +11,7 @@ import type { ToolExecutionDeps } from "./application/use-cases/execute-tool-int
 import { clearConversationState } from "./services/conversation-state-helpers.js";
 import { SemanticDecisionObserver } from "./application/use-cases/observe-semantic-decision.js";
 
-import { explicitWebSearchQuery, runSearchSources } from "../search-ai/presentation/search-sources-entry.js";
+import { explicitWebSearchQuery, runSearchSources } from "../pesquisar/presentation/entrada-pesquisa.js";
 
 export type AssistantAiModuleDeps = {
   ports: CorePorts;
@@ -40,6 +40,7 @@ export class AssistantAiModule {
       llmUnavailableText: deps.llmUnavailableText,
       deps: {
         aiAssistant: deps.ports.aiAssistant,
+        aiAssistants: deps.ports.aiAssistants,
         llm: deps.ports.llm,
         prompt: deps.ports.prompt,
         conversationMemory: deps.ports.conversationMemory,
@@ -55,9 +56,9 @@ export class AssistantAiModule {
   }
 
   async handleExplicitWebSearch(ctx: PipelineContext): Promise<ResponseAction[]> {
-    const { searchWithSources, searchSourcesNaturalEnabled, searchAiEnabled, searchAiMaxSources } = this.deps.ports;
+    const { searchWithSources, searchSourcesNaturalEnabled, searchAiMaxSources } = this.deps.ports;
     const { event } = ctx;
-    if (!searchWithSources || !searchSourcesNaturalEnabled || searchAiEnabled === false) return [];
+    if (!searchWithSources || !searchSourcesNaturalEnabled || ctx.flags["runtime.pesquisar"] === "off") return [];
     if (ctx.classification.kind !== "ai_candidate" && ctx.classification.kind !== "trigger_candidate") return [];
     if (event.messageKind !== "text" || event.hasMedia || event.ingressSource === "audio_stt" || ctx.assistantMode === "off") return [];
     const query = explicitWebSearchQuery(event.normalizedText);

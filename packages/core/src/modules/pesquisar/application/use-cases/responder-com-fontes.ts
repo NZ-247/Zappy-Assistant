@@ -1,8 +1,8 @@
 import { franc } from "franc-min";
-import { nextcloudCronScope } from "../../domain/cron-evidence.js";
+import { nextcloudCronScope } from "../../domain/evidencia-cron.js";
 import { LlmError } from "../../../../pipeline/types.js";
 import type { LlmPort, LoggerPort, SearchAiSourceItem, WebSearchPort } from "../../../../pipeline/ports.js";
-import { isValidSearchAiQuery, normalizeSearchAiQuery } from "../../domain/search-ai-query.js";
+import { isValidSearchAiQuery, normalizeSearchAiQuery } from "../../../search-ai/domain/search-ai-query.js";
 
 import type { SearchWithSources } from "../../ports.js";
 

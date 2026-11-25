@@ -130,38 +130,38 @@ const existingWebSearchAdapter = createWebSearchAdapter({
   preferredProvider: env.SEARCH_PROVIDER
 });
 const webSearchAdapter = env.SEARCH_ENABLED ? existingWebSearchAdapter : undefined;
-const useSearchSources = env.SEARCH_AI_PROVIDER === "ollama_sources";
-const searchWithSources = env.SEARCH_AI_ENABLED && useSearchSources
+const pesquisarModelo = env.PESQUISAR_MODELO ?? env.OLLAMA_CHAT_MODEL;
+const searchWithSources = env.PESQUISAR_ENABLED
   ? createSearchWithSources({
       backend: env.SEARCH_SOURCES_BACKEND === "searxng"
         ? createSearxngWebSearchAdapter(env.SEARXNG_BASE_URL!)
         : existingWebSearchAdapter,
       llm: createOllamaChatAdapter({
         baseUrl: env.OLLAMA_BASE_URL,
-        model: env.OLLAMA_CHAT_MODEL,
+        model: pesquisarModelo,
         timeoutMs: env.OLLAMA_CHAT_TIMEOUT_MS,
         format: SEARCH_SOURCES_RESPONSE_SCHEMA
       }),
-      model: env.OLLAMA_CHAT_MODEL,
+      model: pesquisarModelo,
       logger
     })
   : undefined;
-const searchAiAdapter = env.SEARCH_AI_ENABLED && !useSearchSources
-  ? env.SEARCH_AI_PROVIDER === "gemini"
-    ? createGeminiSearchAiAdapter({
-        apiKey: env.GEMINI_API_KEY,
-        model: env.GEMINI_SEARCH_AI_MODEL,
-        timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
-        maxSources: env.SEARCH_AI_MAX_SOURCES,
-        useGoogleSearchGrounding: env.GEMINI_SEARCH_GROUNDING_ENABLED
-      })
-    : createOpenAiSearchAiAdapter({
-        apiKey: env.OPENAI_API_KEY,
-        model: env.SEARCH_AI_MODEL,
-        timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
-        maxSources: env.SEARCH_AI_MAX_SOURCES
-      })
-  : undefined;
+const searchAiProviders = {
+  gemini: {
+    model: env.GEMINI_SEARCH_AI_MODEL,
+    adapter: createGeminiSearchAiAdapter({
+      apiKey: env.GEMINI_API_KEY, model: env.GEMINI_SEARCH_AI_MODEL, timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
+      maxSources: env.SEARCH_AI_MAX_SOURCES, useGoogleSearchGrounding: env.GEMINI_SEARCH_GROUNDING_ENABLED
+    })
+  },
+  openai: {
+    model: env.SEARCH_AI_MODEL,
+    adapter: createOpenAiSearchAiAdapter({
+      apiKey: env.OPENAI_API_KEY, model: env.SEARCH_AI_MODEL, timeoutMs: env.SEARCH_AI_TIMEOUT_MS,
+      maxSources: env.SEARCH_AI_MAX_SOURCES
+    })
+  }
+};
 const imageSearchAdapter = env.IMAGE_SEARCH_ENABLED
   ? createImageSearchAdapter({
       googleApiKey: env.GOOGLE_SEARCH_API_KEY,
@@ -196,17 +196,27 @@ const governanceEnforcementEnabled = env.GOVERNANCE_ENFORCEMENT_ENABLED;
 const statusPort = createStatusPort({ redis, queue, llmEnabled: env.LLM_ENABLED, llmConfigured });
 const muteAdapter = createMuteAdapter(redis);
 const auditTrail = createAuditTrail();
-const aiService = new AiService({
-  llm: llmAdapter,
+const makeAiService = (llm: typeof llmAdapter, configured: boolean) => new AiService({
+  llm,
   memory: conversationMemoryRepository as any,
   config: {
-    enabled: env.LLM_ENABLED && llmConfigured,
+    enabled: env.LLM_ENABLED && configured,
     personaId: env.LLM_PERSONA,
     memoryWindow: env.LLM_MEMORY_MESSAGES,
     commandPrefix: env.BOT_PREFIX
   },
   logger
 });
+const aiService = makeAiService(llmAdapter, llmConfigured);
+const aiAssistants = env.LLM_RUNTIME_PROVIDER_ENABLED && env.LLM_ENABLED ? {
+  ollama: usesOllamaChat ? aiService : makeAiService(createOllamaChatAdapter({
+    baseUrl: env.OLLAMA_BASE_URL, model: env.OLLAMA_CHAT_MODEL, timeoutMs: env.OLLAMA_CHAT_TIMEOUT_MS
+  }), true),
+  ...(env.OPENAI_API_KEY ? {
+    openai: usesOllamaChat ? makeAiService(createOpenAiAdapter(env.OPENAI_API_KEY, env.LLM_MODEL), true) : aiService
+  } : {})
+} : undefined;
+
 
 const adminApiUrl = `http://localhost:${env.ADMIN_API_PORT}`;
 const adminUiUrl = `http://localhost:${env.ADMIN_UI_PORT}`;
@@ -419,6 +429,7 @@ const orchestrator = new Orchestrator({
   messagesRepository,
   conversationMemory: conversationMemoryRepository,
   aiAssistant: aiService,
+  aiAssistants,
   prompt: promptsRepository,
   cooldown: createCooldownAdapter(redis),
   rateLimit: createRateLimitAdapter(redis),
@@ -434,7 +445,8 @@ const orchestrator = new Orchestrator({
   textToSpeech: textToSpeechAdapter,
   textTranslation: textTranslationAdapter,
   webSearch: webSearchAdapter,
-  searchAi: searchAiAdapter,
+  searchAiProvider: env.SEARCH_AI_PROVIDER,
+  searchAiProviders,
   searchWithSources,
   searchSourcesNaturalEnabled: env.SEARCH_SOURCES_NATURAL_ENABLED,
   imageSearch: imageSearchAdapter,

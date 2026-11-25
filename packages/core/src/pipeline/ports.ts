@@ -46,6 +46,7 @@ export interface AdminAccessPort {
 }
 
 export interface FlagsRepositoryPort {
+  setTenantRuntimeFlag?(input: { tenantId: string; actor: string; key: string; value: string }): Promise<void>;
   resolveFlags(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<Record<string, string>>;
 }
 
@@ -449,6 +450,7 @@ export interface CorePorts {
   messagesRepository: MessagesRepositoryPort;
   conversationMemory?: ConversationMemoryPort;
   aiAssistant?: AiAssistantPort;
+  aiAssistants?: Partial<Record<"ollama" | "openai", AiAssistantPort>>;
   prompt: PromptPort;
   cooldown: CooldownPort;
   rateLimit: RateLimitPort;
@@ -458,7 +460,9 @@ export interface CorePorts {
   textTranslation?: TextTranslationPort;
   webSearch?: WebSearchPort;
   searchAi?: SearchAiPort;
-  searchWithSources?: import("../modules/search-ai/ports.js").SearchWithSources;
+  searchAiProvider?: "gemini" | "openai";
+  searchAiProviders?: Partial<Record<"gemini" | "openai", { adapter?: SearchAiPort; model: string }>>;
+  searchWithSources?: import("../modules/pesquisar/ports.js").SearchWithSources;
   searchSourcesNaturalEnabled?: boolean;
   imageSearch?: ImageSearchPort;
   mediaDownload?: MediaDownloadPort;
