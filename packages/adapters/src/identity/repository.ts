@@ -25,18 +25,31 @@ interface IdentityRepositoryDeps {
   };
 }
 
-const mergeUsers = async (prisma: PrismaClient, sourceId: string, targetId: string) => {
+const mergeUsers = async (prisma: PrismaClient, tenantId: string, sourceId: string, targetId: string, lidJid: string) => {
   if (sourceId === targetId) return;
-  await prisma.$transaction([
-    prisma.message.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.reminder.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.featureFlag.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.trigger.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.task.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.note.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.timer.updateMany({ where: { userId: sourceId }, data: { userId: targetId } }),
-    prisma.user.delete({ where: { id: sourceId } })
-  ]);
+  await prisma.$transaction(async tx => {
+    if (await tx.user.count({ where: { tenantId, id: { in: [sourceId, targetId] } } }) !== 2)
+      throw new Error("alias_tenant_mismatch");
+    const source = await tx.conversation.findFirst({ where: { tenantId, channel: "whatsapp", chatType: "direct", ownerId: sourceId } });
+    if (source) {
+      await tx.$queryRaw`SELECT id FROM "Conversation" WHERE id = ${source.id} FOR UPDATE`;
+      const scope = { tenantId, channel: "whatsapp", chatType: "direct", ownerId: targetId };
+      const target = await tx.conversation.upsert({ where: { tenantId_channel_chatType_ownerId: scope },
+        create: scope, update: { ownerId: targetId } });
+      await tx.message.updateMany({ where: { tenantId, conversationId: source.id }, data: { conversationId: target.id } });
+      await tx.conversationMemory.updateMany({ where: { tenantId, conversationId: source.id }, data: { conversationId: target.id } });
+      await tx.conversation.delete({ where: { id: source.id } });
+    }
+    await tx.message.updateMany({ where: { tenantId, userId: sourceId }, data: { userId: targetId } });
+    await tx.reminder.updateMany({ where: { tenantId, userId: sourceId }, data: { userId: targetId } });
+    await tx.featureFlag.updateMany({ where: { tenantId, userId: sourceId }, data: { userId: targetId } });
+    await tx.trigger.updateMany({ where: { tenantId, userId: sourceId }, data: { userId: targetId } });
+    await tx.task.updateMany({ where: { tenantId, userId: sourceId }, data: { userId: targetId } });
+    await tx.note.updateMany({ where: { tenantId, userId: sourceId }, data: { userId: targetId } });
+    await tx.timer.updateMany({ where: { tenantId, userId: sourceId }, data: { userId: targetId } });
+    await tx.user.delete({ where: { id: sourceId, tenantId } });
+    await tx.user.update({ where: { id: targetId, tenantId }, data: { lidJid } });
+  });
 };
 
 export const createIdentityRepository = (deps: IdentityRepositoryDeps) => {
@@ -134,7 +147,7 @@ export const createIdentityRepository = (deps: IdentityRepositoryDeps) => {
       const pnJid = `${phoneNumber}@s.whatsapp.net`;
       const aliasTokens = collectAliases(lidJid, pnJid, phoneNumber, input.phoneNumber, `${phoneNumber}@c.us`);
 
-      const phoneDerived = { waUserId: pnJid, phoneNumber, pnJid, lidJid };
+      const phoneDerived = { waUserId: pnJid, phoneNumber, pnJid };
       let targetUser =
         (await findUserByAnyIdentifier(input.tenantId, phoneDerived, aliasTokens)) ??
         (await prisma.user.create({
@@ -156,8 +169,10 @@ export const createIdentityRepository = (deps: IdentityRepositoryDeps) => {
         aliasTokens
       );
 
+      if (targetUser.lidJid && targetUser.lidJid !== lidJid) throw new Error("alias_already_bound");
       if (lidUser && lidUser.id !== targetUser.id) {
-        await mergeUsers(prisma, lidUser.id, targetUser.id);
+        if (lidUser.phoneNumber && lidUser.phoneNumber !== phoneNumber && lidUser.phoneNumber !== lidJid.split("@")[0]) throw new Error("alias_already_bound");
+        await mergeUsers(prisma, input.tenantId, lidUser.id, targetUser.id, lidJid);
       }
 
       const mergedAliases = Array.from(new Set([...(targetUser.aliases ?? []), ...(lidUser?.aliases ?? []), ...aliasTokens]));

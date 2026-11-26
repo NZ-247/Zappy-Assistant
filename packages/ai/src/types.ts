@@ -1,5 +1,6 @@
 import type {
   ConversationMessage,
+  ConversationScope,
   AiAssistantInput,
   AiResponse,
   ToolAction,
@@ -83,9 +84,9 @@ export interface MemoryEntry extends AiMessage {
 }
 
 export interface ConversationMemoryPort {
-  loadRecent(input: { tenantId: string; conversationId: string; limit: number }): Promise<MemoryEntry[]>;
-  append(entry: MemoryEntry): Promise<void>;
-  trim?(input: { tenantId: string; conversationId: string; keep: number }): Promise<void>;
+  loadRecent(input: { scope: ConversationScope; conversationId: string; limit: number }): Promise<MemoryEntry[]>;
+  append(entry: MemoryEntry & { scope: ConversationScope; keep?: number }): Promise<void>;
+  trim?(input: { scope: ConversationScope; conversationId: string; keep: number }): Promise<void>;
 }
 
 export interface PromptBuilderInput {

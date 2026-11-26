@@ -205,6 +205,9 @@ model User {
 }
 
 model Conversation {
+  channel String?
+  chatType String?
+  ownerId String?
   id          String       @id @default(uuid())
   tenantId    String
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -218,13 +221,14 @@ model Conversation {
 
   @@index([tenantId])
   @@index([groupId])
-  @@unique([tenantId, groupId])
+  @@unique([tenantId, channel, chatType, ownerId])
+  @@unique([tenantId, id])
 }
 
 model Message {
   id             String           @id @default(uuid())
   conversationId String
-  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   Conversation     @relation(fields: [tenantId, conversationId], references: [tenantId, id], onDelete: Cascade)
   userId         String?
   user           User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   tenantId       String
@@ -402,7 +406,7 @@ model ConversationMemory {
   id             String     @id @default(uuid())
   tenantId       String
   conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [tenantId, conversationId], references: [tenantId, id], onDelete: Cascade)
   waUserId       String?
   role           MemoryRole
   content        String

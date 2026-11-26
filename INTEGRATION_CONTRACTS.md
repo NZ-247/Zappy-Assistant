@@ -895,3 +895,5 @@ Auxiliary internal bridge services (vendored)
 ### Indicadores da conversa no status administrativo
 
 `llm.configured` indica configuração para o provedor selecionado em `LLM_PROVIDER`. OpenAI requer uma chave, enquanto Ollama usa a URL configurada. `llm.ok` reflete a habilitação e configuração nessa versão do contrato. Para diagnosticar disponibilidade da inferência, consulte o log de requisições da IA, que distingue timeout, rede, quota e rate limit.
+
+O GET autenticado `/admin/messages` nas duas APIs aceita `tenantId` para delimitar a listagem. Sem parâmetro, resolve o nome de tenant configurado; se não identificar exatamente um tenant, devolve lista vazia. O token administrativo mantém o acesso administrativo a tenants selecionados. A IA não consome esse endpoint.

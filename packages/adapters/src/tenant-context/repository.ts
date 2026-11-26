@@ -31,16 +31,16 @@ export type EnsureTenantContextResult = {
 };
 
 export const createTenantContextRepository = (deps: TenantContextRepositoryDeps) => {
-  const { prisma, resolveCanonicalUserIdentity, collectAliases, identityLogger } = deps;
+  const { prisma, resolveCanonicalUserIdentity, identityLogger } = deps;
 
   const ensureTenantContext = async (input: EnsureTenantContextInput): Promise<EnsureTenantContextResult> => {
     let tenant = await prisma.tenant.findFirst({ where: { name: input.defaultTenantName } });
     if (!tenant) tenant = await prisma.tenant.create({ data: { name: input.defaultTenantName } });
 
     let group = input.waGroupId
-      ? await prisma.group.findUnique({ where: { waGroupId: input.waGroupId } })
+      ? await prisma.group.findUnique({ where: { tenantId: tenant.id, waGroupId: input.waGroupId } })
       : input.onlyGroupId
-        ? await prisma.group.findUnique({ where: { waGroupId: input.onlyGroupId } })
+        ? await prisma.group.findUnique({ where: { tenantId: tenant.id, waGroupId: input.onlyGroupId } })
         : null;
 
     if (!group && (input.waGroupId || input.onlyGroupId)) {
@@ -64,8 +64,7 @@ export const createTenantContextRepository = (deps: TenantContextRepositoryDeps)
       tenantId: tenant.id,
       waUserId: input.waUserId,
       remoteJid: input.remoteJid,
-      displayName: input.userName,
-      aliases: collectAliases(input.userName)
+      displayName: input.userName
     });
 
     const user =

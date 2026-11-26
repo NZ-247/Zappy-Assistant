@@ -60,12 +60,14 @@ export class AiService {
       personaId: input.personaId ?? this.config.personaId,
       relationshipProfile: input.relationshipProfile
     });
-    const memoryLimit = input.chatScope === "group" ? modifier?.memoryWindowOverride ?? this.config.memoryWindow : 0;
+    const scope = input.conversationScope;
+    const memoryLimit = this.config.memoryWindow > 0 && scope?.tenantId === input.tenantId && scope.chatType === input.chatScope
+      ? modifier?.memoryWindowOverride ?? this.config.memoryWindow : 0;
     const policyNotes = [...(modifier?.policyNotes ?? [])];
     const recentMemory =
-      memoryLimit > 0 && input.conversationId
+      memoryLimit > 0 && scope && input.conversationId
         ? await this.memory.loadRecent({
-            tenantId: input.tenantId,
+            scope,
             conversationId: input.conversationId,
             limit: memoryLimit
           })
@@ -134,12 +136,14 @@ export class AiService {
 
   private async appendMemory(input: AiAssistantInput, assistantText: string, keepOverride?: number) {
     if (!this.config.enabled) return;
-    if (!this.memory || !input.conversationId) return;
+    if (!this.memory || !input.conversationId || !input.conversationScope) return;
     const keep = keepOverride ?? this.config.memoryWindow;
     const base = {
+      scope: input.conversationScope,
       tenantId: input.tenantId,
       conversationId: input.conversationId,
       waUserId: input.waUserId,
+      metadataJson: input.inboundWaMessageId ? { inboundWaMessageId: input.inboundWaMessageId } : undefined,
       keep
     };
     try {

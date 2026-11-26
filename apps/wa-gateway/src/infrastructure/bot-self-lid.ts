@@ -1,3 +1,4 @@
+import type { ConversationScope } from "@zappy/core";
 import type { Redis } from "ioredis";
 
 interface BotSelfLidServiceDeps {
@@ -6,10 +7,11 @@ interface BotSelfLidServiceDeps {
   defaultBotName?: string;
   normalizeLidJid: (value?: string | null) => string | null;
   stripUser: (jid: string) => string | null;
-  findOutboundByWaMessageId: (waMessageId: string) => Promise<boolean>;
+  findOutboundByWaMessageId: (waMessageId: string, scope: ConversationScope) => Promise<boolean>;
 }
 
 interface MaybeLearnFromQuoteInput {
+  scope: ConversationScope;
   quotedWaMessageId?: string;
   quotedParticipantRaw?: string;
   quotedMessage?: any;
@@ -73,9 +75,9 @@ export const createBotSelfLidService = (deps: BotSelfLidServiceDeps) => {
 
     const quotedFromMe = Boolean(input.quotedMessage?.key?.fromMe);
     let outboundMatch = false;
-    if (input.quotedWaMessageId) {
+    if (input.quotedWaMessageId && input.scope?.ownerId) {
       try {
-        outboundMatch = await deps.findOutboundByWaMessageId(input.quotedWaMessageId);
+        outboundMatch = await deps.findOutboundByWaMessageId(input.quotedWaMessageId, input.scope);
       } catch (error) {
         deps.logger.warn?.(
           {

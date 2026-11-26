@@ -1,3 +1,4 @@
+import type { ConversationScope } from "@zappy/core";
 import { downloadMediaMessage } from "baileys";
 import { Orchestrator } from "@zappy/core";
 import { attemptGroupAdminAction } from "./admin-actions.js";
@@ -182,7 +183,7 @@ const muteAdapter = createMuteAdapter(redis);
 const auditTrail = createAuditTrail();
 const aiService = new AiService({
   llm: llmAdapter,
-  memory: conversationMemoryRepository as any,
+  memory: conversationMemoryRepository,
   config: {
     enabled: env.LLM_ENABLED && llmConfigured,
     personaId: env.LLM_PERSONA,
@@ -267,10 +268,10 @@ const botSelfLidService = createBotSelfLidService({
   defaultBotName: env.DEFAULT_BOT_NAME,
   normalizeLidJid,
   stripUser,
-  findOutboundByWaMessageId: async (waMessageId: string) =>
+  findOutboundByWaMessageId: async (waMessageId: string, scope: ConversationScope) =>
     Boolean(
       await prisma.message.findFirst({
-        where: { waMessageId, direction: "OUTBOUND" },
+        where: { tenantId: scope.tenantId, conversation: scope, waMessageId, direction: "OUTBOUND" },
         select: { id: true }
       })
     )
@@ -290,6 +291,7 @@ const getBotSelfLid = async () => {
   return botSelfLid;
 };
 const maybeLearnBotLidFromQuote = async (input: {
+  scope: ConversationScope;
   quotedWaMessageId?: string;
   quotedParticipantRaw?: string;
   quotedMessage?: any;

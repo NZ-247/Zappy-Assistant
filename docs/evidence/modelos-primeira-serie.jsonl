@@ -1,0 +1,10 @@
+{"model": "qwen3:1.7b", "capability": "synthesis", "concurrency": 1, "passed": false, "load_ms": 1877.5, "resident_bytes": 1706788125, "vram_bytes": 1706788125, "wall_ms": 2518}
+{"model": "qwen3:1.7b", "capability": "code", "concurrency": 1, "passed": false, "load_ms": 0.4, "resident_bytes": 1706788125, "vram_bytes": 1706788125, "wall_ms": 217}
+{"model": "qwen3:1.7b", "capability": "embeddings", "concurrency": 1, "passed": false, "error": "HTTPError", "status": 501, "wall_ms": 2}
+{"model": "qwen3:1.7b", "capability": "synthesis", "concurrency": 2, "passed": false, "load_ms": 0.4, "resident_bytes": 1706788125, "vram_bytes": 1706788125, "wall_ms": 382}
+{"model": "qwen3:1.7b", "capability": "code", "concurrency": 2, "passed": false, "load_ms": 0.4, "resident_bytes": 1706788125, "vram_bytes": 1706788125, "wall_ms": 492}
+{"model": "qwen3:4b", "capability": "synthesis", "concurrency": 1, "passed": false, "error": "TimeoutError", "status": null, "wall_ms": 60055}
+{"model": "qwen3:4b", "capability": "code", "concurrency": 1, "passed": false, "load_ms": 0.5, "resident_bytes": 3534906980, "vram_bytes": 2727346175, "wall_ms": 58505}
+{"model": "qwen3:4b", "capability": "embeddings", "concurrency": 1, "passed": false, "error": "HTTPError", "status": 501, "wall_ms": 3}
+{"model": "qwen3:4b", "capability": "synthesis", "concurrency": 2, "passed": false, "error": "TimeoutError", "status": null, "wall_ms": 60061}
+{"model": "qwen3:4b", "capability": "code", "concurrency": 2, "passed": false, "load_ms": 2.1, "resident_bytes": 3534906980, "vram_bytes": 2727346175, "wall_ms": 57343}

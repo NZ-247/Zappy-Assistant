@@ -503,3 +503,5 @@ Confira `correlationId`, `model`, `latencyMs` e `decision` nos eventos bem-suced
 - Creator (556699064658): “Preciso de um plano para o lançamento.” → proactive, strategic outline + suggested next actions.
 - Mother (556692283438): “Me lembra de tomar o remédio às 20h.” → gentle confirmation using soft address and schedules the reminder.
 - Regular member: “cria uma tarefa para ligar para o cliente amanhã” → parses intent, asks for missing time if needed, then creates the task.
+
+O histórico de conversa usa escopo por tenant, canal, chat e proprietário canônico. Na revisão com isolamento, `LLM_MEMORY_MESSAGES=0` desliga a memória também para perfis privilegiados. A mensagem atual e a persona continuam disponíveis. Os critérios de implantação e o estado do CT 110 estão em [isolamento conversacional](docs/isolamento-conversacional.md).

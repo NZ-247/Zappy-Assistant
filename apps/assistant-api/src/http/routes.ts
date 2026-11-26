@@ -158,7 +158,7 @@ export const registerAssistantApiRoutes = (app: AssistantApiHttpApp, runtime: As
 
   app.get("/admin/messages", async (request) => {
     const limit = Number.parseInt((request.query as { limit?: string }).limit ?? "50", 10);
-    return getRecentMessages(Number.isNaN(limit) ? 50 : limit);
+    return getRecentMessages(Number.isNaN(limit) ? 50 : limit, (request.query as { tenantId?: string }).tenantId);
   });
 
   app.get("/admin/commands", async (request) => {

@@ -1,0 +1,15 @@
+BEGIN
+        kind        |   role    |      result      | count
+--------------------+-----------+------------------+-------
+ ConversationMemory | assistant | ambiguous_owner  |     2
+ ConversationMemory | assistant | no_verified_turn |    10
+ ConversationMemory | user      | ambiguous_owner  |     2
+ ConversationMemory | user      | attributable     |    10
+ Message            | INBOUND   | ambiguous_owner  |    79
+ Message            | INBOUND   | attributable     |   513
+ Message            | OUTBOUND  | ambiguous_owner  |    13
+ Message            | OUTBOUND  | attributable     |   169
+ Message            | OUTBOUND  | no_verified_turn |    72
+(9 rows)
+
+ROLLBACK

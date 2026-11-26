@@ -1,3 +1,4 @@
+import { createConversationRepositories } from "./conversations/repository.js";
 import {
   AccessSubjectType,
   AuditAction,
@@ -120,56 +121,7 @@ const { ensureTenantContext } = createTenantContextRepository({
 });
 export { ensureTenantContext };
 
-export const persistInboundMessage = async (input: InboundMessageEvent & { userId: string; groupId?: string; rawJson: unknown }) => {
-  const conversation =
-    (await prisma.conversation.findFirst({ where: { tenantId: input.tenantId, groupId: input.groupId ?? null } })) ??
-    (await prisma.conversation.create({
-      data: { tenantId: input.tenantId, groupId: input.groupId ?? null, subject: input.groupId ?? input.waUserId }
-    }));
-  return prisma.message.create({
-    data: {
-      conversationId: conversation.id,
-      userId: input.userId,
-      body: input.text,
-      waMessageId: input.waMessageId,
-      direction: "INBOUND",
-      rawJson: input.rawJson as Prisma.JsonObject,
-      waUserId: input.waUserId,
-      waGroupId: input.waGroupId,
-      tenantId: input.tenantId
-    }
-  });
-};
-
-export const persistOutboundMessage = async (input: {
-  tenantId: string;
-  userId?: string;
-  groupId?: string;
-  waUserId: string;
-  waGroupId?: string;
-  text: string;
-  waMessageId?: string;
-  rawJson?: unknown;
-}) => {
-  const conversation =
-    (await prisma.conversation.findFirst({ where: { tenantId: input.tenantId, groupId: input.groupId ?? null } })) ??
-    (await prisma.conversation.create({
-      data: { tenantId: input.tenantId, groupId: input.groupId ?? null, subject: input.groupId ?? input.waUserId }
-    }));
-  return prisma.message.create({
-    data: {
-      conversationId: conversation.id,
-      userId: input.userId,
-      body: input.text,
-      waMessageId: input.waMessageId,
-      direction: "OUTBOUND",
-      rawJson: (input.rawJson ?? {}) as Prisma.JsonObject,
-      waUserId: input.waUserId,
-      waGroupId: input.waGroupId,
-      tenantId: input.tenantId
-    }
-  });
-};
+export const { persistInboundMessage, persistOutboundMessage, messagesRepository, conversationMemoryRepository } = createConversationRepositories(prisma);
 
 export const featureFlagRepository = {
   list: () => prisma.featureFlag.findMany({ orderBy: [{ key: "asc" }, { createdAt: "desc" }] }),
@@ -456,17 +408,6 @@ export const timersRepository = createTimersRepository({
   resolveScopedUserAndGroup
 });
 
-export const messagesRepository = {
-  getRecentMessages: async (input: { tenantId: string; waGroupId?: string; waUserId: string; limit: number }): Promise<ConversationMessage[]> => {
-    const rows = await prisma.message.findMany({
-      where: { tenantId: input.tenantId, waUserId: input.waUserId, waGroupId: input.waGroupId },
-      orderBy: { createdAt: "desc" },
-      take: input.limit
-    });
-    return rows.reverse().map((row) => ({ role: row.direction === "INBOUND" ? "user" : "assistant", content: row.body }));
-  }
-};
-
 export const promptsRepository = {
   resolvePrompt: async (input: { tenantId: string; waGroupId?: string }) => {
     if (input.waGroupId) {
@@ -480,85 +421,6 @@ export const promptsRepository = {
     return tPrompt?.content ?? null;
   }
 };
-
-export const conversationMemoryRepository = {
-  appendMemory: async (input: {
-    tenantId: string;
-    conversationId: string;
-    waUserId?: string;
-    role: "system" | "user" | "assistant" | "tool";
-    content: string;
-    metadataJson?: unknown;
-    keepLatest?: number;
-  }): Promise<void> => {
-    const content = input.content?.trim();
-    if (!content) return;
-    await prisma.conversationMemory.create({
-      data: {
-        tenantId: input.tenantId,
-        conversationId: input.conversationId,
-        waUserId: input.waUserId ?? null,
-        role: input.role as any,
-        content,
-        metadataJson: (input.metadataJson as Prisma.InputJsonValue) ?? undefined
-      }
-    });
-    if (input.keepLatest && input.keepLatest > 0) {
-      await conversationMemoryRepository.trimOldMemory(input.conversationId, input.keepLatest);
-    }
-  },
-
-  listRecentMemory: async (input: { conversationId: string; limit: number }) => {
-    const rows = await prisma.conversationMemory.findMany({
-      where: { conversationId: input.conversationId },
-      orderBy: { createdAt: "desc" },
-      take: input.limit
-    });
-    return rows.reverse();
-  },
-
-  trimOldMemory: async (conversationId: string, keepLatestN: number) => {
-    if (keepLatestN <= 0) {
-      await prisma.conversationMemory.deleteMany({ where: { conversationId } });
-      return;
-    }
-    const stale = await prisma.conversationMemory.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: "desc" },
-      skip: keepLatestN,
-      select: { id: true }
-    });
-    if (stale.length === 0) return;
-    await prisma.conversationMemory.deleteMany({ where: { id: { in: stale.map((s) => s.id) } } });
-  },
-
-  clearMemory: async (conversationId: string) => {
-    await prisma.conversationMemory.deleteMany({ where: { conversationId } });
-  }
-};
-
-// Aliases to satisfy ConversationMemoryPort shape used by @zappy/ai
-(conversationMemoryRepository as any).loadRecent = (input: { tenantId: string; conversationId: string; limit: number }) =>
-  conversationMemoryRepository.listRecentMemory({ conversationId: input.conversationId, limit: input.limit });
-(conversationMemoryRepository as any).append = (entry: {
-  tenantId: string;
-  conversationId: string;
-  waUserId?: string;
-  waGroupId?: string;
-  role: "system" | "user" | "assistant" | "tool";
-  content: string;
-  metadataJson?: unknown;
-  keep?: number;
-}) =>
-  conversationMemoryRepository.appendMemory({
-    tenantId: entry.tenantId,
-    conversationId: entry.conversationId,
-    waUserId: entry.waUserId,
-    role: entry.role,
-    content: entry.content,
-    metadataJson: entry.metadataJson,
-    keepLatest: entry.keep
-  });
 
 export const createCooldownAdapter = (redis: Redis) => ({
   canFire: async (key: string, ttlSeconds: number) => {
@@ -709,8 +571,15 @@ export { createFacebookDownloadProvider } from "./downloads/providers/facebook-p
 
 export { markGatewayHeartbeat, getGatewayHeartbeat, markWorkerHeartbeat, getWorkerHeartbeat };
 
-export const getRecentMessages = (limit: number) =>
-  prisma.message.findMany({ orderBy: { createdAt: "desc" }, take: limit, select: { id: true, body: true, createdAt: true, waUserId: true, waGroupId: true, direction: true } });
+export const getRecentMessages = async (limit: number, tenantId?: string) => {
+  if (!tenantId) {
+    const matches = await prisma.tenant.findMany({ where: { name: process.env.DEFAULT_TENANT_NAME ?? "Default Tenant" }, select: { id: true }, take: 2 });
+    if (matches.length !== 1) return [];
+    tenantId = matches[0].id;
+  }
+  return prisma.message.findMany({ where: { tenantId }, orderBy: { createdAt: "desc" }, take: limit,
+    select: { id: true, body: true, createdAt: true, waUserId: true, waGroupId: true, direction: true } });
+};
 
 export const getReminderById = (id: string) => prisma.reminder.findUnique({ where: { id } });
 export const updateReminderStatus = (id: string, status: ReminderStatus) => prisma.reminder.update({ where: { id }, data: { status } });

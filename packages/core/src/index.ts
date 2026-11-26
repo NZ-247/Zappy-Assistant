@@ -33,6 +33,7 @@ import {
   runBusinessTriggers as runBusinessTriggersStage,
   runGreetingStage as runGreetingPolicyStage
 } from "./orchestrator/policy-triggers.js";
+export type { ConversationScope } from "./pipeline/types.js";
 import type {
   AuditEvent,
   CanonicalIdentity,
@@ -344,6 +345,7 @@ export class Orchestrator {
 
   private getMemoryLimitForProfile(profile: RelationshipProfile): number {
     const base = this.ports.llmMemoryMessages ?? 10;
+    if (base === 0) return 0;
     if (profile === "creator_root") return Math.max(base, 24);
     if (profile === "mother_privileged") return Math.max(base, 18);
     return base;
@@ -490,19 +492,13 @@ export class Orchestrator {
       storedProfile: identity?.relationshipProfile ?? identity?.canonicalIdentity?.relationshipProfile ?? null
     });
     const memoryLimit = this.getMemoryLimitForProfile(relationship.profile);
-    const recentMessages = !event.isGroup ? [] : this.ports.conversationMemory && event.conversationId
-      ? this.mapMemoryToMessages(
-          await this.ports.conversationMemory.listRecentMemory({
-            conversationId: event.conversationId,
-            limit: memoryLimit
-          })
-        )
-      : await this.ports.messagesRepository.getRecentMessages({
-          tenantId: event.tenantId,
-          waGroupId: event.waGroupId,
-          waUserId: event.waUserId,
-          limit: memoryLimit
-        });
+    const memoryScope = event.conversationScope;
+    const memoryAvailable = memoryScope && memoryScope.tenantId === event.tenantId &&
+      memoryScope.chatType === (event.isGroup ? "group" : "direct") && event.conversationId && memoryLimit > 0;
+    const address = memoryAvailable ? { scope: memoryScope, conversationId: event.conversationId!, limit: memoryLimit } : undefined;
+    const recentMessages = !address ? [] : this.ports.conversationMemory
+      ? this.mapMemoryToMessages(await this.ports.conversationMemory.listRecentMemory(address))
+      : await this.ports.messagesRepository.getRecentMessages(address);
     const groupChatMode = groupAccess?.chatMode ?? "on";
     const groupAllowed = event.isGroup ? (groupAccess ? Boolean(groupAccess.allowed) : true) : true;
     const botAdminCheckedAtTs = event.botAdminCheckedAt?.getTime?.() ?? groupAccess?.botAdminCheckedAt?.getTime?.() ?? undefined;

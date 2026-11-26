@@ -10,7 +10,8 @@ const HARD_FACTS_GLOBAL = [
 
 const limitMemory = (input?: { items?: PromptBuilderInput["recentMemory"]; limit?: number }) => {
   if (!input?.items?.length) return [];
-  if (!input.limit || input.limit <= 0) return input.items;
+  if (input.limit === undefined) return input.items;
+  if (input.limit <= 0) return [];
   return input.items.slice(-input.limit);
 };
 
