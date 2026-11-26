@@ -1,11 +1,16 @@
 import type { PipelineContext } from "../../../../pipeline/context.js";
 import type { ResponseAction } from "../../../../pipeline/actions.js";
-import type { LoggerPort } from "../../../../pipeline/ports.js";
+import type { CooldownPort, LoggerPort } from "../../../../pipeline/ports.js";
 import { parseWebSearchCommand } from "../../infrastructure/web-search-command-parser.js";
 import { executeWebSearch, type WebSearchUseCaseConfig } from "../../application/use-cases/search-web.js";
 import type { WebSearchPort } from "../../ports.js";
 
+import type { SearchWithSources } from "../../../pesquisar/ports.js";
+import { runSearchSources } from "../../../pesquisar/presentation/entrada-pesquisa.js";
+
 export interface WebSearchCommandDeps {
+  searchPages?: SearchWithSources;
+  cooldown?: CooldownPort;
   search?: WebSearchPort;
   config: WebSearchUseCaseConfig;
   formatUsage?: (command: "search" | "google") => string | null;
@@ -49,6 +54,10 @@ export const handleWebSearchCommand = async (input: {
     const text = parseFailureMessage({ reason: parsed.reason, usage });
     const formatted = deps.stylizeReply ? deps.stylizeReply(text) : text;
     return [{ kind: "reply_text", text: formatted }];
+  }
+
+  if (commandKind === "search" && deps.searchPages && deps.cooldown) {
+    return runSearchSources(ctx, deps.searchPages, parsed.query, "command", false, deps.config.maxResults, deps.cooldown, "command");
   }
 
   return executeWebSearch({

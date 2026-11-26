@@ -413,7 +413,8 @@ export class Orchestrator {
     const now = this.ports.clock?.now() ?? new Date();
     const defaultReminderTime = this.ports.defaultReminderTime ?? DEFAULT_REMINDER_TIME;
 
-    const assistantMode = (flags.assistant_mode ?? this.ports.defaultAssistantMode ?? "professional") as
+    const assistantMode = (flags["runtime.ia"] === "off" ? "off" : flags["runtime.ia"] === "on" ? "professional" :
+      flags.assistant_mode ?? this.ports.defaultAssistantMode ?? "professional") as
       | "off"
       | "professional"
       | "fun"
@@ -784,6 +785,9 @@ export class Orchestrator {
       if (followUp.length > 0) return followUp;
     }
 
+    const webSearchActions = await this.assistantAi.handleExplicitWebSearch(ctx);
+    if (webSearchActions.length > 0) return webSearchActions;
+
     const naturalActions = await this.assistantAi.handleAddressedMessage(ctx);
     if (naturalActions.length > 0) return naturalActions;
 
@@ -955,3 +959,6 @@ export class Orchestrator {
     return this.formatActionsForDelivery([{ kind: "noop", reason: "no_action" }]);
   }
 }
+
+export type { PublicPageReaderPort } from "./pipeline/ports.js";
+export { createSearchWithSources, SEARCH_PAGE_RESPONSE_SCHEMA, SEARCH_SOURCES_RESPONSE_SCHEMA } from "./modules/pesquisar/application/use-cases/responder-com-fontes.js";

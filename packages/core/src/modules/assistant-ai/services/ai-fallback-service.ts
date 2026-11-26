@@ -24,6 +24,7 @@ const AVAILABLE_TOOLS: ToolAction[] = [
 
 type AiFallbackDeps = {
   aiAssistant?: AiAssistantPort;
+  aiAssistants?: Partial<Record<"ollama" | "openai", AiAssistantPort>>;
   llm: LlmPort;
   prompt: PromptPort;
   conversationMemory?: ConversationMemoryPort;
@@ -141,10 +142,16 @@ export class AiFallbackService {
       return [{ kind: "reply_text", text: this.llmUnavailableText }];
     }
 
-    if (this.deps.aiAssistant) {
+    const override = ctx.flags["runtime.ia.provider"];
+    const selected = override === "ollama" || override === "openai" ? this.deps.aiAssistants?.[override] : undefined;
+    if (this.deps.aiAssistants && (override === "ollama" || override === "openai") && !selected) {
+      return [{ kind: "reply_text", text: this.llmUnavailableText }];
+    }
+    const aiAssistant = selected ?? this.deps.aiAssistant;
+    if (aiAssistant) {
       try {
         await this.bumpMetric("ai_requests_total");
-        const result = await this.deps.aiAssistant.generate(this.buildAiAssistantInput(ctx));
+        const result = await aiAssistant.generate(this.buildAiAssistantInput(ctx));
 
         this.logAiResponse(ctx, { toolSuggestion: result.kind === "tool_suggestion" ? result.tool.action : undefined, fallback: result.kind === "fallback" }, "ai response");
 

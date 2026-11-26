@@ -35,7 +35,7 @@ export const handleSearchAiCommand = async (input: {
   if (!handledCommands.has(commandKey)) return null;
 
   const parsed = parseSearchAiCommand(cmd, {
-    replyContext: {
+    replyContext: deps.config.provider === "gemini" ? undefined : {
       quotedWaMessageId: ctx.event.quotedWaMessageId,
       quotedMessageType: ctx.event.quotedMessageType,
       quotedText: ctx.event.quotedText,
@@ -44,7 +44,9 @@ export const handleSearchAiCommand = async (input: {
   });
 
   if (!parsed.ok) {
-    const usage = deps.formatUsage?.("search-ai") ?? "Uso correto: search-ai <termo da busca>";
+    const usage = deps.config.provider === "gemini"
+      ? "Informe explicitamente uma consulta pública após o comando."
+      : deps.formatUsage?.("search-ai") ?? "Uso correto: search-ai <termo da busca>";
     const text = parseFailureMessage({ reason: parsed.reason, usage });
     const formatted = deps.stylizeReply ? deps.stylizeReply(text) : text;
     return [{ kind: "reply_text", text: formatted }];
@@ -52,6 +54,7 @@ export const handleSearchAiCommand = async (input: {
 
   return executeSearchAi({
     query: parsed.query,
+    executionId: ctx.event.executionId ?? ctx.event.waMessageId,
     searchAi: deps.searchAi,
     config: deps.config,
     stylizeReply: deps.stylizeReply,

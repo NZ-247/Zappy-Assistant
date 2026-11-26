@@ -488,3 +488,16 @@ A seleção é independente da observação semântica e dos adaptadores de STT,
 ### Escopo de conversa e histórico
 
 O ingresso WhatsApp resolve o usuário e o grupo no tenant antes de persistir o evento. O repositório em `packages/adapters/src/conversations/repository.ts` confere o destinatário e usa a chave única (tenant, canal, tipo, ID canônico do proprietário). O grupo é proprietário do contexto coletivo. Nomes de exibição têm uso exclusivamente de apresentação. O evento interno leva a identidade verificada até as portas de memória do orquestrador e do AiService. A leitura de Message usada como alternativa também exige esse endereço. Cada operação de memória exige ainda o ID da conversa. O banco garante consistência do tenant das linhas filhas e serializa a criação e a poda. O legado permanece com escopo nulo e fica excluído do prompt. Consulte `docs/isolamento-conversacional.md` para operação, evidências e tratamento de aliases.
+## Busca local com fontes
+
+O módulo `search-ai` contém o caso de uso `answer-with-sources`. O registry encaminha `/search-ai` e `/sai`, e o módulo `assistant-ai` encaminha apenas pedidos explícitos de busca quando a flag natural está ativa. Ambos passam pela autorização de chat direto do canário antes do caso de uso. Claim de ingresso, política, deduplicação e roteamento de comandos continuam no pipeline existente.
+
+O gateway injeta `WebSearchPort` e um `LlmPort` Ollama dedicado. O backend SearXNG adapta JSON ao contrato existente. A síntese recebe dados de busca delimitados, sem ferramentas. O módulo valida a estrutura e referências, associa as URLs obtidas e retorna links com limitação explícita quando a síntese falha. Os ports aceitam sinal de cancelamento opcional. A telemetria registra execução, backend, modelo, estágio e resultado.
+
+### Separação das buscas e configuração em execução
+
+O módulo `pesquisar` expõe a recuperação e a seleção local de trechos. O módulo `search-ai` mantém os adaptadores externos. A seleção lê configuração inicial e flags tipadas de execução. O módulo `configuracao-runtime` valida comandos ROOT e grava flags via port do core, com auditoria no adapter Prisma. [Fluxo e operação](docs/pesquisar-e-controles-runtime.md)
+
+### Leitura pública para busca
+
+A rota opt-in de `/search` compõe a descoberta DuckDuckGo, `PublicPageReaderPort` e a seleção local do módulo `pesquisar`. O adaptador usa Readability com leitura pública limitada e validação de rede e de redirecionamentos. O caso de uso compartilha validação e deduplicação com a opção de linguagem natural. [Bancada e operação](docs/search-paginas-publicas.md) · [Auditoria de memória e modelos](docs/auditoria-memoria-e-modelos.md)

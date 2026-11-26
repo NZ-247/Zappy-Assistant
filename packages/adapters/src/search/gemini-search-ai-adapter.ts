@@ -19,22 +19,6 @@ const clampSources = (value: number | undefined): number => {
   return Math.min(8, Math.max(1, Math.trunc(value as number)));
 };
 
-const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("search_ai_request_timeout")), timeoutMs);
-    promise
-      .then((value) => {
-        clearTimeout(timer);
-        resolve(value);
-      })
-      .catch((error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-  });
-};
-
 const extractSummary = (response: any): string => {
   const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
   const parts = candidates[0]?.content?.parts;
@@ -50,12 +34,16 @@ const extractSources = (response: any): SearchAiSourceItem[] => {
   const seen = new Set<string>();
   const sources: SearchAiSourceItem[] = [];
 
-  for (const candidate of candidates) {
+  for (const candidate of candidates.slice(0, 1)) {
     const chunks = Array.isArray(candidate?.groundingMetadata?.groundingChunks) ? candidate.groundingMetadata.groundingChunks : [];
     for (const chunk of chunks) {
       const web = chunk?.web;
       const url = typeof web?.uri === "string" ? web.uri.trim() : "";
-      if (!url || seen.has(url)) continue;
+      if (seen.has(url)) continue;
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:" || parsed.username || parsed.password) continue;
+      } catch { continue; }
       seen.add(url);
       const title = typeof web?.title === "string" && web.title.trim() ? web.title.trim() : url;
       sources.push({ title, url });
@@ -83,7 +71,7 @@ export const createGeminiSearchAiAdapter = (input: GeminiSearchAiAdapterInput): 
         systemInstruction: {
           parts: [
             {
-              text: "Você é um assistente de pesquisa web. Resuma com objetividade, priorize fatos recentes e evite especulações."
+              text: "Você é um assistente de pesquisa web. Responda em português do Brasil e resuma com objetividade. Use as fontes da busca. Mantenha URLs fora da síntese."
             }
           ]
         },
@@ -96,35 +84,36 @@ export const createGeminiSearchAiAdapter = (input: GeminiSearchAiAdapterInput): 
         tools: useGoogleSearchGrounding ? [{ google_search: {} }] : undefined
       };
 
-      const response = await withTimeout(
-        fetch(endpoint, {
+      const signal = AbortSignal.timeout(timeoutMs);
+      let data: unknown;
+      try {
+        const response = await fetch(endpoint, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": apiKey
-          },
+          redirect: "error",
+          signal,
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
           body: JSON.stringify(payload)
-        }),
-        timeoutMs
-      );
-
-      if (!response.ok) {
-        const raw = await response.text().catch(() => "");
-        const message = compactText(raw) || `http_${response.status}`;
-        throw new Error(`gemini_search_failed:${message}`);
+        });
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`gemini_http_${response.status}`);
+        }
+        data = await response.json();
+      } catch (error) {
+        if (signal.aborted) throw new Error("gemini_timeout");
+        if (error instanceof Error && /^gemini_http_\d{3}$/.test(error.message)) throw error;
+        throw new Error("gemini_unavailable");
       }
-
-      const data = (await response.json()) as any;
-      const summary = extractSummary(data);
-      if (!summary) {
-        throw new Error("search_ai_empty_response");
-      }
+      const sources = extractSources(data).slice(0, maxSources);
+      if (!useGoogleSearchGrounding || !sources.length) throw new Error("gemini_no_grounding");
+      const summary = extractSummary(data).replace(/https?:\/\/[^\s)>]+/gi, "").trim();
+      if (!summary) throw new Error("gemini_no_grounding");
 
       return {
         provider: useGoogleSearchGrounding ? "gemini_google_search" : "gemini",
         model,
         summary,
-        sources: extractSources(data).slice(0, maxSources)
+        sources
       };
     }
   };

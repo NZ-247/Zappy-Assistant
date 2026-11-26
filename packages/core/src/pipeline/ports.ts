@@ -47,6 +47,7 @@ export interface AdminAccessPort {
 }
 
 export interface FlagsRepositoryPort {
+  setTenantRuntimeFlag?(input: { tenantId: string; actor: string; key: string; value: string }): Promise<void>;
   resolveFlags(input: { tenantId: string; waGroupId?: string; waUserId: string }): Promise<Record<string, string>>;
 }
 
@@ -170,7 +171,7 @@ export interface QueuePort {
 }
 
 export interface LlmPort {
-  chat(input: { system: string; messages: ConversationMessage[] }): Promise<string>;
+  chat(input: { system: string; messages: ConversationMessage[]; signal?: AbortSignal }): Promise<string>;
 }
 
 export interface TextToSpeechPort {
@@ -274,12 +275,17 @@ export interface ImageSearchCandidateDiagnostic {
   byteLength?: number;
 }
 
+export interface PublicPageReaderPort {
+  read(input: { url: string; signal: AbortSignal; section?: "system-cron" | "qmrestore" }): Promise<{ url: string; paragraphs: string[]; language?: string }>;
+}
+
 export interface WebSearchPort {
   search(input: {
     query: string;
     limit: number;
     locale?: string;
     mode?: "generic" | "google_strict";
+    signal?: AbortSignal;
   }): Promise<{
     provider: string;
     results: WebSearchResultItem[];
@@ -449,6 +455,7 @@ export interface CorePorts {
   messagesRepository: MessagesRepositoryPort;
   conversationMemory?: ConversationMemoryPort;
   aiAssistant?: AiAssistantPort;
+  aiAssistants?: Partial<Record<"ollama" | "openai", AiAssistantPort>>;
   prompt: PromptPort;
   cooldown: CooldownPort;
   rateLimit: RateLimitPort;
@@ -458,6 +465,12 @@ export interface CorePorts {
   textTranslation?: TextTranslationPort;
   webSearch?: WebSearchPort;
   searchAi?: SearchAiPort;
+  searchAiProvider?: "gemini" | "openai";
+  searchAiProviders?: Partial<Record<"gemini" | "openai", { adapter?: SearchAiPort; model: string }>>;
+  searchPages?: import("../modules/pesquisar/ports.js").SearchWithSources;
+  searchPagesNaturalEnabled?: boolean;
+  searchWithSources?: import("../modules/pesquisar/ports.js").SearchWithSources;
+  searchSourcesNaturalEnabled?: boolean;
   imageSearch?: ImageSearchPort;
   mediaDownload?: MediaDownloadPort;
   llmModel?: string;

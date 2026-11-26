@@ -505,3 +505,16 @@ Confira `correlationId`, `model`, `latencyMs` e `decision` nos eventos bem-suced
 - Regular member: “cria uma tarefa para ligar para o cliente amanhã” → parses intent, asks for missing time if needed, then creates the task.
 
 O histórico de conversa usa escopo por tenant, canal, chat e proprietário canônico. Na revisão com isolamento, `LLM_MEMORY_MESSAGES=0` desliga a memória também para perfis privilegiados. A mensagem atual e a persona continuam disponíveis. Os critérios de implantação e o estado do CT 110 estão em [isolamento conversacional](docs/isolamento-conversacional.md).
+### Busca local com fontes
+
+`SEARCH_AI_PROVIDER=ollama_sources` habilita o canário de `/search-ai` e `/sai` no chat direto de operadores autorizados. `SEARCH_SOURCES_NATURAL_ENABLED=true` habilita pedidos explícitos como “Pesquise na web sobre backup no Proxmox”. Os dois caminhos recuperam trechos, sintetizam em português no Ollama e exibem referências validadas. Quando os trechos não sustentam a síntese, o bot informa a limitação e apresenta os links recuperados, quando disponíveis.
+
+O canário vem desativado. `SEARCH_SOURCES_BACKEND=existing|searxng` escolhe o backend da síntese. `SEARXNG_BASE_URL` é obrigatório para SearXNG. `/search` e `/google` continuam com o adaptador textual e modos atuais. Consulte o [roteiro da bancada e liberação](docs/search-sources-rollout.md).
+
+### Pesquisar e controles em execução
+
+`/pesquisar` é a rota local independente. `/search-ai` usa o provedor externo selecionado. Os comandos ROOT `/configurar` alteram controles permitidos em execução. Consulte [Pesquisa local e controles em execução](docs/pesquisar-e-controles-runtime.md).
+
+### Busca com páginas públicas
+
+A opção `SEARCH_PAGES_ENABLED` acrescenta leitura de páginas e seleção local de evidência a `/search`. Para pedidos explícitos de busca na conversa, use também `SEARCH_PAGES_NATURAL_ENABLED`. As opções vêm desligadas. Consulte o [runbook de busca com páginas públicas](docs/search-paginas-publicas.md).

@@ -13,8 +13,9 @@
   },
   "dependencies": {
     "@zappy/shared": "1.9.2",
-    "luxon": "^3.7.2",
-    "expr-eval": "^2.0.2"
+    "expr-eval": "^2.0.2",
+    "franc-min": "6.2.0",
+    "luxon": "^3.7.2"
   },
   "devDependencies": {
     "@types/luxon": "^3.7.1"

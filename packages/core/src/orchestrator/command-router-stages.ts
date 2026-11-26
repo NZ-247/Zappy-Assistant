@@ -1,3 +1,5 @@
+import { executarPesquisar } from "../modules/pesquisar/presentation/pesquisar-command.js";
+import { configurarRuntime } from "../modules/configuracao-runtime/presentation/configurar-command.js";
 import { addDurationToNow, formatDateTimeInZone, getDayRange, parseDurationInput } from "../time.js";
 import { resolveTargetUserFromMentionOrReply } from "../common/bot-common.js";
 import { handleGroupCommand } from "../modules/groups/presentation/commands/group-commands.js";
@@ -200,6 +202,8 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     ctx,
     deps: {
       search: deps.ports.webSearch,
+      searchPages: deps.ports.searchPages,
+      cooldown: deps.ports.cooldown,
       config: {
         enabled: true,
         maxResults: deps.ports.searchResultsLimit ?? 3
@@ -211,22 +215,43 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
   });
   if (webSearchHandled) return webSearchHandled;
 
-  const searchAiHandled = await handleSearchAiCommand({
-    commandKey,
-    cmd,
-    ctx,
-    deps: {
-      searchAi: deps.ports.searchAi,
-      config: {
-        enabled: deps.ports.searchAiEnabled ?? true,
-        maxSources: deps.ports.searchAiMaxSources ?? 4
-      },
-      formatUsage: () => usageFor("search-ai"),
-      stylizeReply: (text) => deps.stylizeReply(ctx, text),
-      logger: deps.ports.logger
+  if (commandKey === "pesquisar") {
+    return executarPesquisar(ctx, cmd, deps.ports, deps.hasRootPrivilege(ctx), usageFor("pesquisar") ?? "pesquisar <consulta>");
+  }
+  if (commandKey === "configurar") {
+    return configurarRuntime(ctx, cmd, deps.ports.flagsRepository, deps.hasRootPrivilege(ctx), usageFor("configurar") ?? "configurar <opção> <valor>", Object.keys(deps.ports.aiAssistants ?? {}), {
+      ia: deps.ports.llmEnabled !== false,
+      "search-ai": deps.ports.searchAiEnabled !== false,
+      pesquisar: Boolean(deps.ports.searchWithSources)
+    });
+  }
+  if (commandKey === "search-ai") {
+    const override = ctx.flags["runtime.search_ai.provider"];
+    const provider = override === "gemini" || override === "openai" ? override : deps.ports.searchAiProvider;
+    const selected = provider === undefined ? undefined : deps.ports.searchAiProviders?.[provider];
+    if (provider === "gemini" &&
+        (ctx.event.isGroup || ctx.event.waGroupId || !deps.isRequesterAdmin(ctx))) {
+      return [{ kind: "reply_text", text: "A busca Gemini está disponível no chat direto de operadores autorizados." }];
     }
-  });
-  if (searchAiHandled) return searchAiHandled;
+
+    return handleSearchAiCommand({
+      commandKey,
+      cmd,
+      ctx,
+      deps: {
+        searchAi: deps.ports.searchAiProviders ? selected?.adapter : deps.ports.searchAi,
+        config: {
+          enabled: deps.ports.searchAiEnabled !== false && ctx.flags["runtime.search_ai"] !== "off",
+          provider,
+          model: selected?.model,
+          maxSources: deps.ports.searchAiMaxSources ?? 4
+        },
+        formatUsage: () => usageFor("search-ai"),
+        stylizeReply: (text) => deps.stylizeReply(ctx, text),
+        logger: deps.ports.logger
+      }
+    });
+  }
 
   const imageSearchHandled = await handleImageSearchCommand({
     commandKey,
