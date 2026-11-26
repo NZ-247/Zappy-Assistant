@@ -5,6 +5,10 @@ export function nextcloudCronScope(query: string) {
   const version = /\bnextcloud\s+(?:v(?:ers(?:ão|ao)\s*)?)?(\d{2})(?:\.\d+)?\b/i.exec(query)?.[1];
   const manual = `docs.nextcloud.com/server/${version ?? "stable"}/admin_manual`;
   return {
+    official(value: string) {
+      try { const url = new URL(value); return url.hostname === "docs.nextcloud.com" && url.pathname.startsWith(`/server/${version ?? "stable"}/admin_manual/`); }
+      catch { return false; }
+    },
     query: `site:${manual} Nextcloud system cron crontab cron.php background jobs`,
     accepts(url: string, snippet: string) {
       const source = new URL(url);

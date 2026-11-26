@@ -275,7 +275,7 @@ export interface ImageSearchCandidateDiagnostic {
 }
 
 export interface PublicPageReaderPort {
-  read(input: { url: string; signal: AbortSignal }): Promise<{ url: string; paragraphs: string[]; language?: string }>;
+  read(input: { url: string; signal: AbortSignal; section?: "system-cron" | "qmrestore" }): Promise<{ url: string; paragraphs: string[]; language?: string }>;
 }
 
 export interface WebSearchPort {

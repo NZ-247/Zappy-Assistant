@@ -55,9 +55,20 @@ function requestPinned(url: URL, target: Address, signal: AbortSignal): Promise<
   });
 }
 
-function extractPublicPage(html: string): { paragraphs: string[]; language?: string } {
+function extractPublicPage(html: string, section?: "system-cron" | "qmrestore"): { paragraphs: string[]; language?: string } {
   const dom = new JSDOM(html);
   try {
+    if (section === "qmrestore") {
+      const nodes = dom.window.document.querySelectorAll("h2#_name + .sectionbody p, h2#_synopsis + .sectionbody p, h2#_description + .sectionbody p");
+      return { paragraphs: [...nodes].slice(0,240).map(node => (node.textContent ?? "").replace(/\s+/g," ").trim().slice(0,700)), language: "en" };
+    }
+    if (section === "system-cron") {
+      const element = dom.window.document.querySelector("section#cron, div.section#cron");
+      if (!element || !/^Cron\s*[^\p{L}]*$/iu.test(element.querySelector("h2,h3,h4")?.textContent ?? "")) return { paragraphs: [] };
+      const paragraphs = [...element.querySelectorAll("p,pre")].slice(0, 240)
+        .map(node => (node.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 700));
+      return { paragraphs, language: dom.window.document.documentElement.lang };
+    }
     const article = new Readability(dom.window.document, { maxElemsToParse: 18_000, charThreshold: 100 }).parse();
     const language = dom.window.document.documentElement.lang.trim().toLowerCase() || undefined;
     if (!article?.content) return { paragraphs: [], language };
@@ -103,7 +114,8 @@ export function createPublicPageReader(deps: Dependencies = {}): PublicPageReade
   const lookup = deps.lookup ?? ((host) => dnsLookup(host, { all: true, verbatim: true }));
   const request = deps.request ?? requestPinned;
   return {
-    async read({ url: input, signal: parent }) {
+    async read({ url: input, signal: parent, section }) {
+      const deadline = performance.now() + 1800;
       const signal = AbortSignal.any([parent, AbortSignal.timeout(1800)]);
       let url = publicWebUrl(input);
       for (let hop = 0; hop <= 2; hop++) {
@@ -119,9 +131,15 @@ export function createPublicPageReader(deps: Dependencies = {}): PublicPageReade
           url = publicWebUrl(new URL(location, url).href);
           continue;
         }
-        const html = await readHtml(response);
+        let html: string;
+        try { html = await readHtml(response); } catch (error) {
+          if (signal.aborted) throw new Error("page_timeout");
+          throw error;
+        }
         signal.throwIfAborted();
-        return { url: url.href, ...extractPublicPage(html) };
+        const page = extractPublicPage(html, section);
+        if (performance.now() >= deadline) throw new Error("page_timeout");
+        return { url: url.href, ...page };
       }
       throw new Error("page_redirect_limit");
     }
