@@ -490,7 +490,7 @@ export class Orchestrator {
       storedProfile: identity?.relationshipProfile ?? identity?.canonicalIdentity?.relationshipProfile ?? null
     });
     const memoryLimit = this.getMemoryLimitForProfile(relationship.profile);
-    const recentMessages = this.ports.conversationMemory && event.conversationId
+    const recentMessages = !event.isGroup ? [] : this.ports.conversationMemory && event.conversationId
       ? this.mapMemoryToMessages(
           await this.ports.conversationMemory.listRecentMemory({
             conversationId: event.conversationId,

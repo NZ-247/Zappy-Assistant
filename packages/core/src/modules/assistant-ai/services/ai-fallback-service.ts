@@ -62,7 +62,7 @@ export class AiFallbackService {
   }
 
   private async storeAiMemory(ctx: PipelineContext, assistantText: string): Promise<void> {
-    if (!this.deps.conversationMemory) return;
+    if (!ctx.event.isGroup || !this.deps.conversationMemory) return;
     if (!ctx.event.conversationId) return;
     const keepLatest = ctx.memoryLimit ?? this.deps.llmMemoryMessages ?? 10;
     const base = {

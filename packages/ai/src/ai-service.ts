@@ -60,7 +60,7 @@ export class AiService {
       personaId: input.personaId ?? this.config.personaId,
       relationshipProfile: input.relationshipProfile
     });
-    const memoryLimit = modifier?.memoryWindowOverride ?? this.config.memoryWindow;
+    const memoryLimit = input.chatScope === "group" ? modifier?.memoryWindowOverride ?? this.config.memoryWindow : 0;
     const policyNotes = [...(modifier?.policyNotes ?? [])];
     const recentMemory =
       memoryLimit > 0 && input.conversationId
@@ -122,7 +122,7 @@ export class AiService {
       "AI response ready"
     );
 
-    if (text) await this.appendMemory(input, text, memoryLimit);
+    if (text && memoryLimit > 0) await this.appendMemory(input, text, memoryLimit);
     if (toolIntent) return { kind: "tool_suggestion", tool: toolIntent, text };
     return { kind: "text", text };
   }
