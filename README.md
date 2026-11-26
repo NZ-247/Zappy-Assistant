@@ -513,3 +513,7 @@ O canário vem desativado. `SEARCH_SOURCES_BACKEND=existing|searxng` escolhe o b
 ### Pesquisar e controles em execução
 
 `/pesquisar` é a rota local independente. `/search-ai` usa o provedor externo selecionado. Os comandos ROOT `/configurar` alteram controles permitidos em execução. Consulte [Pesquisa local e controles em execução](docs/pesquisar-e-controles-runtime.md).
+
+### Busca com páginas públicas
+
+A opção `SEARCH_PAGES_ENABLED` acrescenta leitura de páginas e seleção local de evidência a `/search`. Para pedidos explícitos de busca na conversa, use também `SEARCH_PAGES_NATURAL_ENABLED`. As opções vêm desligadas. Consulte o [runbook de busca com páginas públicas](docs/search-paginas-publicas.md).

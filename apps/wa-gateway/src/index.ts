@@ -1,5 +1,5 @@
 import { downloadMediaMessage } from "baileys";
-import { Orchestrator, createSearchWithSources, SEARCH_SOURCES_RESPONSE_SCHEMA } from "@zappy/core";
+import { Orchestrator, createSearchWithSources, SEARCH_PAGE_RESPONSE_SCHEMA, SEARCH_SOURCES_RESPONSE_SCHEMA } from "@zappy/core";
 import { attemptGroupAdminAction } from "./admin-actions.js";
 import {
   coreFlagsRepository,
@@ -32,6 +32,7 @@ import {
   createOpenAiTextToSpeechAdapter,
   createOpenAiTranslationAdapter,
   createWebSearchAdapter,
+  createPublicPageReader,
   createSearxngWebSearchAdapter,
   createOpenAiSearchAiAdapter,
   createGeminiSearchAiAdapter,
@@ -130,6 +131,17 @@ const existingWebSearchAdapter = createWebSearchAdapter({
   preferredProvider: env.SEARCH_PROVIDER
 });
 const webSearchAdapter = env.SEARCH_ENABLED ? existingWebSearchAdapter : undefined;
+const searchPagesModel = env.SEARCH_PAGES_MODEL ?? env.OLLAMA_CHAT_MODEL;
+const searchPages = env.SEARCH_PAGES_ENABLED && env.SEARCH_ENABLED ? createSearchWithSources({
+  backend: createWebSearchAdapter({ preferredProvider: "duckduckgo", timeoutMs: env.SEARCH_TIMEOUT_MS }),
+  pageReader: createPublicPageReader(),
+  llm: createOllamaChatAdapter({
+    baseUrl: env.OLLAMA_BASE_URL, model: searchPagesModel, timeoutMs: env.OLLAMA_CHAT_TIMEOUT_MS,
+    format: SEARCH_PAGE_RESPONSE_SCHEMA
+  }),
+  model: searchPagesModel,
+  logger
+}) : undefined;
 const pesquisarModelo = env.PESQUISAR_MODELO ?? env.OLLAMA_CHAT_MODEL;
 const searchWithSources = env.PESQUISAR_ENABLED
   ? createSearchWithSources({
@@ -445,6 +457,8 @@ const orchestrator = new Orchestrator({
   textToSpeech: textToSpeechAdapter,
   textTranslation: textTranslationAdapter,
   webSearch: webSearchAdapter,
+  searchPages,
+  searchPagesNaturalEnabled: env.SEARCH_PAGES_NATURAL_ENABLED,
   searchAiProvider: env.SEARCH_AI_PROVIDER,
   searchAiProviders,
   searchWithSources,

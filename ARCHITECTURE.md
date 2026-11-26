@@ -494,3 +494,7 @@ O gateway injeta `WebSearchPort` e um `LlmPort` Ollama dedicado. O backend SearX
 ### Separação das buscas e configuração em execução
 
 O módulo `pesquisar` expõe a recuperação e a seleção local de trechos. O módulo `search-ai` mantém os adaptadores externos. A seleção lê configuração inicial e flags tipadas de execução. O módulo `configuracao-runtime` valida comandos ROOT e grava flags via port do core, com auditoria no adapter Prisma. [Fluxo e operação](docs/pesquisar-e-controles-runtime.md)
+
+### Leitura pública para busca
+
+A rota opt-in de `/search` compõe a descoberta DuckDuckGo, `PublicPageReaderPort` e a seleção local do módulo `pesquisar`. O adaptador usa Readability com leitura pública limitada e validação de rede e de redirecionamentos. O caso de uso compartilha validação e deduplicação com a opção de linguagem natural. [Bancada e operação](docs/search-paginas-publicas.md) · [Auditoria de memória e modelos](docs/auditoria-memoria-e-modelos.md)

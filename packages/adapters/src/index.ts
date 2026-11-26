@@ -713,6 +713,7 @@ export const createOpenAiSpeechToTextAdapter = (input: {
 
 export { createOpenAiTextToSpeechAdapter } from "./tts/openai-tts-adapter.js";
 export { createOpenAiTranslationAdapter } from "./translation/openai-translation-adapter.js";
+export { createPublicPageReader } from "./search/public-page-reader.js";
 export { createSearxngWebSearchAdapter } from "./search/searxng-web-search-adapter.js";
 export { createWebSearchAdapter } from "./search/web-search-adapter.js";
 export { createOpenAiSearchAiAdapter } from "./search/openai-search-ai-adapter.js";

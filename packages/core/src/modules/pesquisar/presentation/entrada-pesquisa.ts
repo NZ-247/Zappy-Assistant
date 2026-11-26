@@ -10,15 +10,16 @@ export async function runSearchSources(
   origin: "command" | "conversation",
   isRoot: boolean,
   maxSources: number,
-  cooldown: CooldownPort
+  cooldown: CooldownPort,
+  scope: "operator" | "command" = "operator"
 ): Promise<ResponseAction[]> {
   const { event } = ctx;
   const isAdmin = ctx.requesterIsAdmin || (ctx.identity?.permissionRole ?? ctx.identity?.role)?.toUpperCase() === "ADMIN";
-  if (event.isGroup || event.waGroupId || ctx.consentRequired || ctx.policyMuted || (!isAdmin && !isRoot)) {
+  if (scope === "operator" && (event.isGroup || event.waGroupId || ctx.consentRequired || ctx.policyMuted || (!isAdmin && !isRoot))) {
     return [{ kind: "reply_text", text: "A busca local com fontes está disponível no chat direto de operadores autorizados." }];
   }
-  const conversationKey = JSON.stringify([event.tenantId, event.waUserId]);
-  const replayKey = `search:sources:turn:${JSON.stringify([event.tenantId, event.waUserId, event.waMessageId])}`;
+  const conversationKey = JSON.stringify([event.tenantId, event.waGroupId ?? event.waUserId]);
+  const replayKey = `search:sources:turn:${JSON.stringify([event.tenantId, event.waGroupId ?? event.waUserId, event.waMessageId])}`;
   try {
     if (!await cooldown.canFire(replayKey, 120)) return [{ kind: "noop", reason: "search_replay" }];
   } catch {

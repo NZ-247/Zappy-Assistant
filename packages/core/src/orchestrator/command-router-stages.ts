@@ -202,6 +202,8 @@ export const handleModuleCommands = async (runtime: RouterRuntime): Promise<Resp
     ctx,
     deps: {
       search: deps.ports.webSearch,
+      searchPages: deps.ports.searchPages,
+      cooldown: deps.ports.cooldown,
       config: {
         enabled: true,
         maxResults: deps.ports.searchResultsLimit ?? 3

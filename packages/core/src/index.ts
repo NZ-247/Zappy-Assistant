@@ -964,4 +964,5 @@ export class Orchestrator {
   }
 }
 
-export { createSearchWithSources, SEARCH_SOURCES_RESPONSE_SCHEMA } from "./modules/pesquisar/application/use-cases/responder-com-fontes.js";
+export type { PublicPageReaderPort } from "./pipeline/ports.js";
+export { createSearchWithSources, SEARCH_PAGE_RESPONSE_SCHEMA, SEARCH_SOURCES_RESPONSE_SCHEMA } from "./modules/pesquisar/application/use-cases/responder-com-fontes.js";

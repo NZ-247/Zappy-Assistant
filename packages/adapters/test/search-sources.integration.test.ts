@@ -6,9 +6,9 @@ import { createSearxngWebSearchAdapter } from "../src/search/searxng-web-search-
 
 const official = "https://www.zabbix.com/documentation/current/en/manual/api/reference/event/get";
 const noExternalAi = () => assert.fail("legacy AI must not run");
-type Options = { admin?: boolean; root?: boolean; identityAdmin?: boolean; natural?: boolean; local?: boolean; consent?: boolean; runtimeIa?: boolean };
+type Options = { admin?: boolean; root?: boolean; identityAdmin?: boolean; natural?: boolean; local?: boolean; consent?: boolean; runtimeIa?: boolean; pages?: boolean; pagesNatural?: boolean };
 
-function setup({ admin = true, root = false, identityAdmin = false, natural = true, local = true, consent = true, runtimeIa = false }: Options = {}) {
+function setup({ admin = true, root = false, identityAdmin = false, natural = true, local = true, consent = true, runtimeIa = false, pages = false, pagesNatural = false }: Options = {}) {
   const flags: Record<string, string> = {};
   const webModes: string[] = [];
   const calls: URL[] = [];
@@ -80,7 +80,11 @@ function setup({ admin = true, root = false, identityAdmin = false, natural = tr
     },
     webSearch,
     searchWithSources: local ? createSearchWithSources({ backend, llm, model: "qwen3:1.7b" }) : undefined,
-    searchSourcesNaturalEnabled: natural
+    searchSourcesNaturalEnabled: natural,
+    searchPages: pages ? createSearchWithSources({ backend, llm: { chat: async () => '{"sourceId":"F1"}' }, model: "qwen3:1.7b",
+      pageReader: { read: async ({ url }) => ({ url, paragraphs: ["A API permite consultar um histórico de eventos filtrado por intervalo de tempo."] }) }
+    }) : undefined,
+    searchPagesNaturalEnabled: pagesNatural
   });
   const send = (text: string, id = "test", overrides: Partial<InboundMessageEvent> = {}) => bot.handleInboundMessage({
     tenantId: "fixture", waUserId: "556699999999@s.whatsapp.net", waMessageId: id,
@@ -171,4 +175,18 @@ test("hot conversation provider selection uses only the selected adapter when en
   assert.match(JSON.stringify(await send("Você pode conversar comigo sobre o dia de hoje?", "chat1")), /serviço Ollama/);
   assert.match(JSON.stringify(await send("/configurar ia off", "ia-off")), /salva/);
   assert.doesNotMatch(JSON.stringify(await send("Você pode conversar comigo sobre uma tarde tranquila?", "chat2")), /serviço Ollama/);
+});
+
+test("page search uses /search independently of /google and natural search opt-in", async () => {
+  const explicit = setup({ pages: true, local: false, natural: false });
+  assert.match(JSON.stringify(await explicit.send("/search histórico de eventos Zabbix", "page")), /Trecho da fonte/);
+  assert.match(JSON.stringify(await explicit.send("Pesquise na web histórico de eventos", "natural")), /Conversa habitual/);
+  await explicit.send("/google histórico de eventos", "exact");
+  assert.deepEqual(explicit.webModes, ["google_strict"]);
+  assert.equal(explicit.calls.length, 1);
+
+  const both = setup({ pages: true, pagesNatural: true, local: false, natural: false });
+  assert.match(JSON.stringify(await both.send("Pesquise na web histórico de eventos", "replay")), /Trecho da fonte/);
+  assert.match(JSON.stringify(await both.send("/search histórico de eventos", "replay")), /search_replay/);
+  assert.equal(both.calls.length, 1);
 });

@@ -192,3 +192,74 @@ test("a literal English source still yields links when the model proposes a Port
   assert.ok(reply.includes(hit.link));
   assert.doesNotMatch(reply, /virtual machine configuration/);
 });
+
+test("reads public pages, uses excerpts from extraction and rejects invented citations", async () => {
+  const hit = { ...searchSourcesFixture[0], snippet: "Trecho de SERP que não pode virar evidência de página." };
+  const trecho = "O utilitário vzdump permite criar backups de máquinas virtuais e contêineres no Proxmox VE.";
+  const read = { read: async () => ({ url: hit.link, paragraphs: [trecho] }) };
+  for (const [quote, shouldCite] of [["F1", true], ["F7", false], [hit.snippet, false]] as const) {
+    const search = createSearchWithSources({
+      backend: mockBackend([hit]), pageReader: read, model: "fixture",
+      llm: mockLlm(JSON.stringify({ sourceId: quote }))
+    });
+    const reply = await search(run);
+    assert.equal(reply.includes("Trecho da fonte"), shouldCite);
+    assert.ok(reply.includes(hit.link));
+    assert.doesNotMatch(reply, /SERP/);
+  }
+});
+
+test("page access denial and cancellation preserve other discovery links without calling synthesis", async () => {
+  const pages = [searchSourcesFixture[0], searchSourcesFixture[1]];
+  const search = createSearchWithSources({
+    backend: mockBackend(pages), model: "fixture", retrievalTimeoutMs: 20,
+    pageReader: { read: async ({ url, signal }) => {
+      if (url === pages[0].link) throw new Error("page_blocked");
+      await delay(500, undefined, { signal });
+      return { url, paragraphs: [] };
+    } },
+    llm: { chat: async () => assert.fail("no page evidence available") }
+  });
+  const reply = await search(run);
+  assert.match(reply, /evidência suficiente/);
+  assert.ok(reply.includes(pages[1].link));
+  assert.ok(!reply.includes(pages[0].link));
+});
+
+test("never composes evidence from pages explicitly marked Spanish", async () => {
+  const hit = { title: "Manual", link: "https://example.com/es/backup" };
+  const reply = await createSearchWithSources({
+    backend: mockBackend([hit]), model: "fixture",
+    pageReader: { read: async () => ({ url: hit.link, language: "es", paragraphs: [
+      "Ejemplos Recuperar eventos de problemas de disparadores Recuperar problemas reconocidos por un usuario especificado"
+    ] }) },
+    llm: { chat: async () => assert.fail("wrong language never becomes evidence") }
+  })({ ...run, query: "histórico de eventos de problemas" });
+  assert.match(reply, /evidência suficiente/);
+  assert.ok(reply.includes(hit.link));
+});
+
+test("an explicit API identifier needs to appear in the page excerpt", async () => {
+  const hit = searchSourcesFixture[2];
+  const reply = await createSearchWithSources({
+    backend: mockBackend([hit]), model: "fixture",
+    pageReader: { read: async () => ({ url: hit.link, paragraphs: [
+      "O histórico armazena uma lista de problemas resolvidos durante a execução do monitoramento."
+    ] }) },
+    llm: { chat: async () => assert.fail("excerpt does not name the requested method") }
+  })({ ...run, query: "Zabbix histórico de problemas resolvidos event.get" });
+  assert.match(reply, /evidência suficiente/);
+});
+
+test("finds the requested API method near the end of a long article paragraph", async () => {
+  const hit = searchSourcesFixture[2];
+  const intro = "O sistema de monitoramento mantém eventos em uma tabela separada para consultas ao histórico. ".repeat(5);
+  const evidence = "Para recuperar problemas resolvidos no passado, consulte o método event.get do Zabbix.";
+  const reply = await createSearchWithSources({
+    backend: mockBackend([hit]), model: "fixture",
+    pageReader: { read: async () => ({ url: hit.link, language: "pt", paragraphs: [intro + evidence] }) },
+    llm: mockLlm('{"sourceId":"F1"}')
+  })({ ...run, query: "Zabbix histórico de problemas resolvidos event.get" });
+  assert.match(reply, /método event\.get/);
+  assert.ok(reply.includes(hit.link));
+});

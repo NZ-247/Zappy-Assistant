@@ -274,6 +274,10 @@ export interface ImageSearchCandidateDiagnostic {
   byteLength?: number;
 }
 
+export interface PublicPageReaderPort {
+  read(input: { url: string; signal: AbortSignal }): Promise<{ url: string; paragraphs: string[]; language?: string }>;
+}
+
 export interface WebSearchPort {
   search(input: {
     query: string;
@@ -462,6 +466,8 @@ export interface CorePorts {
   searchAi?: SearchAiPort;
   searchAiProvider?: "gemini" | "openai";
   searchAiProviders?: Partial<Record<"gemini" | "openai", { adapter?: SearchAiPort; model: string }>>;
+  searchPages?: import("../modules/pesquisar/ports.js").SearchWithSources;
+  searchPagesNaturalEnabled?: boolean;
   searchWithSources?: import("../modules/pesquisar/ports.js").SearchWithSources;
   searchSourcesNaturalEnabled?: boolean;
   imageSearch?: ImageSearchPort;

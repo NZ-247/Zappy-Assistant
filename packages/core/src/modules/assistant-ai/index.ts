@@ -58,12 +58,15 @@ export class AssistantAiModule {
   async handleExplicitWebSearch(ctx: PipelineContext): Promise<ResponseAction[]> {
     const { searchWithSources, searchSourcesNaturalEnabled, searchAiMaxSources } = this.deps.ports;
     const { event } = ctx;
-    if (!searchWithSources || !searchSourcesNaturalEnabled || ctx.flags["runtime.pesquisar"] === "off") return [];
+    const search = this.deps.ports.searchPagesNaturalEnabled && this.deps.ports.searchPages
+      ? this.deps.ports.searchPages
+      : searchSourcesNaturalEnabled && ctx.flags["runtime.pesquisar"] !== "off" ? searchWithSources : undefined;
+    if (!search) return [];
     if (ctx.classification.kind !== "ai_candidate" && ctx.classification.kind !== "trigger_candidate") return [];
     if (event.messageKind !== "text" || event.hasMedia || event.ingressSource === "audio_stt" || ctx.assistantMode === "off") return [];
     const query = explicitWebSearchQuery(event.normalizedText);
     if (query === undefined) return [];
-    return runSearchSources(ctx, searchWithSources, query, "conversation", this.deps.hasRootPrivilege(ctx), searchAiMaxSources ?? 4, this.deps.ports.cooldown);
+    return runSearchSources(ctx, search, query, "conversation", this.deps.hasRootPrivilege(ctx), searchAiMaxSources ?? 4, this.deps.ports.cooldown);
   }
 
   async handleAddressedMessage(ctx: PipelineContext): Promise<ResponseAction[]> {
