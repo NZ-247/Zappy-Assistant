@@ -62,13 +62,16 @@ export class AiFallbackService {
   }
 
   private async storeAiMemory(ctx: PipelineContext, assistantText: string): Promise<void> {
-    if (!this.deps.conversationMemory) return;
+    const scope = ctx.event.conversationScope;
+    if (!scope || scope.tenantId !== ctx.event.tenantId || scope.chatType !== (ctx.event.isGroup ? "group" : "direct") || !this.deps.conversationMemory) return;
     if (!ctx.event.conversationId) return;
     const keepLatest = ctx.memoryLimit ?? this.deps.llmMemoryMessages ?? 10;
+    if (keepLatest <= 0) return;
     const base = {
-      tenantId: ctx.event.tenantId,
+      scope,
       conversationId: ctx.event.conversationId,
       waUserId: ctx.event.waUserId,
+      metadataJson: { inboundWaMessageId: ctx.event.waMessageId },
       keepLatest
     };
     try {

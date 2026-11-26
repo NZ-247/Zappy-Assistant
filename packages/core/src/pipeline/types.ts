@@ -155,7 +155,15 @@ export type AuditEvent =
       actor?: string;
     };
 
+export interface ConversationScope {
+  tenantId: string;
+  channel: "whatsapp";
+  chatType: "direct" | "group";
+  ownerId: string;
+}
+
 export interface InboundMessageEvent {
+  conversationScope?: ConversationScope;
   tenantId: string;
   conversationId?: string;
   executionId?: string;
@@ -242,6 +250,8 @@ export interface AiFallback {
 export type AiResponse = AiTextReply | AiToolIntent | AiFallback;
 
 export interface AiAssistantInput {
+  inboundWaMessageId?: string;
+  conversationScope?: ConversationScope;
   tenantId: string;
   conversationId?: string;
   waUserId: string;

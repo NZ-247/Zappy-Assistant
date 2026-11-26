@@ -358,7 +358,7 @@ export const registerAdminApiRoutes = (app: AdminApiHttpApp, runtime: AdminApiRu
 
   app.get("/admin/messages", async (request) => {
     const limit = parseLimit((request.query as { limit?: string }).limit, 50);
-    return getRecentMessages(limit);
+    return getRecentMessages(limit, (request.query as { tenantId?: string }).tenantId);
   });
 
   app.get("/admin/commands", async (request) => {

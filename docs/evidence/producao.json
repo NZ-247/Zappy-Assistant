@@ -1,0 +1,17 @@
+{
+  "at": "2026-11-26T02:16:49.986Z",
+  "head": "4bfb71a4cd577779e5ddcf11d8ceac84ac632664",
+  "appliedSource": "b35b914053ee014f5cbc6623d2ca435c3772b09d",
+  "http": 200,
+  "gateway": true,
+  "worker": true,
+  "online": 5,
+  "model": "qwen3:1.7b",
+  "provider": "ollama",
+  "searchAi": false,
+  "discovery": "duckduckgo",
+  "sameCheckout": true,
+  "pm2Provider": "from .env",
+  "dumpProvider": "from .env",
+  "pid": 138805
+}

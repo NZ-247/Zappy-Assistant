@@ -1,4 +1,4 @@
-import type { InboundMessageEvent, Orchestrator, RelationshipProfile } from "@zappy/core";
+import type { ConversationScope, InboundMessageEvent, Orchestrator, RelationshipProfile } from "@zappy/core";
 import { createHash, randomUUID } from "node:crypto";
 import { createCommandReactionAckLifecycle } from "../infrastructure/command-reaction-ack.js";
 
@@ -38,7 +38,7 @@ interface MessagesUpsertHandlerDeps {
   getInboundContextInfo: (message: any) => any;
   setBotSelfLidKey: (botJid?: string | null) => void;
   getBotSelfLid: () => Promise<string | null>;
-  maybeLearnBotLidFromQuote: (input: { quotedWaMessageId?: string; quotedParticipantRaw?: string; quotedMessage?: any }) => Promise<string | null>;
+  maybeLearnBotLidFromQuote: (input: { scope: ConversationScope; quotedWaMessageId?: string; quotedParticipantRaw?: string; quotedMessage?: any }) => Promise<string | null>;
   ensureTenantContext: (input: {
     waGroupId?: string;
     waUserId: string;
@@ -318,7 +318,17 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
       const quotedText = deps.getInboundText(quotedMessage).trim() || undefined;
       const quotedHasMedia = deps.hasInboundMedia(quotedMessage);
       const quotedAudioPtt = deps.getInboundAudioMessage(quotedMessage)?.ptt;
+      const context = await deps.ensureTenantContext({
+        waGroupId: isGroup ? remoteJid : undefined,
+        waUserId,
+        defaultTenantName: deps.env.DEFAULT_TENANT_NAME,
+        onlyGroupId: deps.env.ONLY_GROUP_ID,
+        remoteJid,
+        userName: message.pushName ?? null
+      });
+
       const learnedBotLid = await deps.maybeLearnBotLidFromQuote({
+        scope: { tenantId: context.tenant.id, channel: "whatsapp", chatType: isGroup ? "group" : "direct", ownerId: isGroup ? context.group?.id : context.user.id },
         quotedWaMessageId,
         quotedParticipantRaw: quotedWaUserIdRaw,
         quotedMessage
@@ -352,15 +362,6 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         ].join(" ");
         deps.logger.debug(line);
       }
-
-      const context = await deps.ensureTenantContext({
-        waGroupId: isGroup ? remoteJid : undefined,
-        waUserId,
-        defaultTenantName: deps.env.DEFAULT_TENANT_NAME,
-        onlyGroupId: deps.env.ONLY_GROUP_ID,
-        remoteJid,
-        userName: message.pushName ?? null
-      });
 
       const lastAdminCheck = context.group?.botAdminCheckedAt?.getTime?.() ?? 0;
       const adminCommand = isGroup && deps.isBotAdminCommand(text);
@@ -448,6 +449,10 @@ export const createMessagesUpsertHandler = (deps: MessagesUpsertHandlerDeps) => 
         rawJson: message
       });
       event.conversationId = persisted.conversationId;
+      const ownerId = isGroup ? context.group?.id : context.user.id;
+      if (ownerId) event.conversationScope = {
+        tenantId: context.tenant.id, channel: "whatsapp", chatType: isGroup ? "group" : "direct", ownerId
+      };
 
       if (governanceEvaluation?.blocked) {
         deps.logger.info(

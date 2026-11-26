@@ -1,4 +1,4 @@
-import { type Prisma, type PrismaClient, type User } from "@prisma/client";
+import { Prisma, type PrismaClient, type User } from "@prisma/client";
 import { resolveRelationshipProfile, type CanonicalIdentity, type RelationshipProfile } from "@zappy/core";
 
 export type DerivedIdentity = {
@@ -41,6 +41,10 @@ const aliasSeeds: Array<{ lidJid: string; phoneNumber: string; label: string }> 
   { lidJid: "151608402911288@lid", phoneNumber: "556692283438", label: "mother_privileged" }
 ];
 
+export function isSeededIdentityPair(lidJid: string, phoneNumber: string): boolean {
+  return aliasSeeds.some(seed => seed.lidJid === lidJid && seed.phoneNumber === phoneNumber);
+}
+
 const parsePhoneFromJid = (jid?: string | null, normalizePhoneNumber?: NormalizePhoneNumberFn): string | null => {
   if (!jid) return null;
   const match = jid.match(/^(\d+)/);
@@ -56,7 +60,7 @@ const extractIdentityParts = (waUserId: string, remoteJid: string | undefined, n
       : remoteJid?.includes?.("@s.whatsapp.net") || remoteJid?.includes?.("@c.us")
         ? remoteJid
         : null;
-  const phoneFromId = normalizePhoneNumber(parsePhoneFromJid(pnJidRaw ?? waUserId, normalizePhoneNumber));
+  const phoneFromId = normalizePhoneNumber(parsePhoneFromJid(pnJidRaw ?? (/^\d+$/.test(waUserId) ? waUserId : null), normalizePhoneNumber));
   const pnJid = phoneFromId ? `${phoneFromId}@s.whatsapp.net` : pnJidRaw;
   return {
     waUserId,
@@ -199,16 +203,17 @@ export const createCanonicalIdentityServices = (deps: { prisma: PrismaClient }) 
       identifiers.phoneNumber ? { phoneNumber: identifiers.phoneNumber } : null,
       identifiers.pnJid ? { pnJid: identifiers.pnJid } : null,
       identifiers.lidJid ? { lidJid: identifiers.lidJid } : null,
-      aliases.length > 0 ? { aliases: { hasSome: aliases } } : null,
       identifiers.waUserId ? { waUserId: identifiers.waUserId } : null
     ];
 
-    for (const filter of prioritizedFilters) {
-      if (!filter) continue;
-      const user = await prisma.user.findFirst({ where: { tenantId, ...filter } });
-      if (user) return user;
-    }
-    return null;
+    const filters = prioritizedFilters.filter((filter): filter is Prisma.UserWhereInput => filter !== null);
+    if (!filters.length) return null;
+    const users = await prisma.user.findMany({ where: { tenantId, OR: filters }, take: 2 });
+    if (users.length > 1) throw new Error("ambiguous_canonical_identity");
+    const user = users[0];
+    if (user?.waUserId.endsWith("@lid") && identifiers.pnJid === user.waUserId.replace(/@lid$/, "@s.whatsapp.net") &&
+        identifiers.waUserId !== user.waUserId) throw new Error("unverified_legacy_phone");
+    return user ?? null;
   };
 
   const findUserForTenant: FindUserForTenantFn = async (tenantId: string, waUserId: string, remoteJid?: string) => {
@@ -239,19 +244,25 @@ export const createCanonicalIdentityServices = (deps: { prisma: PrismaClient }) 
 
     if (!user && input.allowCreate !== false) {
       const pnJid = derived.pnJid ?? (derived.phoneNumber ? `${derived.phoneNumber}@s.whatsapp.net` : null);
-      user = await prisma.user.create({
-        data: {
-          tenantId: input.tenantId,
-          waUserId: derived.waUserId,
-          displayName: input.displayName ?? derived.phoneNumber ?? derived.waUserId,
-          phoneNumber: derived.phoneNumber,
-          lidJid: derived.lidJid,
-          pnJid,
-          aliases: aliasCandidates,
-          role: "member"
-        }
-      });
-      created = true;
+      try {
+        user = await prisma.user.create({
+          data: {
+            tenantId: input.tenantId,
+            waUserId: derived.waUserId,
+            displayName: input.displayName ?? derived.phoneNumber ?? derived.waUserId,
+            phoneNumber: derived.phoneNumber,
+            lidJid: derived.lidJid,
+            pnJid,
+            aliases: aliasCandidates,
+            role: "member"
+          }
+        });
+        created = true;
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+        user = await findUserByAnyIdentifier(input.tenantId, derived, aliasCandidates);
+        if (!user) throw error;
+      }
     }
 
     if (!user) {

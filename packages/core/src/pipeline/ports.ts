@@ -4,6 +4,7 @@ import type {
   AuditEvent,
   CanonicalIdentity,
   ConversationMessage,
+  ConversationScope,
   ConversationState,
   ConversationStateRecord,
   ConsentStatus,
@@ -104,7 +105,7 @@ export interface TimersRepositoryPort {
 }
 
 export interface MessagesRepositoryPort {
-  getRecentMessages(input: { tenantId: string; waGroupId?: string; waUserId: string; limit: number }): Promise<ConversationMessage[]>;
+  getRecentMessages(input: { scope: ConversationScope; conversationId: string; limit: number }): Promise<ConversationMessage[]>;
 }
 
 export interface ConversationMemoryItem {
@@ -117,7 +118,7 @@ export interface ConversationMemoryItem {
 
 export interface ConversationMemoryPort {
   appendMemory(input: {
-    tenantId: string;
+    scope: ConversationScope;
     conversationId: string;
     waUserId?: string;
     role: "system" | "user" | "assistant" | "tool";
@@ -125,9 +126,9 @@ export interface ConversationMemoryPort {
     metadataJson?: unknown;
     keepLatest?: number;
   }): Promise<void>;
-  listRecentMemory(input: { conversationId: string; limit: number }): Promise<ConversationMemoryItem[]>;
-  trimOldMemory?(conversationId: string, keepLatestN: number): Promise<void>;
-  clearMemory?(conversationId: string): Promise<void>;
+  listRecentMemory(input: { scope: ConversationScope; conversationId: string; limit: number }): Promise<ConversationMemoryItem[]>;
+  trimOldMemory?(input: { scope: ConversationScope; conversationId: string; keep: number }): Promise<void>;
+  clearMemory?(input: { scope: ConversationScope; conversationId: string }): Promise<void>;
 }
 
 export interface CooldownPort {

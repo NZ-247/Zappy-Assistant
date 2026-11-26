@@ -1,0 +1,1 @@
+{"database":"isolated","model":"qwen3:1.7b","transport":"Ollama HTTP","interleavedRequests":3,"concurrentIdentityResolutions":8,"concurrentCreates":12,"distinctScopes":4,"foreignMarkers":0,"legacyRowsIntact":2}

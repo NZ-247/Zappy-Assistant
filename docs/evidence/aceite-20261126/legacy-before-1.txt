@@ -1,0 +1,11 @@
+BEGIN
+        kind        |   role    |      result      | count 
+--------------------+-----------+------------------+-------
+ ConversationMemory | assistant | ambiguous_owner  |     1
+ ConversationMemory | user      | attributable     |     2
+ ConversationMemory | user      | no_verified_turn |     1
+ Message            | INBOUND   | attributable     |     2
+ Message            | OUTBOUND  | ambiguous_owner  |     1
+(5 rows)
+
+ROLLBACK

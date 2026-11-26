@@ -14,6 +14,8 @@ export const mapPipelineToAiInput = (
   availableTools: ToolAction[] = []
 ): AiAssistantInput => ({
   tenantId: ctx.event.tenantId,
+  inboundWaMessageId: ctx.event.waMessageId,
+  conversationScope: ctx.event.conversationScope,
   conversationId: ctx.event.conversationId,
   waUserId: ctx.event.waUserId,
   waGroupId: ctx.event.waGroupId,

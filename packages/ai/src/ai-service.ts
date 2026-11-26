@@ -60,12 +60,14 @@ export class AiService {
       personaId: input.personaId ?? this.config.personaId,
       relationshipProfile: input.relationshipProfile
     });
-    const memoryLimit = modifier?.memoryWindowOverride ?? this.config.memoryWindow;
+    const scope = input.conversationScope;
+    const memoryLimit = this.config.memoryWindow > 0 && scope?.tenantId === input.tenantId && scope.chatType === input.chatScope
+      ? modifier?.memoryWindowOverride ?? this.config.memoryWindow : 0;
     const policyNotes = [...(modifier?.policyNotes ?? [])];
     const recentMemory =
-      memoryLimit > 0 && input.conversationId
+      memoryLimit > 0 && scope && input.conversationId
         ? await this.memory.loadRecent({
-            tenantId: input.tenantId,
+            scope,
             conversationId: input.conversationId,
             limit: memoryLimit
           })
@@ -122,7 +124,7 @@ export class AiService {
       "AI response ready"
     );
 
-    if (text) await this.appendMemory(input, text, memoryLimit);
+    if (text && memoryLimit > 0) await this.appendMemory(input, text, memoryLimit);
     if (toolIntent) return { kind: "tool_suggestion", tool: toolIntent, text };
     return { kind: "text", text };
   }
@@ -134,12 +136,14 @@ export class AiService {
 
   private async appendMemory(input: AiAssistantInput, assistantText: string, keepOverride?: number) {
     if (!this.config.enabled) return;
-    if (!this.memory || !input.conversationId) return;
+    if (!this.memory || !input.conversationId || !input.conversationScope) return;
     const keep = keepOverride ?? this.config.memoryWindow;
     const base = {
+      scope: input.conversationScope,
       tenantId: input.tenantId,
       conversationId: input.conversationId,
       waUserId: input.waUserId,
+      metadataJson: input.inboundWaMessageId ? { inboundWaMessageId: input.inboundWaMessageId } : undefined,
       keep
     };
     try {
